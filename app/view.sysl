@@ -555,7 +555,7 @@ private struct Pen
         self.vg.save()
         self.width(2.0)
 
-        var dash: [2]f32 = [f32(6.0 * self.scale), f32(4.0 * self.scale)]
+        val dash: [2]f32 = [f32(6.0 * self.scale), f32(4.0 * self.scale)]
 
         self.vg.dash(dash[..])
         set(self.vg, RED_LEAD)

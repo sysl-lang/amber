@@ -22,4 +22,6 @@ requires {
 dependencies {
   amber      { workspace = true }
   syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.14" }
+  // The schematic is drawn with PlutoVG directly; 0.2.7 takes a read-only dash pattern.
+  plutovg    { git = "github.com/sysl-lang/plutovg",    version = "0.2.7" }
 }
