@@ -381,17 +381,19 @@ private struct Pen
 
         e.shape match
             Resistor ->
-                val teeth = 6
-                val step = body / real(teeth * 2)
-                var s = s0
+                // Three zigzags, peak to peak, in a square of the middle, as a schematic draws one.
+                val zigzag = min(1.0, body)
+                val r0 = (length - zigzag) / 2.0
+                val step = zigzag / 6.0
 
                 self.vg.begin()
-                f.move(s, 0.0)
+                f.move(s0, 0.0)
+                f.to(r0, 0.0)
 
-                for k in 0..<teeth * 2
-                    s += step
-                    f.to(s - step / 2.0, if k % 2 == 0 then 0.22 else -0.22)
+                for k in 0..<6
+                    f.to(r0 + (real(k) + 0.5) * step, if k % 2 == 0 then 0.2 else -0.2)
 
+                f.to(r0 + zigzag, 0.0)
                 f.to(s1, 0.0)
                 self.vg.stroke()
             Capacitor ->
