@@ -225,4 +225,98 @@ schematic_refusals()
     assert(parse_schematic("resistor R1 0 0 1 0 1k\nresistor R1 1 0 2 0 1k").unwrap_err() == "line 2: 'R1' is already the name of another element")
     assert(parse_schematic("resistor R1 0 0 1 0 1k 2k").unwrap_err() == "line 1: '2k' is more than a resistor takes")
     assert(parse_schematic("ground 0 0\nlabel top 0 0\nwire 0 0 1 0").unwrap_err() == "label 'top' is on ground")
-    assert(parse_schematic("resistor R1 0 0 1 0 -5").unwrap_err() == "R1: a resistance is more than zero")
+    assert(parse_schematic("resistor R1 0 0 1 0 -5").unwrap_err() == "line 1: a resistance is more than zero")
+
+@test("a schematic's waves, switches, capacitors and speed read")
+schematic_waves()
+    val sch = parse_schematic("""
+        speed 10m
+        source   V1  0 0  0 4  square 0 5 1k
+        switch   S1  0 0  2 0  closed
+        resistor R1  2 0  4 0  1k
+        capacitor C1 4 0  4 4  1u
+        inductor L1  4 0  6 0  10m
+        current  I1  6 0  6 4  sine 1m 50
+        wire         0 4  6 4
+        ground       0 4
+        """).unwrap()
+
+    assert(sch.speed == 10e-3)
+    assert(sch.circuit.parts[0].kind.wave() == Some(square(0.0, 5.0, 1000.0)))
+    assert(sch.circuit.parts[1].kind == Switch(true))
+    assert(sch.circuit.parts[3].kind == Capacitor(1e-6))
+    assert(sch.circuit.parts[5].kind.wave() == Some(Sine(0.0, 1e-3, 50.0, 0.0)))
+    assert(sch.elements[0].value == "square 0 5 1k")
+
+@test("a wave's mistakes are refused with their line")
+wave_refusals()
+    assert(parse_schematic("source V1 0 0 1 0").unwrap_err() == "line 1: a source needs a value")
+    assert(parse_schematic("source V1 0 0 1 0 triangle 1 2").unwrap_err() == "line 1: 'triangle' is not a kind of wave: dc, sine, square, pulse or pwl")
+    assert(parse_schematic("source V1 0 0 1 0 sine 5").unwrap_err() == "line 1: sine takes an amplitude, a frequency and perhaps an offset")
+    assert(parse_schematic("source V1 0 0 1 0 square 0 5 1k 1.5").unwrap_err() == "line 1: a duty is between 0 and 1")
+    assert(parse_schematic("source V1 0 0 1 0 pwl 1 2 0 3").unwrap_err() == "line 1: pwl's times run forward")
+    assert(parse_schematic("source V1 0 0 1 0 pwl 1").unwrap_err() == "line 1: pwl takes pairs of a time and a value")
+    assert(parse_schematic("switch S1 0 0 1 0 ajar").unwrap_err() == "line 1: 'ajar' is not a switch's state: open or closed")
+    assert(parse_schematic("capacitor C1 0 0 1 0 0").unwrap_err() == "line 1: a capacitance is more than zero")
+    assert(parse_schematic("speed 0").unwrap_err() == "line 1: a speed is more than zero")
+    assert(parse_schematic("diode D1 0 0 1 0 1N4148").unwrap_err() == "line 1: '1N4148' is more than a diode takes")
+
+@test("a meter's lead on an empty point makes no node, and the circuit still solves")
+meter_on_nothing()
+    val sch = parse_schematic(LED_SCHEMATIC + "meter M9 20 20 6 0\n").unwrap()
+
+    assert(sch.circuit.node_count() == 3)
+
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+    assert(sch.elements[sch.find("M9").unwrap()].a == -1)
+    assert(sch.node_at(20, 20).is_none())
+
+@test("a meter joins nothing: its two leads stay on their own nodes even where meters touch")
+meters_join_nothing()
+    val sch = parse_schematic(LED_SCHEMATIC + "meter M8 0 0 3 3\nmeter M9 3 3 6 6\n").unwrap()
+
+    assert(sch.circuit.node_count() == 3)
+    assert(sch.node_at(3, 3).is_none())
+
+@test("a wire is cut where something ends along it, and each piece carries its share of the current")
+segment_currents()
+    val sch = parse_schematic("""
+        battery B1 0 0 0 4 5
+        wire 0 0 8 0
+        resistor R1 4 0 4 4 1k
+        resistor R2 8 0 8 4 1k
+        wire 0 4 8 4
+        ground 4 4
+        """).unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+
+    // The top wire is cut at x = 4, the bottom one at x = 4 as well.
+    assert(sch.segments.len() == 4)
+
+    val amps = sch.segment_currents(s)
+
+    // Along the top: 10 mA leaves the battery's + end, 5 mA goes on past the first resistor.
+    assert(near(amps[0], 10e-3, 1e-9))
+    assert(near(amps[1], 5e-3, 1e-9))
+    // Along the bottom, from left to right: both resistors' currents come home leftward to the battery's
+    // − end, 5 mA on the right half and all 10 mA on the left; the ground symbol carries nothing.
+    assert(near(amps[2], -10e-3, 1e-9))
+    assert(near(amps[3], -5e-3, 1e-9))
+
+@test("in a single loop, every wire carries the loop's current")
+loop_current()
+    val sch = parse_schematic(LED_SCHEMATIC).unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+
+    val amps = sch.segment_currents(s)
+    val i = s.current(sch.elements[sch.find("R1").unwrap()].part)
+
+    // One wire, from (6, 6) back to (0, 6): the LED's current coming home.
+    assert(sch.segments.len() == 1)
+    assert(near(amps[0], i, 1e-9))

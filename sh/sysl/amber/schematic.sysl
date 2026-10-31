@@ -21,26 +21,44 @@ import sysl.text.{Search, fields, split}
 // |---|---|---|
 // | `wire` | two | — |
 // | `resistor` | two | ohms |
+// | `capacitor` | two | farads |
+// | `inductor` | two | henries |
 // | `battery` | two, `+` first | volts |
-// | `current` | two; the current flows out of the second | amps |
+// | `source` | two, `+` first | a wave, below |
+// | `current` | two; the current flows out of the second | amps, or a wave |
+// | `switch` | two | `open` (the default) or `closed` |
 // | `diode` | two, anode first | — |
-// | `led` | two, anode first | `red`, `yellow`, `green` or `blue` |
+// | `led` | two, anode first | `red` (the default), `yellow`, `green` or `blue` |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
 //
-// `#` starts a comment, and a blank line is nothing.
+// A wave is one of
+//
+//     dc <value>
+//     sine <amplitude> <frequency> [<offset>]
+//     square <low> <high> <frequency> [<duty>]
+//     pulse <low> <high> <delay> <rise> <fall> <width> <period>
+//     pwl <time> <value> <time> <value> …
+//
+// and a line `speed <seconds>` says how many seconds of the circuit's time a viewer should show in each
+// second of its own. `#` starts a comment, and a blank line is nothing.
 //
 // **Points join where they meet.** Two elements whose ends are at the same point are connected, and so
 // is an end that lands anywhere along a wire, which is how a junction is drawn. Every set of joined
-// points is one node; the one holding a ground is ground, the one holding a label takes the label's
-// name, and the others are numbered.
+// points that a part or a ground touches is one node; the one holding a ground is ground, the one
+// holding a label takes the label's name, and the others are numbered. A meter only looks: its leads
+// join nothing together and make no node of their own.
 
 enum Shape: u8
     Wire
     Resistor
+    Capacitor
+    Inductor
     Battery
+    Source
     CurrentSource
+    Switch
     Diode
     Led
     Ground
@@ -70,22 +88,36 @@ enum Colour: u8
 struct Element
     shape: Shape
     name: string
-    // The value as it was written, `470` or `9V`, for showing beside the part.
+    // The value as it was written, `470` or `sine 5 1k`, for showing beside the part.
     value: string
     x1: int
     y1: int
     x2: int
     y2: int
-    // The node each end is on.
+    // The node each end is on; -1 for a meter's lead on a point no part reaches.
     a: int
     b: int
     // Which of the circuit's parts it is; -1 for anything that is not a part.
     part: int
     colour: Colour
 
+// A straight run of wire with no junction along it, between two grid points, and the element it is a
+// piece of. A wire with a junction partway along is two segments, since the two halves can carry
+// different currents.
+struct Segment
+    element: int
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
 struct Schematic
     elements: Buf[Element]
     circuit: Circuit
+    segments: Buf[Segment]
+    // Seconds of the circuit's time a viewer shows in a second of its own; 0 where the file does not
+    // say.
+    speed: real
 
     // The element called `name`, if there is one.
     find(self, name: string) -> Option[int]
@@ -94,10 +126,12 @@ struct Schematic
 
         None
 
-    // The node at grid point (`x`, `y`), if any element is joined there.
+    // The node at grid point (`x`, `y`), if a part or wire is joined there.
     node_at(self, x: int, y: int) -> Option[int]
         for i in 0..<self.elements.len()
             val e = self.elements[i]
+
+            if e.shape == Meter || e.a < 0 then continue
 
             if e.x1 == x && e.y1 == y then return Some(e.a)
 
@@ -107,11 +141,130 @@ struct Schematic
                 if e.shape == Wire && on_segment(x, y, e) then return Some(e.a)
 
         None
+
+    // The current along each segment, in the order of `segments`, from its first point to its second.
+    //
+    // **Within a node, the wires share out the current the parts on it push in and draw out.** Each
+    // node's wires form a graph on the grid points; a tree is grown over it, and each tree edge carries
+    // everything that enters the subtree beyond it. A ground symbol is a way out to the reference,
+    // which every ground in the circuit shares. A loop of wire has no single answer — any current may
+    // circulate round it — and its closing segment is given none.
+    segment_currents(self, s: Sim) -> Buf[real]
+        // The grid points that segment ends and part ends sit on, numbered; point 0 is the reference
+        // that ground symbols lead to.
+        var px: Buf[int] = buf()
+        var py: Buf[int] = buf()
+
+        px.push(0)
+        py.push(0)
+
+        val first = self.segments.len()
+        var inject: Buf[real] = buf()
+        var edge_a: Buf[int] = buf()
+        var edge_b: Buf[int] = buf()
+
+        inject.push(0.0)
+
+        for k in 0..<self.segments.len()
+            val g = self.segments[k]
+
+            edge_a.push(point_id(&px, &py, &inject, g.x1, g.y1))
+            edge_b.push(point_id(&px, &py, &inject, g.x2, g.y2))
+
+        for i in 0..<self.elements.len()
+            val e = self.elements[i]
+
+            if e.shape == Ground
+                edge_a.push(point_id(&px, &py, &inject, e.x1, e.y1))
+                edge_b.push(0)
+
+            if e.part >= 0
+                val amps = s.current(e.part)
+                val a = point_id(&px, &py, &inject, e.x1, e.y1)
+                val b = point_id(&px, &py, &inject, e.x2, e.y2)
+
+                // The part draws its current from its first end's point and pushes it into its
+                // second's.
+                inject[usize(a)] -= amps
+                inject[usize(b)] += amps
+
+        val points = px.len()
+        // The tree: each point's parent and the edge to it, and the order points were reached in.
+        var parent: Buf[int] = buf()
+        var via: Buf[int] = buf()
+        var order: Buf[int] = buf()
+
+        for _ in 0..<points
+            parent.push(-2)
+            via.push(-1)
+
+        for root in 0..<points
+            if parent[root] != -2 then continue
+
+            parent[root] = -1
+            order.push(int(root))
+
+            var head: usize = order.len() - 1
+
+            while head < order.len()
+                val p = order[head]
+
+                head += 1
+
+                for k in 0..<edge_a.len()
+                    val other = if edge_a[k] == p then edge_b[k] elif edge_b[k] == p then edge_a[k] else -1
+
+                    if other >= 0 && parent[usize(other)] == -2
+                        parent[usize(other)] = p
+                        via[usize(other)] = int(k)
+                        order.push(other)
+
+        var flow: Buf[real] = buf()
+
+        for _ in 0..<edge_a.len()
+            flow.push(0.0)
+
+        // Leaves first: each point hands its parent everything that entered below it.
+        var k = order.len()
+
+        while k > 0
+            k -= 1
+
+            val p = order[k]
+            val up = parent[usize(p)]
+
+            if up < 0 then continue
+
+            val e = via[usize(p)]
+            val amps = inject[usize(p)]
+
+            // `amps` flows from `p` to `up`; the edge is positive from its first point to its second.
+            flow[usize(e)] = if edge_a[usize(e)] == p then amps else -amps
+            inject[usize(up)] += amps
+
+        var out: Buf[real] = buf()
+
+        for k in 0..<first
+            out.push(flow[k])
+
+        out
 end Schematic
+
+// The number of the grid point (`x`, `y`), numbering it now if it is new.
+private point_id(px: *Buf[int], py: *Buf[int], inject: *Buf[real], x: int, y: int) -> int
+    for k in 1..<px.len()
+        if px[k] == x && py[k] == y then return int(k)
+
+    px.push(x)
+    py.push(y)
+    inject.push(0.0)
+    int(px.len()) - 1
 
 // Read a schematic and build its circuit. An error names the line.
 parse_schematic(text: string) -> Result[Schematic, string]
     var elements: Buf[Element] = buf()
+    var kinds: Buf[Option[Kind]] = buf()
+    var speed = 0.0
     var line_no = 0
 
     for raw in split(text, "\n")
@@ -125,19 +278,33 @@ parse_schematic(text: string) -> Result[Schematic, string]
 
         if words.len == 0 then continue
 
-        val e = element(words).map_err(why -> s"line ${line_no}: ${why}")?
+        if words[0] == "speed"
+            if words.len != 2 then return Err(s"line ${line_no}: speed takes one value, seconds a second")
+
+            speed = parse_value(words[1]).map_err(why -> s"line ${line_no}: ${why}")?
+
+            if speed <= 0.0 then return Err(s"line ${line_no}: a speed is more than zero")
+
+            continue
+
+        val (e, kind) = element(words).map_err(why -> s"line ${line_no}: ${why}")?
 
         if e.name != ""
             for k in 0..<elements.len()
                 if elements[k].name == e.name then return Err(s"line ${line_no}: '${e.name}' is already the name of another element")
 
         elements.push(e)
+        kinds.push(kind)
 
     join(&elements)
-    Ok(build(elements)?)
 
-// One line's element, its nodes not yet known.
-private element(words: []string) -> Result[Element, string]
+    var sch = build(elements, kinds)?
+
+    sch.speed = speed
+    Ok(sch)
+
+// One line's element, its nodes not yet known, and the part it is if it is one.
+private element(words: []string) -> Result[(Element, Option[Kind]), string]
     val shape = shape_named(words[0])?
     val named = shape != Wire && shape != Ground
     var at: usize = 1
@@ -166,22 +333,30 @@ private element(words: []string) -> Result[Element, string]
 
     at += count
 
-    val value = if at < words.len then words[at] else ""
+    val rest = words[at..<words.len]
     var colour = Red
 
-    if shape == Led && value != "" then colour = colour_named(value)?
+    if shape == Led && rest.len > 0 then colour = colour_named(rest[0])?
 
-    if (shape == Resistor || shape == Battery || shape == CurrentSource) && value == "" then return Err(s"a ${words[0]} needs a value")
+    val kind = if shape.is_part() then Some(part_kind(shape, words[0], rest, colour)?) else None
+    val most = shape match
+        Wire | Ground | Label | Meter | Diode -> 0
+        Source | CurrentSource -> rest.len
+        _ -> 1
 
-    if at + 1 < words.len then return Err(s"'${words[at + 1]}' is more than a ${words[0]} takes")
+    if rest.len > usize(most) then return Err(s"'${rest[usize(most)]}' is more than a ${words[0]} takes")
 
-    Ok(Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], -1, -1, -1, colour))
+    Ok((Element(shape, name, rest.join(" "), xy[0], xy[1], xy[2], xy[3], -1, -1, -1, colour), kind))
 
 private shape_named(word: string) -> Result[Shape, string] = word match
     "wire" -> Ok(Wire)
     "resistor" -> Ok(Resistor)
+    "capacitor" -> Ok(Capacitor)
+    "inductor" -> Ok(Inductor)
     "battery" -> Ok(Battery)
+    "source" -> Ok(Source)
     "current" -> Ok(CurrentSource)
+    "switch" -> Ok(Switch)
     "diode" -> Ok(Diode)
     "led" -> Ok(Led)
     "ground" -> Ok(Ground)
@@ -195,6 +370,88 @@ private colour_named(word: string) -> Result[Colour, string] = word match
     "green" -> Ok(Green)
     "blue" -> Ok(Blue)
     _ -> Err(s"'${word}' is not an LED colour: red, yellow, green or blue")
+
+// The part an element is, from the words after its points.
+private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
+    if rest.len == 0 && shape != Diode && shape != Led && shape != Switch then return Err(s"a ${kind_word} needs a value")
+
+    shape match
+        Resistor -> Ok(Resistor(positive(rest[0], "a resistance")?))
+        Capacitor -> Ok(Capacitor(positive(rest[0], "a capacitance")?))
+        Inductor -> Ok(Inductor(positive(rest[0], "an inductance")?))
+        Battery -> Ok(VoltageSource(Dc(parse_value(rest[0])?)))
+        Source -> Ok(VoltageSource(parse_wave(rest)?))
+        CurrentSource -> Ok(CurrentSource(if rest.len == 1 then Dc(parse_value(rest[0])?) else parse_wave(rest)?))
+        Switch ->
+            if rest.len == 0 then return Ok(Switch(false))
+
+            rest[0] match
+                "open" -> Ok(Switch(false))
+                "closed" -> Ok(Switch(true))
+                _ -> Err(s"'${rest[0]}' is not a switch's state: open or closed")
+        Diode -> Ok(Diode(SILICON))
+        Led -> Ok(Diode(colour.model()))
+        _ -> Err(s"a ${kind_word} is not a part")
+
+private positive(word: string, what: string) -> Result[real, string]
+    val v = parse_value(word)?
+
+    if v <= 0.0 then return Err(s"${what} is more than zero")
+
+    Ok(v)
+
+// A wave from its words: `dc 5`, `sine 5 1k`, `square 0 5 1k`, `pulse …`, `pwl …`.
+parse_wave(words: []string) -> Result[Wave, string]
+    if words.len == 0 then return Err("a wave needs a kind: dc, sine, square, pulse or pwl")
+
+    var v: Buf[real] = buf()
+
+    for k in 1..<words.len
+        v.push(parse_value(words[k])?)
+
+    val n = v.len()
+
+    words[0] match
+        "dc" ->
+            if n != 1 then return Err("dc takes a value")
+
+            Ok(Dc(v[0]))
+        "sine" ->
+            if n < 2 || n > 3 then return Err("sine takes an amplitude, a frequency and perhaps an offset")
+
+            if v[1] <= 0.0 then return Err("a frequency is more than zero")
+
+            Ok(Sine(if n == 3 then v[2] else 0.0, v[0], v[1], 0.0))
+        "square" ->
+            if n < 3 || n > 4 then return Err("square takes a low, a high, a frequency and perhaps a duty")
+
+            if v[2] <= 0.0 then return Err("a frequency is more than zero")
+
+            val duty = if n == 4 then v[3] else 0.5
+
+            if duty <= 0.0 || duty >= 1.0 then return Err("a duty is between 0 and 1")
+
+            Ok(square(v[0], v[1], v[2], duty))
+        "pulse" ->
+            if n != 7 then return Err("pulse takes low, high, delay, rise, fall, width and period")
+
+            if v[3] <= 0.0 || v[4] <= 0.0 then return Err("a pulse's rise and fall take some time")
+
+            if v[6] < v[3] + v[4] + v[5] then return Err("a pulse's period holds its rise, width and fall")
+
+            Ok(Pulse(v[0], v[1], v[2], v[3], v[4], v[5], v[6]))
+        "pwl" ->
+            if n == 0 || n % 2 != 0 then return Err("pwl takes pairs of a time and a value")
+
+            var points: Buf[(real, real)] = buf()
+
+            for k in 0..<n / 2
+                if k > 0 && v[2 * k] < v[2 * k - 2] then return Err("pwl's times run forward")
+
+                points.push((v[2 * k], v[2 * k + 1]))
+
+            Ok(Pwl(points))
+        _ -> Err(s"'${words[0]}' is not a kind of wave: dc, sine, square, pulse or pwl")
 
 private parse_coordinate(word: string) -> Result[int, string]
     val b = word.bytes
@@ -230,7 +487,8 @@ private min_of(a: int, b: int) -> int = if a < b then a else b
 private max_of(a: int, b: int) -> int = if a < b then b else a
 
 // Number every end by the set of joined points it belongs to: `a` and `b` are set to a net number,
-// the same for ends that are joined. Nets are found by union–find over the ends, two per element.
+// the same for ends that are joined. Nets are found by union–find over the ends, two per element. A
+// meter's leads take the net of whatever they touch and join nothing to anything.
 private join(elements: *Buf[Element])
     val n = elements.len()
     var parent: Buf[int] = buf()
@@ -247,15 +505,16 @@ private join(elements: *Buf[Element])
         for j in 0..<n
             val f = elements[j]
 
-            for end in 0..<2
-                val (x, y) = if end == 0 then (f.x1, f.y1) else (f.x2, f.y2)
-                val k = int(2 * j) + end
+            if !(e.shape == Meter && f.shape == Meter)
+                for end in 0..<2
+                    val (x, y) = if end == 0 then (f.x1, f.y1) else (f.x2, f.y2)
+                    val k = int(2 * j) + end
 
-                if e.x1 == x && e.y1 == y then unite(&parent, int(2 * i), k)
+                    if e.x1 == x && e.y1 == y then unite(&parent, int(2 * i), k)
 
-                if e.shape.points() == 2 && e.x2 == x && e.y2 == y then unite(&parent, int(2 * i + 1), k)
+                    if e.shape.points() == 2 && e.x2 == x && e.y2 == y then unite(&parent, int(2 * i + 1), k)
 
-                if e.shape == Wire && on_segment(x, y, e) then unite(&parent, int(2 * i), k)
+                    if e.shape == Wire && on_segment(x, y, e) then unite(&parent, int(2 * i), k)
 
     for i in 0..<n
         elements[i].a = root(&parent, int(2 * i))
@@ -275,15 +534,26 @@ private unite(parent: *Buf[int], a: int, b: int)
 
     if ra != rb then parent[usize(ra)] = rb
 
-// Turn net numbers into the circuit's nodes, and every part into a part of the circuit.
-private build(given: Buf[Element]) -> Result[Schematic, string]
+// Turn net numbers into the circuit's nodes, every part into a part of the circuit, and the wires into
+// segments.
+private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic, string]
     var elements = given
     var c = circuit()
     // The node each net became, by net number; -1 until it has one.
     var node_of: Buf[int] = buf()
+    // Whether a part's end or a ground is on the net, which is what makes it a node.
+    var live: Buf[bool] = buf()
 
     for _ in 0..<2 * elements.len()
         node_of.push(-1)
+        live.push(false)
+
+    for i in 0..<elements.len()
+        val e = elements[i]
+
+        if e.shape.is_part() || e.shape == Ground
+            live[usize(e.a)] = true
+            live[usize(e.b)] = true
 
     // Grounds first, then labels, so a node's name is the one it was given wherever the label is.
     for i in 0..<elements.len()
@@ -293,6 +563,8 @@ private build(given: Buf[Element]) -> Result[Schematic, string]
         val e = elements[i]
 
         if e.shape == Label
+            if !live[usize(e.a)] then return Err(s"label '${e.name}' is on nothing")
+
             if node_of[usize(e.a)] == 0 then return Err(s"label '${e.name}' is on ground")
 
             if node_of[usize(e.a)] > 0 then return Err(s"label '${e.name}' is on a node already called '${c.nodes[usize(node_of[usize(e.a)])]}'")
@@ -305,7 +577,7 @@ private build(given: Buf[Element]) -> Result[Schematic, string]
         for end in 0..<2
             val net = if end == 0 then elements[i].a else elements[i].b
 
-            if node_of[usize(net)] < 0
+            if live[usize(net)] && node_of[usize(net)] < 0
                 unnamed += 1
 
                 var name = s"n${unnamed}"
@@ -320,26 +592,68 @@ private build(given: Buf[Element]) -> Result[Schematic, string]
         elements[i].a = node_of[usize(elements[i].a)]
         elements[i].b = node_of[usize(elements[i].b)]
 
-        val e = elements[i]
+        if kinds[i] is Some(kind)
+            elements[i].part = int(c.parts.len())
+            c.add(elements[i].name, kind, elements[i].a, elements[i].b)
 
-        if !e.shape.is_part() then continue
+    Ok(Schematic(elements, c, segments_of(elements), 0.0))
 
-        val kind = part_kind(e).map_err(why -> s"${e.name}: ${why}")?
+// Every wire cut at the points along it where something else ends.
+private segments_of(elements: Buf[Element]) -> Buf[Segment]
+    var out: Buf[Segment] = buf()
 
-        elements[i].part = int(c.parts.len())
-        c.add(e.name, kind, e.a, e.b)
+    for i in 0..<elements.len()
+        val w = elements[i]
 
-    Ok(Schematic(elements, c))
+        if w.shape != Wire then continue
 
-private part_kind(e: Element) -> Result[Kind, string] = e.shape match
-    Resistor ->
-        val ohms = parse_value(e.value)?
+        // Distances along the wire, in grid steps from its first end, where it is cut.
+        val steps = max_of((w.x2 - w.x1).abs(), (w.y2 - w.y1).abs())
+        var cuts: Buf[int] = buf()
 
-        if ohms <= 0.0 then return Err("a resistance is more than zero")
+        cuts.push(0)
 
-        Ok(Resistor(ohms))
-    Battery -> Ok(VoltageSource(Dc(parse_value(e.value)?)))
-    CurrentSource -> Ok(CurrentSource(Dc(parse_value(e.value)?)))
-    Diode -> Ok(Diode(SILICON))
-    Led -> Ok(Diode(e.colour.model()))
-    _ -> Err("is not a part")
+        for j in 0..<elements.len()
+            val f = elements[j]
+
+            if j == i || f.shape == Meter then continue
+
+            for end in 0..<f.shape.points()
+                val (x, y) = if end == 0 then (f.x1, f.y1) else (f.x2, f.y2)
+
+                if on_segment(x, y, w)
+                    val d = max_of((x - w.x1).abs(), (y - w.y1).abs())
+
+                    if d > 0 && d < steps && !has(&cuts, d) then cuts.push(d)
+
+        cuts.push(steps)
+        sort(&cuts)
+
+        for k in 1..<cuts.len()
+            val (ax, ay) = along(w, cuts[k - 1], steps)
+            val (bx, by) = along(w, cuts[k], steps)
+
+            out.push(Segment(int(i), ax, ay, bx, by))
+
+    out
+
+// The grid point `d` of `steps` along wire `w`. A diagonal wire's points between grid points round.
+private along(w: Element, d: int, steps: int) -> (int, int) =
+    (w.x1 + (w.x2 - w.x1) * d / steps, w.y1 + (w.y2 - w.y1) * d / steps)
+
+private has(b: *Buf[int], v: int) -> bool
+    for k in 0..<b.len()
+        if b[k] == v then return true
+
+    false
+
+private sort(b: *Buf[int])
+    for i in 1..<b.len()
+        var j = i
+
+        while j > 0 && b[j - 1] > b[j]
+            val t = b[j]
+
+            b[j] = b[j - 1]
+            b[j - 1] = t
+            j -= 1

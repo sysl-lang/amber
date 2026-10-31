@@ -12,7 +12,7 @@ import sysl.buf.{Buf, buf}
 // `is` is the saturation current, `n` the emission coefficient and `rs` the series resistance. The
 // current through the junction at a voltage `v` across it is `is · (exp(v / (n · Vt)) − 1)`, where
 // `Vt` is the thermal voltage, about 25.85 mV at room temperature.
-struct DiodeModel
+struct DiodeModel derives Eq
     is: real
     n: real
     rs: real
@@ -28,7 +28,7 @@ val YELLOW_LED = DiodeModel(2e-19, 2.0, 2.0)
 val BLUE_LED = DiodeModel(1e-28, 2.0, 2.0)
 
 // What a part is, with the values that say how it behaves.
-enum Kind
+enum Kind derives Eq
     // A resistor of `ohms`.
     Resistor(ohms: real)
     // A capacitor of `farads`: the current through it is C · dv/dt, so it passes no current once it is

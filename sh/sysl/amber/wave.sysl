@@ -9,7 +9,7 @@ import sysl.math.tau
 // points are moments where the value stops changing smoothly, and a step that straddles one smears it;
 // `next_corner` names the first one after a time, and the solver lands a step exactly on it. A sine has
 // no corners but curves everywhere, so it asks for steps no longer than a twentieth of its period.
-enum Wave
+enum Wave derives Eq
     // A constant.
     Dc(value: real)
     // `offset + amplitude · sin(2π · frequency · (t − delay))`, holding `offset` until `delay`.
