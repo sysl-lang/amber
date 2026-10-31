@@ -1,0 +1,345 @@
+module sh.sysl.amber
+
+import sysl.buf.{Buf, buf}
+import sysl.text.{Search, fields, split}
+
+// A schematic: parts placed on a grid, joined by wires, which says both how the circuit looks and how
+// it is connected.
+//
+// **A file is one element per line**, a kind, then a name for the ones that have one, then the grid
+// points the element runs between, then its value:
+//
+//     # A battery, a resistor and an LED.
+//     battery  B1  0 0  0 6  9V
+//     resistor R1  0 0  6 0  470
+//     led      D1  6 0  6 6  red
+//     wire         6 6  0 6
+//     ground       0 6
+//     meter    M1  6 0  6 6
+//
+// | kind | points | value |
+// |---|---|---|
+// | `wire` | two | — |
+// | `resistor` | two | ohms |
+// | `battery` | two, `+` first | volts |
+// | `current` | two; the current flows out of the second | amps |
+// | `diode` | two, anode first | — |
+// | `led` | two, anode first | `red`, `yellow`, `green` or `blue` |
+// | `ground` | one | — |
+// | `label` | one: names the node it is on | — |
+// | `meter` | two: a voltmeter, red lead first | — |
+//
+// `#` starts a comment, and a blank line is nothing.
+//
+// **Points join where they meet.** Two elements whose ends are at the same point are connected, and so
+// is an end that lands anywhere along a wire, which is how a junction is drawn. Every set of joined
+// points is one node; the one holding a ground is ground, the one holding a label takes the label's
+// name, and the others are numbered.
+
+enum Shape: u8
+    Wire
+    Resistor
+    Battery
+    CurrentSource
+    Diode
+    Led
+    Ground
+    Label
+    Meter
+
+    // The number of grid points it is placed by.
+    points(self) -> int = if self == Ground || self == Label then 1 else 2
+
+    // Whether it is a part of the circuit, rather than a wire, a marker or an instrument.
+    is_part(self) -> bool = self != Wire && self != Ground && self != Label && self != Meter
+
+// The colour an LED shines, which is also which model it is.
+enum Colour: u8
+    Red
+    Yellow
+    Green
+    Blue
+
+    model(self) -> DiodeModel = self match
+        Red -> RED_LED
+        Yellow -> YELLOW_LED
+        Green -> GREEN_LED
+        Blue -> BLUE_LED
+
+// One element as it was placed.
+struct Element
+    shape: Shape
+    name: string
+    // The value as it was written, `470` or `9V`, for showing beside the part.
+    value: string
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    // The node each end is on.
+    a: int
+    b: int
+    // Which of the circuit's parts it is; -1 for anything that is not a part.
+    part: int
+    colour: Colour
+
+struct Schematic
+    elements: Buf[Element]
+    circuit: Circuit
+
+    // The element called `name`, if there is one.
+    find(self, name: string) -> Option[int]
+        for i in 0..<self.elements.len()
+            if self.elements[i].name == name then return Some(int(i))
+
+        None
+
+    // The node at grid point (`x`, `y`), if any element is joined there.
+    node_at(self, x: int, y: int) -> Option[int]
+        for i in 0..<self.elements.len()
+            val e = self.elements[i]
+
+            if e.x1 == x && e.y1 == y then return Some(e.a)
+
+            if e.shape.points() == 2
+                if e.x2 == x && e.y2 == y then return Some(e.b)
+
+                if e.shape == Wire && on_segment(x, y, e) then return Some(e.a)
+
+        None
+end Schematic
+
+// Read a schematic and build its circuit. An error names the line.
+parse_schematic(text: string) -> Result[Schematic, string]
+    var elements: Buf[Element] = buf()
+    var line_no = 0
+
+    for raw in split(text, "\n")
+        line_no += 1
+
+        val hash = raw.index_of_byte('#')
+        val line = hash match
+            Some(at) -> raw[0..<at]
+            None -> raw
+        val words = fields(line)
+
+        if words.len == 0 then continue
+
+        val e = element(words).map_err(why -> s"line ${line_no}: ${why}")?
+
+        if e.name != ""
+            for k in 0..<elements.len()
+                if elements[k].name == e.name then return Err(s"line ${line_no}: '${e.name}' is already the name of another element")
+
+        elements.push(e)
+
+    join(&elements)
+    Ok(build(elements)?)
+
+// One line's element, its nodes not yet known.
+private element(words: []string) -> Result[Element, string]
+    val shape = shape_named(words[0])?
+    val named = shape != Wire && shape != Ground
+    var at: usize = 1
+    var name = ""
+
+    if named
+        if words.len < 2 then return Err(s"a ${words[0]} needs a name")
+
+        name = words[1]
+        at = 2
+
+    val count = usize(shape.points() * 2)
+
+    if words.len < at + count then return Err(s"a ${words[0]} is placed by ${shape.points()} point${if count == 2 then "" else "s"}")
+
+    var xy: [4]int = [0, 0, 0, 0]
+
+    for k in 0..<count
+        xy[k] = parse_coordinate(words[at + k])?
+
+    if shape.points() == 1
+        xy[2] = xy[0]
+        xy[3] = xy[1]
+    elif xy[0] == xy[2] && xy[1] == xy[3]
+        return Err(s"a ${words[0]} needs two different points")
+
+    at += count
+
+    val value = if at < words.len then words[at] else ""
+    var colour = Red
+
+    if shape == Led && value != "" then colour = colour_named(value)?
+
+    if (shape == Resistor || shape == Battery || shape == CurrentSource) && value == "" then return Err(s"a ${words[0]} needs a value")
+
+    if at + 1 < words.len then return Err(s"'${words[at + 1]}' is more than a ${words[0]} takes")
+
+    Ok(Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], -1, -1, -1, colour))
+
+private shape_named(word: string) -> Result[Shape, string] = word match
+    "wire" -> Ok(Wire)
+    "resistor" -> Ok(Resistor)
+    "battery" -> Ok(Battery)
+    "current" -> Ok(CurrentSource)
+    "diode" -> Ok(Diode)
+    "led" -> Ok(Led)
+    "ground" -> Ok(Ground)
+    "label" -> Ok(Label)
+    "meter" -> Ok(Meter)
+    _ -> Err(s"'${word}' is not a kind of element")
+
+private colour_named(word: string) -> Result[Colour, string] = word match
+    "red" -> Ok(Red)
+    "yellow" -> Ok(Yellow)
+    "green" -> Ok(Green)
+    "blue" -> Ok(Blue)
+    _ -> Err(s"'${word}' is not an LED colour: red, yellow, green or blue")
+
+private parse_coordinate(word: string) -> Result[int, string]
+    val b = word.bytes
+    var i: usize = 0
+    var negative = false
+
+    if b.len > 0 && b[0] == u8('-')
+        negative = true
+        i = 1
+
+    if i == b.len then return Err(s"'${word}' is not a grid coordinate")
+
+    var n = 0
+
+    while i < b.len
+        if b[i] < u8('0') || b[i] > u8('9') then return Err(s"'${word}' is not a grid coordinate")
+
+        n = n * 10 + int(b[i] - u8('0'))
+        i += 1
+
+    Ok(if negative then -n else n)
+
+// Whether (`x`, `y`) lies on wire `w`, ends included.
+private on_segment(x: int, y: int, w: Element) -> bool
+    val cross = (w.x2 - w.x1) * (y - w.y1) - (w.y2 - w.y1) * (x - w.x1)
+
+    if cross != 0 then return false
+
+    x >= min_of(w.x1, w.x2) && x <= max_of(w.x1, w.x2) && y >= min_of(w.y1, w.y2) && y <= max_of(w.y1, w.y2)
+
+private min_of(a: int, b: int) -> int = if a < b then a else b
+
+private max_of(a: int, b: int) -> int = if a < b then b else a
+
+// Number every end by the set of joined points it belongs to: `a` and `b` are set to a net number,
+// the same for ends that are joined. Nets are found by union–find over the ends, two per element.
+private join(elements: *Buf[Element])
+    val n = elements.len()
+    var parent: Buf[int] = buf()
+
+    for k in 0..<2 * n
+        parent.push(int(k))
+
+    for i in 0..<n
+        val e = elements[i]
+
+        // A wire's two ends are one net; a part's are two.
+        if e.shape == Wire then unite(&parent, int(2 * i), int(2 * i + 1))
+
+        for j in 0..<n
+            val f = elements[j]
+
+            for end in 0..<2
+                val (x, y) = if end == 0 then (f.x1, f.y1) else (f.x2, f.y2)
+                val k = int(2 * j) + end
+
+                if e.x1 == x && e.y1 == y then unite(&parent, int(2 * i), k)
+
+                if e.shape.points() == 2 && e.x2 == x && e.y2 == y then unite(&parent, int(2 * i + 1), k)
+
+                if e.shape == Wire && on_segment(x, y, e) then unite(&parent, int(2 * i), k)
+
+    for i in 0..<n
+        elements[i].a = root(&parent, int(2 * i))
+        elements[i].b = if elements[i].shape.points() == 2 then root(&parent, int(2 * i + 1)) else elements[i].a
+
+private root(parent: *Buf[int], k: int) -> int
+    var r = k
+
+    while parent[usize(r)] != r
+        r = parent[usize(r)]
+
+    r
+
+private unite(parent: *Buf[int], a: int, b: int)
+    val ra = root(parent, a)
+    val rb = root(parent, b)
+
+    if ra != rb then parent[usize(ra)] = rb
+
+// Turn net numbers into the circuit's nodes, and every part into a part of the circuit.
+private build(given: Buf[Element]) -> Result[Schematic, string]
+    var elements = given
+    var c = circuit()
+    // The node each net became, by net number; -1 until it has one.
+    var node_of: Buf[int] = buf()
+
+    for _ in 0..<2 * elements.len()
+        node_of.push(-1)
+
+    // Grounds first, then labels, so a node's name is the one it was given wherever the label is.
+    for i in 0..<elements.len()
+        if elements[i].shape == Ground then node_of[usize(elements[i].a)] = 0
+
+    for i in 0..<elements.len()
+        val e = elements[i]
+
+        if e.shape == Label
+            if node_of[usize(e.a)] == 0 then return Err(s"label '${e.name}' is on ground")
+
+            if node_of[usize(e.a)] > 0 then return Err(s"label '${e.name}' is on a node already called '${c.nodes[usize(node_of[usize(e.a)])]}'")
+
+            node_of[usize(e.a)] = c.node(e.name)
+
+    var unnamed = 0
+
+    for i in 0..<elements.len()
+        for end in 0..<2
+            val net = if end == 0 then elements[i].a else elements[i].b
+
+            if node_of[usize(net)] < 0
+                unnamed += 1
+
+                var name = s"n${unnamed}"
+
+                while c.find_node(name).is_some()
+                    unnamed += 1
+                    name = s"n${unnamed}"
+
+                node_of[usize(net)] = c.node(name)
+
+    for i in 0..<elements.len()
+        elements[i].a = node_of[usize(elements[i].a)]
+        elements[i].b = node_of[usize(elements[i].b)]
+
+        val e = elements[i]
+
+        if !e.shape.is_part() then continue
+
+        val kind = part_kind(e).map_err(why -> s"${e.name}: ${why}")?
+
+        elements[i].part = int(c.parts.len())
+        c.add(e.name, kind, e.a, e.b)
+
+    Ok(Schematic(elements, c))
+
+private part_kind(e: Element) -> Result[Kind, string] = e.shape match
+    Resistor ->
+        val ohms = parse_value(e.value)?
+
+        if ohms <= 0.0 then return Err("a resistance is more than zero")
+
+        Ok(Resistor(ohms))
+    Battery -> Ok(VoltageSource(parse_value(e.value)?))
+    CurrentSource -> Ok(CurrentSource(parse_value(e.value)?))
+    Diode -> Ok(Diode(SILICON))
+    Led -> Ok(Diode(e.colour.model()))
+    _ -> Err("is not a part")

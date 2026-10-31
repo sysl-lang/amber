@@ -1,0 +1,9 @@
+github.com/sysl-lang/kairos v0.1.13 sha256:66a0c501613928e3927b73fd543122f93bb00e158781ba8f614a6eef281e74f2
+github.com/sysl-lang/libuv v0.1.17 sha256:f617f65ad73a9599f4f585261f85faeace2c9efe9f163014d63615a432644116
+github.com/sysl-lang/parsing v0.13.2 sha256:05d41aa60754f7324c73b32a5cc1a546e71cea8120d15080385e8883e04cbce8
+github.com/sysl-lang/plutovg v0.2.6 sha256:daef22f6d3f1cf301052abc013ffa5634f2b9b3601dd5001a82ef25be4a584e2
+github.com/sysl-lang/sdl3 v0.3.17 sha256:59b31ea82c42715be62dad67ee2156bf8a875aadc61c90ab2413be47bda052d5
+github.com/sysl-lang/skitter v0.3.5 sha256:f388fefb6d53ff4c609b3bdd3e12466dc7bc7bfc89cd892bbf791d80fa121ab0
+github.com/sysl-lang/syslui v0.1.14 sha256:954c2235014866660caaadc402ec62d639759d5e81837f1af36f8c30a01c0fcf
+github.com/sysl-lang/syslui-sdl v0.2.14 sha256:df679e37cace2178088c1d757eaddb43052a7d6087d551769473b81af5be2d92
+github.com/sysl-lang/toml v0.1.4 sha256:459fd45c4d0a721e67b2ecca417732f1a726bf38705d331e8d452fe4370a3683

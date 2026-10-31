@@ -1,0 +1,25 @@
+// The amber viewer: a schematic drawn in a window, with the voltage at every wire and a meter across
+// whatever two points are probed.
+//
+//     sysl run app -- examples/led.amber
+//     sysl run app -- examples/led.amber --shot led.png
+package {
+  name    = "amber-app"
+  version = "0.1.0"
+  sysl    = "0.8.9"
+}
+
+optimization = "2"
+
+// **`os` and `heap`** for reading the schematic and the screenshot; **`posix`** because SDL opens a
+// window and talks to a window server.
+requires {
+  os    = true
+  posix = true
+  heap  = true
+}
+
+dependencies {
+  amber      { workspace = true }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.14" }
+}

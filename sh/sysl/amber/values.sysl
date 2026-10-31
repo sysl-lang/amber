@@ -1,0 +1,101 @@
+module sh.sysl.amber
+
+import sysl.text.parse_real
+
+// A number as SPICE writes one: a decimal with an optional scale suffix, and any letters after the
+// suffix ignored, so `4.7k`, `4700`, `10uF`, `1meg` and `5V` all read.
+//
+// The suffixes are SPICE's, case-insensitive: `t` 1e12, `g` 1e9, `meg` 1e6, `k` 1e3, `m` 1e-3,
+// `u` 1e-6, `n` 1e-9, `p` 1e-12, `f` 1e-15. **`m` is milli and `meg` is mega**, which is the one
+// every newcomer trips on: `1M` is a thousandth of an ohm.
+parse_value(s: string) -> Result[real, string]
+    val b = s.bytes
+    var i: usize = 0
+
+    if i < b.len && (b[i] == u8('+') || b[i] == u8('-')) then i += 1
+
+    while i < b.len && (is_digit(b[i]) || b[i] == u8('.'))
+        i += 1
+
+    if i < b.len && (b[i] == u8('e') || b[i] == u8('E')) && i + 1 < b.len && (is_digit(b[i + 1]) || ((b[i + 1] == u8('+') || b[i + 1] == u8('-')) && i + 2 < b.len && is_digit(b[i + 2])))
+        i += 2
+
+        while i < b.len && is_digit(b[i])
+            i += 1
+
+    if i == 0 then return Err(s"'${s}' is not a number")
+
+    val number = parse_real(s[0..<i]).map_err(e -> s"'${s}' is not a number")?
+    val rest = s[i..<s.len]
+
+    Ok(number * scale_of(rest))
+
+// The factor a suffix scales by; 1 for no suffix or a bare unit.
+private scale_of(rest: string) -> real
+    if rest.len == 0 then return 1.0
+
+    val c = lower(rest.bytes[0])
+
+    if c == u8('m')
+        if rest.len >= 3 && lower(rest.bytes[1]) == u8('e') && lower(rest.bytes[2]) == u8('g') then return 1e6
+
+        return 1e-3
+
+    c match
+        't' -> 1e12
+        'g' -> 1e9
+        'k' -> 1e3
+        'u' -> 1e-6
+        'n' -> 1e-9
+        'p' -> 1e-12
+        'f' -> 1e-15
+        _ -> 1.0
+
+private is_digit(c: u8) -> bool = c >= u8('0') && c <= u8('9')
+
+private lower(c: u8) -> u8 = if c >= u8('A') && c <= u8('Z') then c + 32 else c
+
+// A value written back the way an engineer would: three significant figures and a suffix, `4.7k`,
+// `220`, `10u`, `1.5m`. Zero is `0`.
+engineering(v: real) -> string
+    if v == 0.0 then return "0"
+
+    val a = v.abs()
+    var scale = 1e9
+
+    for suffix in ["G", "M", "k", "", "m", "µ", "n", "p"]
+        // Rounding to three figures can carry a value up to the next suffix: 999.7 is `1k`, not `1000`.
+        if a * 1.0005 >= scale then return s"${three_figures(v / scale)}${suffix}"
+
+        scale /= 1000.0
+
+    s"${three_figures(v / 1e-15)}f"
+
+// `x`, 1 ≤ |x| < 1000, to three significant figures with trailing zeros dropped.
+private three_figures(x: real) -> string
+    val a = x.abs()
+    val places = if a >= 100.0 then 0 elif a >= 10.0 then 1 else 2
+    var scale = 1.0
+
+    for _ in 0..<places
+        scale *= 10.0
+
+    val n = i64((a * scale).round())
+    val whole = n / i64(scale)
+    var frac = n % i64(scale)
+    var digits = places
+
+    while digits > 0 && frac % 10 == 0
+        frac /= 10
+        digits -= 1
+
+    val sign = if x < 0.0 then "-" else ""
+
+    if digits == 0 then return s"${sign}${whole}"
+
+    var tail = s"${frac}"
+
+    while tail.len < usize(digits)
+        tail = s"0${tail}"
+
+    s"${sign}${whole}.${tail}"

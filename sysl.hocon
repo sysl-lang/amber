@@ -1,0 +1,20 @@
+// amber — an analog circuit simulator: a circuit built from a SPICE-style netlist or a schematic,
+// solved by modified nodal analysis with Newton–Raphson for the parts that are not linear.
+//
+//     dependencies {
+//       amber { git = "github.com/sysl-lang/amber", version = "0.1.0" }
+//     }
+//
+// The library is `sh.sysl.amber` and needs nothing but an allocator. The viewer, which draws a
+// schematic and the voltages on it, is the workspace member in `app/`, so a program taking the
+// library does not take SDL with it.
+package { name = "amber", version = "0.1.0", sysl = "0.8.9" }
+
+optimization = "2"
+
+workspace = ["app"]
+
+// `heap` for the circuit's parts and the solver's matrix.
+requires {
+  heap = true
+}

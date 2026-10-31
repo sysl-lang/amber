@@ -1,0 +1,6 @@
+*.syslib
+*.o
+*.a
+.sysl/
+scratch/
+bench/bench

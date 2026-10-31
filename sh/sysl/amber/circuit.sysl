@@ -1,0 +1,98 @@
+module sh.sysl.amber
+
+import sysl.buf.{Buf, buf}
+
+// A circuit: named nodes and the parts between them.
+//
+// **Node 0 is ground**, the reference every voltage is measured against, and it is always there. Every
+// other node is numbered in the order it is first named. A part names its terminals by node number.
+
+// The constants a diode's equation is written in.
+//
+// `is` is the saturation current, `n` the emission coefficient and `rs` the series resistance. The
+// current through the junction at a voltage `v` across it is `is · (exp(v / (n · Vt)) − 1)`, where
+// `Vt` is the thermal voltage, about 25.85 mV at room temperature.
+struct DiodeModel
+    is: real
+    n: real
+    rs: real
+
+// A silicon signal diode, the 1N4148's figures: about 0.6 V forward at a milliamp.
+val SILICON = DiodeModel(2.52e-9, 1.752, 0.568)
+
+// A red LED: about 1.8 V forward at 10 mA. The other colours are the same equation with a higher
+// knee, since a shorter wavelength is a wider band gap.
+val RED_LED = DiodeModel(1e-17, 2.0, 2.0)
+val GREEN_LED = DiodeModel(3.5e-20, 2.0, 2.0)
+val YELLOW_LED = DiodeModel(2e-19, 2.0, 2.0)
+val BLUE_LED = DiodeModel(1e-28, 2.0, 2.0)
+
+// What a part is, with the values that say how it behaves.
+enum Kind
+    // A resistor of `ohms`.
+    Resistor(ohms: real)
+    // An ideal voltage source: the second terminal is `volts` below the first, whatever is drawn
+    // from it. A battery is one.
+    VoltageSource(volts: real)
+    // An ideal current source: `amps` flows through it from its first terminal to its second, so out of
+    // the second into the circuit, as SPICE has it.
+    CurrentSource(amps: real)
+    // A junction diode, conducting from its first terminal (the anode) to its second (the cathode).
+    Diode(model: DiodeModel)
+
+// One part: its name, what it is, and the nodes its two terminals are on.
+struct Part
+    name: string
+    kind: Kind
+    a: int
+    b: int
+
+struct Circuit
+    // Node names by number; `nodes[0]` is ground, `"0"`.
+    nodes: Buf[string]
+    parts: Buf[Part]
+
+    // The node called `name`, numbered now if it has not been seen. `0`, `gnd` and `GND` are ground.
+    node(*self, name: string) -> int
+        if name == "0" || name == "gnd" || name == "GND" then return 0
+
+        for i in 0..<self.nodes.len()
+            if self.nodes[i] == name then return int(i)
+
+        self.nodes.push(name)
+        int(self.nodes.len()) - 1
+
+    // The number of the node called `name`, if there is one.
+    find_node(self, name: string) -> Option[int]
+        if name == "0" || name == "gnd" || name == "GND" then return Some(0)
+
+        for i in 0..<self.nodes.len()
+            if self.nodes[i] == name then return Some(int(i))
+
+        None
+
+    // The part called `name`, if there is one.
+    find_part(self, name: string) -> Option[int]
+        for i in 0..<self.parts.len()
+            if self.parts[i].name == name then return Some(int(i))
+
+        None
+
+    add(*self, name: string, kind: Kind, a: int, b: int) = self.parts.push(Part(name, kind, a, b))
+
+    // Add a part between two nodes named rather than numbered.
+    connect(*self, name: string, kind: Kind, a: string, b: string)
+        val na = self.node(a)
+        val nb = self.node(b)
+
+        self.add(name, kind, na, nb)
+
+    node_count(self) -> int = int(self.nodes.len())
+end Circuit
+
+// An empty circuit, holding only ground.
+circuit() -> Circuit
+    var nodes: Buf[string] = buf()
+
+    nodes.push("0")
+    Circuit(nodes, buf())

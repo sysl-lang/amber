@@ -1,0 +1,228 @@
+module sh.sysl.amber
+@tests
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// --- Values -----------------------------------------------------------------------------------------
+
+@test("a value reads with SPICE's scale suffixes, and a unit after them is ignored")
+values_with_suffixes()
+    assert(parse_value("4.7k").unwrap() == 4700.0)
+    assert(near(parse_value("10uF").unwrap(), 10e-6, 1e-20))
+    assert(parse_value("1meg").unwrap() == 1e6)
+    assert(parse_value("1M").unwrap() == 1e-3)
+    assert(parse_value("5V").unwrap() == 5.0)
+    assert(parse_value("-2.5e-3").unwrap() == -2.5e-3)
+    assert(near(parse_value("100p").unwrap(), 100e-12, 1e-25))
+
+@test("a value that is not a number is refused, naming it")
+values_refused()
+    assert(parse_value("k").unwrap_err() == "'k' is not a number")
+    assert(parse_value("").is_err())
+
+@test("a value is written back in engineering form")
+values_written()
+    assert(engineering(4700.0) == "4.7k")
+    assert(engineering(220.0) == "220")
+    assert(engineering(0.0015) == "1.5m")
+    assert(engineering(-3.3) == "-3.3")
+    assert(engineering(0.0) == "0")
+    assert(engineering(1e-5) == "10µ")
+
+// --- Linear circuits --------------------------------------------------------------------------------
+
+@test("a divider halves its battery")
+divider()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(9.0), "top", "0")
+    c.connect("R1", Resistor(1000.0), "top", "mid")
+    c.connect("R2", Resistor(1000.0), "mid", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(near(s.voltage_at("mid"), 4.5, 1e-9))
+    assert(near(s.across(1), 4.5, 1e-9))
+    assert(near(s.current(1), 4.5e-3, 1e-12))
+    // The battery delivers the current, so it flows out of its `+` terminal.
+    assert(near(s.current(0), -4.5e-3, 1e-12))
+    assert(near(s.power(0), -9.0 * 4.5e-3, 1e-12))
+
+@test("a current source drives its current through a resistor")
+current_source()
+    var c = circuit()
+
+    c.connect("I1", CurrentSource(1e-3), "0", "n")
+    c.connect("R1", Resistor(2000.0), "n", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(near(s.voltage_at("n"), 2.0, 1e-9))
+
+@test("a node nothing fixes is refused as singular")
+floating_node()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(5.0), "a", "0")
+    c.connect("I1", CurrentSource(1e-3), "b", "c")
+
+    var s = sim(c)
+
+    assert(s.operating_point().is_err())
+
+// --- Diodes -----------------------------------------------------------------------------------------
+
+// A battery, a resistor and a red LED, the first circuit anyone builds. The drops around the loop add
+// up to the battery, and the current is the resistor's drop over its resistance.
+@test("a battery, a resistor and an LED: the drops add up to the battery")
+battery_resistor_led()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(9.0), "plus", "0")
+    c.connect("R1", Resistor(470.0), "plus", "anode")
+    c.connect("D1", Diode(RED_LED), "anode", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+
+    val led = s.across(2)
+    val resistor = s.across(1)
+    val i = s.current(1)
+
+    assert(led > 1.6 && led < 2.1)
+    assert(near(led + resistor, 9.0, 1e-9))
+    assert(near(i, resistor / 470.0, 1e-15))
+    // The LED carries the resistor's current: Kirchhoff's current law at the node between them.
+    assert(near(s.current(2), i, 1e-6 * i))
+    assert(i > 14e-3 && i < 16e-3)
+
+@test("a red LED drops about 1.8 V at 10 mA")
+red_led_knee()
+    var c = circuit()
+
+    c.connect("I1", CurrentSource(10e-3), "0", "a")
+    c.connect("D1", Diode(RED_LED), "a", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(near(s.voltage_at("a"), 1.8, 0.1))
+
+@test("a silicon diode drops about 0.6 V at a milliamp")
+silicon_knee()
+    var c = circuit()
+
+    c.connect("I1", CurrentSource(1e-3), "0", "a")
+    c.connect("D1", Diode(SILICON), "a", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(near(s.voltage_at("a"), 0.62, 0.05))
+
+@test("a reversed LED blocks: the whole battery is across it and almost no current flows")
+reversed_led()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(9.0), "plus", "0")
+    c.connect("R1", Resistor(470.0), "plus", "k")
+    c.connect("D1", Diode(RED_LED), "0", "k")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(near(s.across(2), -9.0, 1e-6))
+    assert(s.current(1).abs() < 1e-9)
+
+@test("the bluer an LED, the higher its knee")
+led_colours()
+    var drops: [4]real = [0.0, 0.0, 0.0, 0.0]
+    val models = [RED_LED, YELLOW_LED, GREEN_LED, BLUE_LED]
+
+    for k in 0..<4
+        var c = circuit()
+
+        c.connect("I1", CurrentSource(10e-3), "0", "a")
+        c.connect("D1", Diode(models[k]), "a", "0")
+
+        var s = sim(c)
+
+        s.operating_point().unwrap()
+        drops[k] = s.voltage_at("a")
+
+    assert(drops[0] < drops[1] && drops[1] < drops[2] && drops[2] < drops[3])
+    assert(drops[3] > 2.8 && drops[3] < 3.4)
+
+// --- Schematics -------------------------------------------------------------------------------------
+
+val LED_SCHEMATIC = """
+    # A battery, a resistor and an LED.
+    battery  B1  0 0  0 6  9V
+    resistor R1  0 0  6 0  470
+    led      D1  6 0  6 6  red
+    wire         6 6  0 6
+    ground       0 6
+    label    top 0 0
+    meter    M1  6 0  6 6
+    """
+
+@test("a schematic's points join into nodes, and its parts into a circuit")
+schematic_nodes()
+    val sch = parse_schematic(LED_SCHEMATIC).unwrap()
+    val c = sch.circuit
+
+    assert(c.parts.len() == 3)
+    // Ground, the labelled top and the node between the resistor and the LED.
+    assert(c.node_count() == 3)
+    assert(c.find_node("top") == Some(1))
+
+    val r = sch.elements[sch.find("R1").unwrap()]
+
+    assert(r.a == 1 && r.b == 2)
+    assert(sch.node_at(6, 6) == Some(0))
+    assert(sch.node_at(3, 6) == Some(0))
+    assert(sch.node_at(3, 3).is_none())
+
+@test("a meter reads the drop across the LED of the schematic it is drawn in")
+schematic_meter()
+    val sch = parse_schematic(LED_SCHEMATIC).unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+
+    val m = sch.elements[sch.find("M1").unwrap()]
+    val led = s.across(sch.elements[sch.find("D1").unwrap()].part)
+
+    assert(near(s.voltage(m.a) - s.voltage(m.b), led, 1e-12))
+    assert(near(s.voltage_at("top"), 9.0, 1e-12))
+
+@test("an end landing along a wire joins it")
+schematic_tee()
+    val sch = parse_schematic("""
+        battery B1 0 0 0 4 5
+        wire 0 0 8 0
+        resistor R1 4 0 4 4 1k
+        resistor R2 8 0 8 4 1k
+        wire 0 4 8 4
+        ground 4 4
+        """).unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+    // Two 1k resistors in parallel across 5 V: 10 mA from the battery.
+    assert(near(s.current(0), -10e-3, 1e-12))
+
+@test("a schematic's mistakes are refused with their line")
+schematic_refusals()
+    assert(parse_schematic("resistor R1 0 0 1 0").unwrap_err() == "line 1: a resistor needs a value")
+    assert(parse_schematic("\nbulb B 0 0 1 0").unwrap_err() == "line 2: 'bulb' is not a kind of element")
+    assert(parse_schematic("led D1 0 0 1 0 purple").unwrap_err() == "line 1: 'purple' is not an LED colour: red, yellow, green or blue")
+    assert(parse_schematic("wire 0 0 0 0").unwrap_err() == "line 1: a wire needs two different points")
+    assert(parse_schematic("resistor R1 0 0 x 0 1k").unwrap_err() == "line 1: 'x' is not a grid coordinate")
+    assert(parse_schematic("resistor R1 0 0 1 0 1k\nresistor R1 1 0 2 0 1k").unwrap_err() == "line 2: 'R1' is already the name of another element")
+    assert(parse_schematic("resistor R1 0 0 1 0 1k 2k").unwrap_err() == "line 1: '2k' is more than a resistor takes")
+    assert(parse_schematic("ground 0 0\nlabel top 0 0\nwire 0 0 1 0").unwrap_err() == "label 'top' is on ground")
+    assert(parse_schematic("resistor R1 0 0 1 0 -5").unwrap_err() == "R1: a resistance is more than zero")

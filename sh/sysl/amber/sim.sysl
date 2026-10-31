@@ -1,0 +1,257 @@
+module sh.sysl.amber
+
+import sysl.buf.{Buf, buf}
+import sysl.math.max
+
+// The thermal voltage at 27 °C, kT/q.
+const VT: real = 0.025851991
+
+// A conductance put across every junction, so a reverse-biased diode is a very large resistor rather
+// than an open circuit that leaves its node floating.
+const GMIN: real = 1e-12
+
+const MOST_ITERATIONS: int = 150
+
+// The circuit's solution, found by modified nodal analysis.
+//
+// **The unknowns are the node voltages and some currents.** Kirchhoff's current law at every node but
+// ground gives one equation per voltage. A voltage source fixes the difference between two nodes
+// rather than a current, so it adds the current through itself as an unknown and its own voltage as
+// the equation for it. A diode's series resistance puts a node inside the diode, between the
+// resistance and the junction, which is an unknown the circuit never names.
+//
+// **A diode is not linear**, so the system is solved by Newton–Raphson: the diode is replaced by the
+// straight line touching its curve at the voltage it has now, the linear system is solved, and the
+// voltage moves to the answer; repeated until nothing moves. The step a junction may take is limited,
+// since the exponential sends an unlimited step to infinity.
+struct Sim
+    circuit: Circuit
+    // The unknown each part adds, by part: the current through a voltage source, or a diode's inner
+    // node. -1 where the part adds none.
+    extra: Buf[int]
+    // The junction voltage each diode was last linearised at.
+    junction: Buf[real]
+    size: int
+    x: Buf[real]
+    sys: System
+    // A conductance from every node to ground while the solution is approached by steps; 0 otherwise.
+    shunt: real
+
+    // The voltage at node `node` against ground.
+    voltage(self, node: int) -> real = if node <= 0 then 0.0 else self.x[usize(node - 1)]
+
+    // The voltage at the node called `name`; 0 for a name the circuit does not have.
+    voltage_at(self, name: string) -> real = self.circuit.find_node(name) match
+        Some(n) -> self.voltage(n)
+        None -> 0.0
+
+    // The voltage across part `i`: its first terminal's less its second's.
+    across(self, i: int) -> real
+        val p = self.circuit.parts[usize(i)]
+
+        self.voltage(p.a) - self.voltage(p.b)
+
+    // The current through part `i`, from its first terminal to its second. A battery delivering power
+    // has current flowing out of its first terminal, `+`, so its current here is negative.
+    current(self, i: int) -> real
+        val p = self.circuit.parts[usize(i)]
+
+        p.kind match
+            Resistor(r) -> self.across(i) / r
+            VoltageSource(_) -> self.x[usize(self.extra[usize(i)])]
+            CurrentSource(amps) -> amps
+            Diode(m) ->
+                val v = self.junction[usize(i)]
+
+                diode_current(m, v) + GMIN * v + (diode_conductance(m, v) + GMIN) * (self.junction_now(i) - v)
+
+    // The power part `i` takes from the circuit, in watts; negative for a part delivering it.
+    power(self, i: int) -> real = self.across(i) * self.current(i)
+
+    // The voltage across diode `i`'s junction in the present solution.
+    private junction_now(self, i: int) -> real
+        val p = self.circuit.parts[usize(i)]
+        val inner = self.extra[usize(i)]
+        val anode = if inner >= 0 then self.x[usize(inner)] else self.voltage(p.a)
+
+        anode - self.voltage(p.b)
+
+    // Find the DC operating point: every voltage and current with the circuit settled.
+    //
+    // Newton–Raphson from the last solution; if that does not converge, the circuit is first solved
+    // with a conductance from every node to ground, which makes it easy, and the conductance is taken
+    // away a decade at a time, each solution starting the next.
+    operating_point(*self) -> Result[unit, string]
+        self.shunt = 0.0
+
+        if self.newton().is_ok() then return Ok(())
+
+        self.reset()
+
+        var g = 1e-2
+
+        while g > 1e-13
+            self.shunt = g
+
+            if self.newton() is Err(why)
+                self.shunt = 0.0
+                return Err(why)
+
+            g /= 10.0
+
+        self.shunt = 0.0
+        self.newton()
+
+    // Forget the solution and start the next one from zero.
+    private reset(*self)
+        for i in 0..<self.x.len()
+            self.x[i] = 0.0
+
+        for i in 0..<self.junction.len()
+            self.junction[i] = 0.0
+
+    private newton(*self) -> Result[unit, string]
+        for _ in 0..<MOST_ITERATIONS
+            self.stamp()
+
+            if self.sys.solve().is_none() then return Err(self.singular())
+
+            var settled = true
+
+            for i in 0..<self.size
+                val was = self.x[usize(i)]
+                val now = self.sys.z[usize(i)]
+
+                if (now - was).abs() > 1e-6 * max(now.abs(), was.abs()) + 1e-9 then settled = false
+
+                self.x[usize(i)] = now
+
+            // A junction is settled when the solution puts it where it was linearised. It is then left
+            // at that voltage, so a diode's current is read off the same line the system obeyed and the
+            // currents at every node sum to zero exactly.
+            for i in 0..<self.circuit.parts.len()
+                if self.circuit.parts[i].kind is Diode(_)
+                    val was = self.junction[i]
+                    val now = self.junction_now(int(i))
+
+                    if (now - was).abs() > 1e-6 * max(now.abs(), was.abs()) + 1e-9 then settled = false
+
+            if settled then return Ok(())
+
+            self.limit_junctions()
+
+        Err("the solution did not settle")
+
+    // Move each diode's junction voltage toward the new solution, limiting the step.
+    private limit_junctions(*self)
+        for i in 0..<self.circuit.parts.len()
+            self.circuit.parts[i].kind match
+                Diode(m) ->
+                    val want = self.junction_now(int(i))
+
+                    self.junction[i] = limit(want, self.junction[i], m)
+                _ -> ()
+
+    // Write the linearised system for the present solution.
+    private stamp(*self)
+        self.sys.clear()
+
+        val nodes = self.circuit.node_count() - 1
+
+        if self.shunt > 0.0
+            for k in 0..<nodes
+                self.sys.at(k, k, self.shunt)
+
+        for i in 0..<self.circuit.parts.len()
+            val p = self.circuit.parts[i]
+            val a = p.a - 1
+            val b = p.b - 1
+
+            p.kind match
+                Resistor(r) -> self.conductance(a, b, 1.0 / r)
+                VoltageSource(v) ->
+                    val k = self.extra[i]
+
+                    self.sys.at(a, k, 1.0)
+                    self.sys.at(b, k, -1.0)
+                    self.sys.at(k, a, 1.0)
+                    self.sys.at(k, b, -1.0)
+                    self.sys.rhs(k, v)
+                CurrentSource(amps) ->
+                    self.sys.rhs(a, -amps)
+                    self.sys.rhs(b, amps)
+                Diode(m) ->
+                    val inner = self.extra[i]
+                    val anode = if inner >= 0 then inner else a
+
+                    if inner >= 0 then self.conductance(a, inner, 1.0 / m.rs)
+
+                    val v = self.junction[i]
+                    val g = diode_conductance(m, v) + GMIN
+                    val owed = diode_current(m, v) + GMIN * v - g * v
+
+                    self.conductance(anode, b, g)
+                    self.sys.rhs(anode, -owed)
+                    self.sys.rhs(b, owed)
+
+    // A conductance `g` between two unknowns' nodes.
+    private conductance(*self, a: int, b: int, g: real)
+        self.sys.at(a, a, g)
+        self.sys.at(b, b, g)
+        self.sys.at(a, b, -g)
+        self.sys.at(b, a, -g)
+
+    // Why the matrix could not be solved, as a person would put it.
+    private singular(self) -> string
+        "the circuit has a node no part fixes the voltage of, or a loop of voltage sources"
+end Sim
+
+// A simulator for `c`, not yet solved.
+sim(c: Circuit) -> Sim
+    var extra: Buf[int] = buf()
+    var junction: Buf[real] = buf()
+    var size = c.node_count() - 1
+
+    for i in 0..<c.parts.len()
+        junction.push(0.0)
+
+        c.parts[i].kind match
+            VoltageSource(_) ->
+                extra.push(size)
+                size += 1
+            Diode(m) ->
+                if m.rs > 0.0
+                    extra.push(size)
+                    size += 1
+                else
+                    extra.push(-1)
+            _ -> extra.push(-1)
+
+    var x: Buf[real] = buf()
+
+    for _ in 0..<size
+        x.push(0.0)
+
+    Sim(c, extra, junction, size, x, system(size), 0.0)
+
+// The current through a junction at `v`.
+diode_current(m: DiodeModel, v: real) -> real = m.is * ((v / (m.n * VT)).exp() - 1.0)
+
+// The slope of the junction's curve at `v`.
+private diode_conductance(m: DiodeModel, v: real) -> real = m.is / (m.n * VT) * (v / (m.n * VT)).exp()
+
+// SPICE's junction limiting: a step above the knee is taken logarithmically, since the current it
+// would mean grows exponentially.
+private limit(want: real, was: real, m: DiodeModel) -> real
+    val nvt = m.n * VT
+    val critical = nvt * (nvt / (1.4142135623730951 * m.is)).ln()
+
+    if want > critical && (want - was).abs() > 2.0 * nvt
+        if was > 0.0
+            val arg = 1.0 + (want - was) / nvt
+
+            return if arg > 0.0 then was + nvt * arg.ln() else critical
+
+        return nvt * (want / nvt).ln()
+
+    want
