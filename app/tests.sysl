@@ -240,3 +240,74 @@ transistor_dots()
 
     p.flow(0.1)
     assert(p.part_flow[i] < 0.0 && p.base_flow[i] < 0.0 && p.emitter_flow[i] < 0.0)
+
+// A common-source stage, its source landing along the bottom rail, and the same for a PMOS.
+val MOS_STAGE = """
+    battery  B1  0 0  0 6  9
+    wire         0 0  8 0
+    resistor RD  4 0  4 2  1k
+    nmos     M1  4 2  6 4  4 6
+    resistor RG  8 0  8 4  470k
+    wire         8 4  6 4
+    wire         0 6  8 6
+    ground       0 6
+    """
+
+val PMOS_STAGE = """
+    battery  B1  0 6  0 0  9
+    wire         0 0  8 0
+    resistor RD  4 0  4 2  1k
+    pmos     M1  4 2  6 4  4 6
+    resistor RG  8 0  8 4  470k
+    wire         8 4  6 4
+    wire         0 6  8 6
+    ground       0 0
+    """
+
+@test("meters on a MOSFET's terminals read its gate–source and drain–source voltages")
+mosfet_meters()
+    val m = model("mos.amber", parse_schematic(MOS_STAGE).unwrap())
+    val q = m.sch.elements[m.sch.find("M1").unwrap()].part
+
+    assert(m.probe(6, 4))
+    assert(m.probe(4, 6))
+    assert(m.probe(4, 2))
+    assert(m.probe(4, 6))
+    assert(m.meters.len() == 2)
+    // The gate sits at the supply, which the source is 9 V below.
+    assert((m.reading(m.meters[0]) - 9.0).abs() < 1e-6)
+    assert((m.reading(m.meters[1]) - m.s.across(q)).abs() < 1e-12)
+
+@test("the status line gives a clicked MOSFET's voltages and the drain current, into an NMOS and out of a PMOS")
+status_of_a_mosfet()
+    val m = model("mos.amber", parse_schematic(MOS_STAGE).unwrap())
+
+    m.selected = m.sch.find("M1").unwrap()
+    assert(status(m).contains("M1 2N7000 N-channel MOSFET: "))
+    assert(status(m).contains("V drain to source, 9V gate to source, "))
+    assert(status(m).ends_with("A into the drain"))
+
+    val p = model("pmos.amber", parse_schematic(PMOS_STAGE).unwrap())
+
+    p.selected = p.sch.find("M1").unwrap()
+    assert(status(p).contains("M1 BS250 P-channel MOSFET: -"))
+    assert(status(p).contains("V drain to source, -9V gate to source, "))
+    assert(status(p).ends_with("A out of the drain"))
+
+@test("a MOSFET's dots run through its channel from the drain to the source, and the other way for a PMOS, with none at its gate")
+mosfet_dots()
+    val m = model("mos.amber", parse_schematic(MOS_STAGE).unwrap())
+    val i = usize(m.sch.find("M1").unwrap())
+
+    m.flow(0.1)
+    // Drain and source carry the one current, the largest in the circuit, so it sets the dots' pace.
+    assert((m.part_flow[i] - 0.3).abs() < 1e-9)
+    assert((m.emitter_flow[i] - 0.3).abs() < 1e-9)
+    assert(m.base_flow[i] == 0.0)
+
+    val p = model("pmos.amber", parse_schematic(PMOS_STAGE).unwrap())
+
+    p.flow(0.1)
+    assert((p.part_flow[i] + 0.3).abs() < 1e-9)
+    assert((p.emitter_flow[i] + 0.3).abs() < 1e-9)
+    assert(p.base_flow[i] == 0.0)

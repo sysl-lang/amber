@@ -32,7 +32,8 @@ npn       Q2   16 10 12 12  16 14
 
 resistor  RB1  8 0   8 4    18k
 wire           8 4   8 12
-capacitor CB1  8 12  8 14   100n
+wire           8 12  7 12
+capacitor CB1  7 12  7 14   100n
 resistor  RB2  12 0  12 4   18k
 wire           12 4  12 12
 capacitor CB2  12 12 12 14  100n

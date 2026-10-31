@@ -31,6 +31,14 @@ const BEND: real = 0.55
 const HUB: real = 0.2
 const RING: real = 0.64
 
+// A MOSFET's symbol, in squares, in the same frame and circle: its channel runs CHANNEL toward the gate
+// from the line between drain and source, reaching REACH either side of the middle, where the drain's
+// and source's stubs meet it; the gate's plate stands PLATE off the line and PLATE_HALF either side.
+const CHANNEL: real = 0.36
+const REACH: real = 0.5
+const PLATE: real = 0.6
+const PLATE_HALF: real = 0.42
+
 // The whole window: the board, the scope under it, and the status line.
 screen(m: &Model) -> &View =
     column([
@@ -215,6 +223,7 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
             Label -> ()
             Meter -> ()
             Npn | Pnp -> pen.transistor(e, most, hot)
+            Nmos | Pmos -> pen.mosfet(e, most, hot)
             _ -> pen.part(e, most, hot)
 
     // A dot wherever three or more ends meet, as a draughtsman marks a junction.
@@ -244,7 +253,9 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
         for i in 0..<m.sch.elements.len()
             val e = m.sch.elements[i]
 
-            if e.part >= 0 && e.shape.points() == 3
+            if e.part >= 0 && (e.shape == Nmos || e.shape == Pmos)
+                pen.mosfet_dots(e, m.part_flow[i])
+            elif e.part >= 0 && e.shape.points() == 3
                 pen.transistor_dots(e, m.part_flow[i], m.base_flow[i], m.emitter_flow[i])
             elif e.part >= 0 && dot_speed(m.s.current(e.part), m.most_amps) != 0.0
                 pen.dots(real(e.x1), real(e.y1), real(e.x2), real(e.y2), m.part_flow[i])
@@ -585,6 +596,63 @@ private struct Pen
 
             self.dots(sx, sy, ex, ey, emitter)
             self.dots(ex, ey, real(e.x3), real(e.y3), emitter - distance(sx, sy, ex, ey))
+
+    // A MOSFET: a lead from each of its three points in its node's colour, the gate's plate, the channel
+    // in three pieces with the drain's and source's stubs, and the body's line from the channel's middle
+    // down to the source with its arrow, pointing in for an N-channel and out for a P-channel.
+    mosfet(self, e: Element, most: real, hot: bool)
+        val g = transistor_frame(e)
+        val m = self.m
+        val (dx, dy) = (g.gx(REACH, 0.0), g.gy(REACH, 0.0))
+        val (sx, sy) = (g.gx(-REACH, 0.0), g.gy(-REACH, 0.0))
+        val (bx, by) = (g.gx(0.0, 0.0), g.gy(0.0, 0.0))
+
+        self.width(3.0)
+        set(self.vg, wire_colour(m.s.voltage(e.a), most))
+        self.line(real(e.x1), real(e.y1), dx, dy)
+        self.line(dx, dy, g.gx(REACH, CHANNEL), g.gy(REACH, CHANNEL))
+        set(self.vg, wire_colour(m.s.voltage(e.b), most))
+        self.line(real(e.x2), real(e.y2), g.gx(0.0, PLATE), g.gy(0.0, PLATE))
+        set(self.vg, wire_colour(m.s.voltage(e.c), most))
+        self.line(real(e.x3), real(e.y3), sx, sy)
+        self.line(sx, sy, bx, by)
+        self.line(sx, sy, g.gx(-REACH, CHANNEL), g.gy(-REACH, CHANNEL))
+        self.line(bx, by, g.gx(0.0, CHANNEL), g.gy(0.0, CHANNEL))
+
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+        self.vg.begin()
+        self.vg.circle(self.px(g.gx(0.0, HUB)), self.py(g.gy(0.0, HUB)), self.len(RING))
+        self.vg.stroke()
+        self.line(g.gx(-REACH, CHANNEL), g.gy(-REACH, CHANNEL), g.gx(-0.34, CHANNEL), g.gy(-0.34, CHANNEL))
+        self.line(g.gx(-0.14, CHANNEL), g.gy(-0.14, CHANNEL), g.gx(0.14, CHANNEL), g.gy(0.14, CHANNEL))
+        self.line(g.gx(0.34, CHANNEL), g.gy(0.34, CHANNEL), g.gx(REACH, CHANNEL), g.gy(REACH, CHANNEL))
+        self.width(4.0)
+        self.line(g.gx(-PLATE_HALF, PLATE), g.gy(-PLATE_HALF, PLATE), g.gx(PLATE_HALF, PLATE), g.gy(PLATE_HALF, PLATE))
+
+        // The arrow on the body's line, across the line toward the channel for N, away from it for P.
+        val (tip, back) = if e.shape == Nmos then (CHANNEL - 0.02, CHANNEL - 0.26) else (0.1, 0.34)
+
+        self.vg.begin()
+        self.vg.move_to(self.px(g.gx(0.0, tip)), self.py(g.gy(0.0, tip)))
+        self.vg.line_to(self.px(g.gx(-0.12, back)), self.py(g.gy(-0.12, back)))
+        self.vg.line_to(self.px(g.gx(0.12, back)), self.py(g.gy(0.12, back)))
+        self.vg.close_path()
+        self.vg.fill()
+
+    // A MOSFET's current dots, along its drain's lead and stub, its channel, and its source's stub and
+    // lead, moved `flow` squares along the way from the drain.
+    mosfet_dots(self, e: Element, flow: real)
+        if dot_speed(self.m.s.terminal_current(e.part, 0), self.m.most_amps) == 0.0 then return
+
+        val g = transistor_frame(e)
+        val xs = [real(e.x1), g.gx(REACH, 0.0), g.gx(REACH, CHANNEL), g.gx(-REACH, CHANNEL), g.gx(-REACH, 0.0), real(e.x3)]
+        val ys = [real(e.y1), g.gy(REACH, 0.0), g.gy(REACH, CHANNEL), g.gy(-REACH, CHANNEL), g.gy(-REACH, 0.0), real(e.y3)]
+        var behind = 0.0
+
+        for k in 0..<5
+            self.dots(xs[k], ys[k], xs[k + 1], ys[k + 1], flow - behind)
+            behind += distance(xs[k], ys[k], xs[k + 1], ys[k + 1])
 
     // Current dots along the line from (`x1`, `y1`) to (`x2`, `y2`), half a square apart, moved `flow`
     // squares along it.

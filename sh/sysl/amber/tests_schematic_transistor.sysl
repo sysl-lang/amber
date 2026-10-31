@@ -34,7 +34,7 @@ val COMMON_EMITTER_PNP = """
 
 // The current each part delivers into grid point (`x`, `y`), plus every segment's current arriving
 // there: zero at every point where nothing else leads away, which is Kirchhoff's current law.
-private imbalance(sch: Schematic, s: Sim, amps: Buf[real], x: int, y: int) -> real
+private[amber] imbalance(sch: Schematic, s: Sim, amps: Buf[real], x: int, y: int) -> real
     var sum = 0.0
 
     for k in 0..<sch.segments.len()

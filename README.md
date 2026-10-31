@@ -31,8 +31,8 @@ to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command
 
 The examples: `led` (a battery, a resistor and an LED), `rc` (a capacitor charging when you close the
 switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
-and an inductor trading energy) and `astable` (two transistors blinking two LEDs in turn, about once
-a second).
+and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
+a second) and `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED).
 
 ## Schematics
 
@@ -53,7 +53,8 @@ meter     OUT 6 0  6 6                     # red lead first
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
 `switch` (`open` or `closed`), `diode`, `led` (`red`, `yellow`, `green`, `blue`), and the
-transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default). Also `wire`,
+transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
+(`2N7000`, the default) and `pmos` (`BS250`, the default). Also `wire`,
 `ground`, `label` (names a node) and `meter`. Waves: `dc 5`, `sine 5 1k [offset]`,
 `square 0 5 1k [duty]`, `pulse low high delay rise fall width period` (SPICE's), and
 `pwl t v t v …`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg` (and `1m` is a milliohm).
@@ -63,6 +64,13 @@ off the line between the other two, which is where its symbol is drawn:
 
 ```
 npn       Q1  4 10  8 12  4 14  2N3904     # collector, base, emitter
+```
+
+A MOSFET is placed the same way, by drain, gate and source, with its gate a square or more off the
+line between the other two; its width and length are the library's defaults (100 µm each):
+
+```
+nmos      M1  4 10  2 12  4 14  2N7000     # drain, gate, source
 ```
 
 ## SPICE netlists

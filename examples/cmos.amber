@@ -1,0 +1,35 @@
+# A CMOS inverter lighting an LED: the two kinds of MOSFET, working as a pair.
+#
+# The two gates are tied together and to the input, and the two drains are tied together and are the
+# output. With the switch open the resistor holds the input at 0 V, so the NMOS (2N7000) is off and the
+# PMOS (BS250) is on, and it joins the output to the supply: the LED is lit. Close the switch and the
+# input is 5 V, so the PMOS turns off and the NMOS turns on, which joins the output to ground: the LED
+# goes dark. The output is always the opposite of the input.
+#
+# A gate takes no current, so the switch only has to move a voltage; the 10 kΩ resistor passes half a
+# milliamp when the switch is closed, and the LED's 330 Ω resistor passes about 10 mA.
+#
+# Click the switch to flip it.
+
+battery  B1   0 0  0 14  5V
+wire          0 0  10 0
+wire          0 14  15 14
+ground        0 14
+
+switch   SW1  4 0  4 4
+resistor RIN  4 4  4 10  10k
+wire          4 10  4 14
+
+wire          4 4  8 4
+wire          8 4  8 10
+
+wire          10 0  10 2
+pmos     MP   10 6  8 4  10 2  BS250
+wire          10 6  10 8
+nmos     MN   10 8  8 10  10 12  2N7000
+wire          10 12  10 14
+
+wire          10 7  15 7
+resistor RL   15 7  15 10  330
+led      D1   15 10  15 12  red
+wire          15 12  15 14

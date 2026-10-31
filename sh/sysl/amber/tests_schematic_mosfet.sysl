@@ -1,0 +1,170 @@
+module sh.sysl.amber
+@tests
+
+import sysl.raw.str_cast
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// A common-source stage: a 9 V battery, a drain resistor, a gate resistor from the top rail, and the
+// source landing partway along the bottom rail, so both rails have a junction a MOSFET terminal feeds.
+val COMMON_SOURCE = """
+    battery  B1  0 0  0 6  9
+    wire         0 0  8 0
+    resistor RD  4 0  4 2  1k
+    nmos     M1  4 2  6 4  4 6
+    resistor RG  8 0  8 4  470k
+    wire         8 4  6 4
+    wire         0 6  8 6
+    ground       0 6
+    """
+
+// The same stage turned over for a PMOS: the battery's `+` on the bottom rail, which the source is on.
+val COMMON_SOURCE_PMOS = """
+    battery  B1  0 6  0 0  9
+    wire         0 0  8 0
+    resistor RD  4 0  4 2  1k
+    pmos     M1  4 2  6 4  4 6
+    resistor RG  8 0  8 4  470k
+    wire         8 4  6 4
+    wire         0 6  8 6
+    ground       0 0
+    """
+
+// --- Placing a MOSFET -------------------------------------------------------------------------------
+
+@test("a MOSFET's three points join its drain, gate and source to their nodes")
+mosfet_nodes()
+    val sch = parse_schematic(COMMON_SOURCE).unwrap()
+    val q = sch.elements[sch.find("M1").unwrap()]
+    val p = sch.circuit.parts[usize(q.part)]
+
+    assert(q.shape == Nmos)
+    assert(p.kind == Mosfet(NMOS_2N7000, DEFAULT_W, DEFAULT_L))
+    assert(p.a == q.a && p.b == q.b && p.c == q.c)
+    assert(q.c == 0)
+    assert(sch.node_at(4, 2) == Some(q.a))
+    assert(sch.node_at(6, 4) == Some(q.b))
+    assert(sch.node_at(8, 4) == Some(q.b))
+    assert(sch.node_at(4, 6) == Some(0))
+    assert(q.a != q.b && q.a > 0 && q.b > 0)
+    // Ground, the top rail, the drain and the gate.
+    assert(sch.circuit.node_count() == 4)
+    assert(q.value == "2N7000")
+
+@test("a MOSFET's model is named after its points, and each polarity has a default")
+mosfet_models()
+    val nmos = parse_schematic("nmos M1 0 0 2 1 0 2 2N7000").unwrap()
+    val pmos = parse_schematic("pmos M2 0 0 2 1 0 2").unwrap()
+    val named = parse_schematic("pmos M2 0 0 2 1 0 2 BS250").unwrap()
+    val plain = parse_schematic("nmos M1 0 0 2 1 0 2").unwrap()
+
+    assert(nmos.circuit.parts[0].kind == Mosfet(NMOS_2N7000, DEFAULT_W, DEFAULT_L))
+    assert(plain.circuit.parts[0].kind == Mosfet(NMOS_2N7000, DEFAULT_W, DEFAULT_L))
+    assert(plain.elements[0].value == "2N7000")
+    assert(pmos.circuit.parts[0].kind == Mosfet(PMOS_BS250, DEFAULT_W, DEFAULT_L))
+    assert(pmos.elements[0].value == "BS250")
+    assert(named.circuit.parts[0].kind == Mosfet(PMOS_BS250, DEFAULT_W, DEFAULT_L))
+    assert(pmos.elements[0].shape == Pmos)
+
+@test("a MOSFET's mistakes are refused with their line")
+mosfet_refusals()
+    assert(parse_schematic("nmos M1 0 0 2 1").unwrap_err() == "line 1: an nmos is placed by 3 points")
+    assert(parse_schematic("\npmos M1 0 0 2 1 0").unwrap_err() == "line 2: a pmos is placed by 3 points")
+    assert(parse_schematic("nmos").unwrap_err() == "line 1: an nmos needs a name")
+    assert(parse_schematic("pmos").unwrap_err() == "line 1: a pmos needs a name")
+    assert(parse_schematic("nmos M1 0 0 2 1 0 2 IRF540").unwrap_err() == "line 1: 'IRF540' is not an NMOS model: 2N7000")
+    assert(parse_schematic("nmos M1 0 0 2 1 0 2 BS250").unwrap_err() == "line 1: 'BS250' is not an NMOS model: 2N7000")
+    assert(parse_schematic("pmos M1 0 0 2 1 0 2 2N7000").unwrap_err() == "line 1: '2N7000' is not a PMOS model: BS250")
+    assert(parse_schematic("nmos M1 0 0 2.5 1 0 2").unwrap_err() == "line 1: '2.5' is not a grid coordinate")
+    assert(parse_schematic("pmos M1 0 0 2 x 0 2").unwrap_err() == "line 1: 'x' is not a grid coordinate")
+    assert(parse_schematic("nmos M1 0 0 2 1 0 0").unwrap_err() == "line 1: an nmos needs its drain and source at different points")
+    assert(parse_schematic("pmos M1 3 3 5 4 3 3").unwrap_err() == "line 1: a pmos needs its drain and source at different points")
+    // On the line, on an end, and less than a square off a long diagonal.
+    assert(parse_schematic("nmos M1 0 0 0 1 0 2").unwrap_err() == "line 1: an nmos's gate stands a square or more off the line from its drain to its source")
+    assert(parse_schematic("nmos M1 0 0 0 0 0 2").unwrap_err() == "line 1: an nmos's gate stands a square or more off the line from its drain to its source")
+    assert(parse_schematic("pmos M1 0 0 2 0 4 1").unwrap_err() == "line 1: a pmos's gate stands a square or more off the line from its drain to its source")
+    assert(parse_schematic("nmos M1 0 0 2 1 0 2 2N7000 2N7000").unwrap_err() == "line 1: '2N7000' is more than an nmos takes")
+    assert(parse_schematic("pmos M1 0 0 2 1 0 2 BS250 BS250").unwrap_err() == "line 1: 'BS250' is more than a pmos takes")
+    // A name already used by a BJT is taken.
+    assert(parse_schematic("npn M1 0 0 2 1 0 2\nnmos M1 5 0 7 1 5 2").unwrap_err() == "line 2: 'M1' is already the name of another element")
+    // A diagonal MOSFET whose gate is a square off it is placed.
+    assert(parse_schematic("nmos M1 0 0 2 0 2 2").is_ok())
+
+// --- Currents along the wires -----------------------------------------------------------------------
+
+@test("wires meeting a MOSFET's terminals carry its drain and source currents, and none for its gate")
+mosfet_segment_currents()
+    val sch = parse_schematic(COMMON_SOURCE).unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+
+    val q = sch.elements[sch.find("M1").unwrap()].part
+    val id = s.terminal_current(q, 0)
+    val ig = s.terminal_current(q, 1)
+    val amps = sch.segment_currents(s)
+
+    // The gate is at the supply, well over the threshold, and takes no current.
+    assert(id > 1e-3 && id < 9e-3)
+    assert(near(ig, 0.0, 1e-12))
+    assert(near(-s.terminal_current(q, 2), id, 1e-12))
+    // The top rail is cut where the drain resistor leaves it, the bottom where the source lands.
+    assert(sch.segments.len() == 5)
+    assert(near(amps[0], id, 1e-9))
+    assert(near(amps[1], 0.0, 1e-9))
+    assert(near(amps[2], 0.0, 1e-9))
+    assert(near(amps[3], -id, 1e-9))
+    assert(near(amps[4], 0.0, 1e-9))
+
+@test("current is conserved at every grid point of a circuit with an NMOS and with a PMOS")
+mosfet_kirchhoff()
+    for text in [COMMON_SOURCE, COMMON_SOURCE_PMOS]
+        val sch = parse_schematic(text).unwrap()
+        var s = sim(sch.circuit)
+
+        s.operating_point().unwrap()
+
+        val amps = sch.segment_currents(s)
+        val q = sch.elements[sch.find("M1").unwrap()].part
+
+        // The MOSFET conducts, either way up.
+        assert(s.terminal_current(q, 0).abs() > 1e-3)
+
+        for x in 0..8
+            for y in 0..6
+                assert(imbalance(sch, s, amps, x, y).abs() < 1e-9)
+
+// --- The CMOS inverter ------------------------------------------------------------------------------
+
+@test("the CMOS example lights its LED while the switch is open and darkens it once it is closed")
+cmos_example()
+    val sch = parse_schematic(str_cast(embed("../../../examples/cmos.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val d1 = sch.elements[sch.find("D1").unwrap()].part
+    val sw = sch.elements[sch.find("SW1").unwrap()].part
+    val mp = sch.elements[sch.find("MP").unwrap()].part
+    val mn = sch.elements[sch.find("MN").unwrap()].part
+    val out = sch.node_at(10, 7).unwrap()
+
+    s.power_on().unwrap()
+    s.advance_to(0.01).unwrap()
+
+    // Input low: the PMOS joins the output to the supply and the LED takes about 10 mA.
+    assert(s.current(d1) > 8e-3 && s.current(d1) < 12e-3)
+    assert(s.voltage(out) > 4.5)
+    assert(s.terminal_current(mp, 0).abs() > 8e-3)
+    assert(s.terminal_current(mn, 0).abs() < 1e-6)
+
+    s.set_switch(sw, true)
+    s.advance_to(0.02).unwrap()
+
+    // Input high: the NMOS holds the output at ground and the LED is dark.
+    assert(s.current(d1).abs() < 1e-6)
+    assert(s.voltage(out).abs() < 0.1)
+    assert(s.terminal_current(mp, 0).abs() < 1e-6)
+
+    s.set_switch(sw, false)
+    s.advance_to(0.03).unwrap()
+
+    // And back.
+    assert(s.current(d1) > 8e-3)

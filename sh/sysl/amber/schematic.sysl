@@ -30,6 +30,7 @@ import sysl.text.{Search, fields, split}
 // | `diode` | two, anode first | — |
 // | `led` | two, anode first | `red` (the default), `yellow`, `green` or `blue` |
 // | `npn`, `pnp` | three: collector, base, emitter | a model: `2N3904` (an npn's, the default) or `2N3906` (a pnp's) |
+// | `nmos`, `pmos` | three: drain, gate, source | a model: `2N7000` (an nmos's, the default) or `BS250` (a pmos's) |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -38,6 +39,11 @@ import sysl.text.{Search, fields, split}
 // a square or more from the line between them:
 //
 //     npn      Q1  3 9  5 11  3 13  2N3904
+//
+// A MOSFET is placed the same way, its drain and source the two ends and its gate off to one side; its
+// channel is the library's default width and length:
+//
+//     nmos     M1  3 9  1 11  3 13  2N7000
 //
 // A wave is one of
 //
@@ -69,6 +75,8 @@ enum Shape: u8
     Led
     Npn
     Pnp
+    Nmos
+    Pmos
     Ground
     Label
     Meter
@@ -76,7 +84,7 @@ enum Shape: u8
     // The number of grid points it is placed by.
     points(self) -> int = self match
         Ground | Label -> 1
-        Npn | Pnp -> 3
+        Npn | Pnp | Nmos | Pmos -> 3
         _ -> 2
 
     // Whether it is a part of the circuit, rather than a wire, a marker or an instrument.
@@ -369,7 +377,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
         xy[2] = xy[0]
         xy[3] = xy[1]
     elif shape.points() == 3
-        transistor_placed(one, xy)?
+        transistor_placed(shape, one, xy)?
     elif xy[0] == xy[2] && xy[1] == xy[3]
         return Err(s"${one} needs two different points")
 
@@ -393,7 +401,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     if rest.len > usize(most) then return Err(s"'${rest[usize(most)]}' is more than ${one} takes")
 
     val value = shape match
-        Npn | Pnp -> if rest.len == 0 then default_model(shape) else rest[0]
+        Npn | Pnp | Nmos | Pmos -> if rest.len == 0 then default_model(shape) else rest[0]
         _ -> rest.join(" ")
 
     Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], -1, -1, -1, -1, colour), kind))
@@ -403,21 +411,24 @@ private a_word(word: string) -> string
     val b = word.bytes
     val vowel = b.len > 0 && (b[0] == u8('a') || b[0] == u8('e') || b[0] == u8('i') || b[0] == u8('o') || b[0] == u8('u'))
 
-    if vowel || word == "npn" then s"an ${word}" else s"a ${word}"
+    if vowel || word == "npn" || word == "nmos" then s"an ${word}" else s"a ${word}"
 
-// A transistor's three points, collector, base and emitter, in `xy`: its collector and emitter apart,
-// and its base a square or more off the line between them, where its symbol has room.
-private transistor_placed(one: string, xy: [6]int) -> Result[unit, string]
+// A transistor's three points, collector, base and emitter (a MOSFET's drain, gate and source), in `xy`:
+// its two ends apart, and its base or gate a square or more off the line between them, where its symbol
+// has room.
+private transistor_placed(shape: Shape, one: string, xy: [6]int) -> Result[unit, string]
     val dx = xy[4] - xy[0]
     val dy = xy[5] - xy[1]
+    val mos = shape == Nmos || shape == Pmos
+    val (first, middle, last) = if mos then ("drain", "gate", "source") else ("collector", "base", "emitter")
 
-    if dx == 0 && dy == 0 then return Err(s"${one} needs its collector and emitter at different points")
+    if dx == 0 && dy == 0 then return Err(s"${one} needs its ${first} and ${last} at different points")
 
     // Twice the area of the triangle the three points make, which is the base's distance from the line
     // times the line's length.
     val cross = dx * (xy[3] - xy[1]) - dy * (xy[2] - xy[0])
 
-    if cross * cross < dx * dx + dy * dy then return Err(s"${one}'s base stands a square or more off the line from its collector to its emitter")
+    if cross * cross < dx * dx + dy * dy then return Err(s"${one}'s ${middle} stands a square or more off the line from its ${first} to its ${last}")
 
     Ok(())
 
@@ -434,6 +445,8 @@ private shape_named(word: string) -> Result[Shape, string] = word match
     "led" -> Ok(Led)
     "npn" -> Ok(Npn)
     "pnp" -> Ok(Pnp)
+    "nmos" -> Ok(Nmos)
+    "pmos" -> Ok(Pmos)
     "ground" -> Ok(Ground)
     "label" -> Ok(Label)
     "meter" -> Ok(Meter)
@@ -449,7 +462,7 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 // The part an element is, from the words after its points.
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
     val optional = shape match
-        Diode | Led | Switch | Npn | Pnp -> true
+        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos -> true
         _ -> false
 
     if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
@@ -471,10 +484,20 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
         Diode -> Ok(Diode(SILICON))
         Led -> Ok(Diode(colour.model()))
         Npn | Pnp -> Ok(Transistor(transistor_model(shape, if rest.len == 0 then default_model(shape) else rest[0])?))
+        Nmos | Pmos -> Ok(Mosfet(mosfet_model(shape, if rest.len == 0 then default_model(shape) else rest[0])?, DEFAULT_W, DEFAULT_L))
         _ -> Err(s"${a_word(kind_word)} is not a part")
 
 // The model a transistor is when its line names none.
-private default_model(shape: Shape) -> string = if shape == Pnp then "2N3906" else "2N3904"
+private default_model(shape: Shape) -> string = shape match
+    Pnp -> "2N3906"
+    Nmos -> "2N7000"
+    Pmos -> "BS250"
+    _ -> "2N3904"
+
+// A MOSFET's model by its name, which must be one of its own polarity's.
+private mosfet_model(shape: Shape, word: string) -> Result[MosfetModel, string] = shape match
+    Nmos -> if word == "2N7000" then Ok(NMOS_2N7000) else Err(s"'${word}' is not an NMOS model: 2N7000")
+    _ -> if word == "BS250" then Ok(PMOS_BS250) else Err(s"'${word}' is not a PMOS model: BS250")
 
 // A transistor's model by its name, which must be one of its own polarity's.
 private transistor_model(shape: Shape, word: string) -> Result[TransistorModel, string] = shape match
