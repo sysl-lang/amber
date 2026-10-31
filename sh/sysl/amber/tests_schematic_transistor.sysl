@@ -1,0 +1,220 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.raw.str_cast
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// A common-emitter stage: a 9 V battery, a collector resistor, a base resistor from the top rail, and
+// the emitter landing partway along the bottom rail, so both rails have a junction a transistor
+// terminal feeds.
+val COMMON_EMITTER = """
+    battery  B1  0 0  0 6  9
+    wire         0 0  8 0
+    resistor RC  4 0  4 2  1k
+    npn      Q1  4 2  6 4  4 6
+    resistor RB  8 0  8 4  470k
+    wire         8 4  6 4
+    wire         0 6  8 6
+    ground       0 6
+    """
+
+// The same stage turned over for a PNP: the battery's `+` on the bottom rail, which the emitter is on.
+val COMMON_EMITTER_PNP = """
+    battery  B1  0 6  0 0  9
+    wire         0 0  8 0
+    resistor RC  4 0  4 2  1k
+    pnp      Q1  4 2  6 4  4 6
+    resistor RB  8 0  8 4  470k
+    wire         8 4  6 4
+    wire         0 6  8 6
+    ground       0 0
+    """
+
+// The current each part delivers into grid point (`x`, `y`), plus every segment's current arriving
+// there: zero at every point where nothing else leads away, which is Kirchhoff's current law.
+private imbalance(sch: Schematic, s: Sim, amps: Buf[real], x: int, y: int) -> real
+    var sum = 0.0
+
+    for k in 0..<sch.segments.len()
+        val g = sch.segments[k]
+
+        if g.x2 == x && g.y2 == y then sum += amps[k]
+
+        if g.x1 == x && g.y1 == y then sum -= amps[k]
+
+    for i in 0..<sch.elements.len()
+        val e = sch.elements[i]
+
+        if e.part < 0 then continue
+
+        if e.shape.points() == 3
+            for t in 0..<3
+                if e.point(t) == (x, y) then sum -= s.terminal_current(e.part, t)
+        else
+            if e.point(0) == (x, y) then sum -= s.current(e.part)
+
+            if e.point(1) == (x, y) then sum += s.current(e.part)
+
+    sum
+
+// --- Placing a transistor ---------------------------------------------------------------------------
+
+@test("a transistor's three points join its collector, base and emitter to their nodes")
+transistor_nodes()
+    val sch = parse_schematic(COMMON_EMITTER).unwrap()
+    val q = sch.elements[sch.find("Q1").unwrap()]
+    val p = sch.circuit.parts[usize(q.part)]
+
+    assert(q.shape == Npn)
+    assert(p.kind == Transistor(NPN_2N3904))
+    assert(p.a == q.a && p.b == q.b && p.c == q.c)
+    assert(q.c == 0)
+    assert(sch.node_at(4, 2) == Some(q.a))
+    assert(sch.node_at(6, 4) == Some(q.b))
+    assert(sch.node_at(8, 4) == Some(q.b))
+    assert(sch.node_at(4, 6) == Some(0))
+    assert(q.a != q.b && q.a > 0 && q.b > 0)
+    // Ground, the top rail, the collector and the base.
+    assert(sch.circuit.node_count() == 4)
+    assert(q.value == "2N3904")
+
+@test("a transistor's model is named after its points, and a pnp takes the 2N3906 by default")
+transistor_models()
+    val npn = parse_schematic("npn Q1 0 0 2 1 0 2 2N3904").unwrap()
+    val pnp = parse_schematic("pnp Q2 0 0 2 1 0 2").unwrap()
+    val named = parse_schematic("pnp Q2 0 0 2 1 0 2 2N3906").unwrap()
+
+    assert(npn.circuit.parts[0].kind == Transistor(NPN_2N3904))
+    assert(pnp.circuit.parts[0].kind == Transistor(PNP_2N3906))
+    assert(pnp.elements[0].value == "2N3906")
+    assert(named.circuit.parts[0].kind == Transistor(PNP_2N3906))
+    assert(pnp.elements[0].shape == Pnp)
+
+@test("a transistor's mistakes are refused with their line")
+transistor_refusals()
+    assert(parse_schematic("npn Q1 0 0 2 1").unwrap_err() == "line 1: an npn is placed by 3 points")
+    assert(parse_schematic("\npnp Q1 0 0 2 1 0").unwrap_err() == "line 2: a pnp is placed by 3 points")
+    assert(parse_schematic("npn").unwrap_err() == "line 1: an npn needs a name")
+    assert(parse_schematic("npn Q1 0 0 2 1 0 2 BC547").unwrap_err() == "line 1: 'BC547' is not an NPN model: 2N3904")
+    assert(parse_schematic("npn Q1 0 0 2 1 0 2 2N3906").unwrap_err() == "line 1: '2N3906' is not an NPN model: 2N3904")
+    assert(parse_schematic("pnp Q1 0 0 2 1 0 2 2N3904").unwrap_err() == "line 1: '2N3904' is not a PNP model: 2N3906")
+    assert(parse_schematic("npn Q1 0 0 2.5 1 0 2").unwrap_err() == "line 1: '2.5' is not a grid coordinate")
+    assert(parse_schematic("npn Q1 0 0 2 x 0 2").unwrap_err() == "line 1: 'x' is not a grid coordinate")
+    assert(parse_schematic("npn Q1 0 0 2 1 0 0").unwrap_err() == "line 1: an npn needs its collector and emitter at different points")
+    // On the line, on an end, and less than a square off a long diagonal.
+    assert(parse_schematic("npn Q1 0 0 0 1 0 2").unwrap_err() == "line 1: an npn's base stands a square or more off the line from its collector to its emitter")
+    assert(parse_schematic("npn Q1 0 0 0 0 0 2").unwrap_err() == "line 1: an npn's base stands a square or more off the line from its collector to its emitter")
+    assert(parse_schematic("pnp Q1 0 0 2 0 4 1").unwrap_err() == "line 1: a pnp's base stands a square or more off the line from its collector to its emitter")
+    assert(parse_schematic("npn Q1 0 0 2 1 0 2 2N3904 2N3904").unwrap_err() == "line 1: '2N3904' is more than an npn takes")
+    // A diagonal transistor whose base is a square off it is placed.
+    assert(parse_schematic("npn Q1 0 0 2 0 2 2").is_ok())
+
+@test("the article before a kind reads as it is said")
+articles()
+    assert(parse_schematic("inductor L1 0 0 1 0").unwrap_err() == "line 1: an inductor needs a value")
+    assert(parse_schematic("resistor R1 0 0 1 0").unwrap_err() == "line 1: a resistor needs a value")
+
+// --- Currents along the wires -----------------------------------------------------------------------
+
+@test("wires meeting a transistor's terminals carry its collector, base and emitter currents")
+transistor_segment_currents()
+    val sch = parse_schematic(COMMON_EMITTER).unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+
+    val q = sch.elements[sch.find("Q1").unwrap()].part
+    val ic = s.terminal_current(q, 0)
+    val ib = s.terminal_current(q, 1)
+    val amps = sch.segment_currents(s)
+
+    // Forward active: about 18 µA into the base and a few milliamps into the collector.
+    assert(ib > 10e-6 && ib < 30e-6)
+    assert(ic > 1e-3 && ic < 9e-3)
+    assert(near(-s.terminal_current(q, 2), ic + ib, 1e-12))
+    // The top rail is cut where the collector resistor leaves it, the bottom where the emitter lands.
+    assert(sch.segments.len() == 5)
+    assert(near(amps[0], ic + ib, 1e-12))
+    assert(near(amps[1], ib, 1e-12))
+    assert(near(amps[2], ib, 1e-12))
+    assert(near(amps[3], -(ic + ib), 1e-12))
+    assert(near(amps[4], 0.0, 1e-12))
+
+@test("current is conserved at every grid point of a circuit with an NPN and with a PNP")
+transistor_kirchhoff()
+    for text in [COMMON_EMITTER, COMMON_EMITTER_PNP]
+        val sch = parse_schematic(text).unwrap()
+        var s = sim(sch.circuit)
+
+        s.operating_point().unwrap()
+
+        val amps = sch.segment_currents(s)
+        val q = sch.elements[sch.find("Q1").unwrap()].part
+
+        // The transistor conducts, either way up.
+        assert(s.terminal_current(q, 0).abs() > 1e-3)
+
+        for x in 0..8
+            for y in 0..6
+                // The battery's `−` end is where the ground symbol takes the circuit's return.
+                assert(imbalance(sch, s, amps, x, y).abs() < 1e-12)
+
+// --- The astable multivibrator ----------------------------------------------------------------------
+
+@test("the astable example blinks its two LEDs in turn, about once a second")
+astable_example()
+    val sch = parse_schematic(str_cast(embed("../../../examples/astable.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val d1 = sch.elements[sch.find("D1").unwrap()].part
+    val d2 = sch.elements[sch.find("D2").unwrap()].part
+    val lit = 5e-3
+    // Each half is 0.69 RB C, the base's time to charge from its low swing to its knee.
+    val expected = 2.0 * 0.69 * 18e3 * 47e-6
+    var rises: Buf[real] = buf()
+    var was_lit = false
+    var samples = 0
+    var one = 0
+    var both = 0
+    var neither = 0
+
+    s.power_on().unwrap()
+
+    for k in 1..2500
+        val t = real(k) * 2e-3
+
+        s.advance_to(t).unwrap()
+
+        val on1 = s.current(d1) > lit
+        val on2 = s.current(d2) > lit
+
+        if on1 && !was_lit && t > 0.5 then rises.push(t)
+
+        was_lit = on1
+
+        if t < 1.0 then continue
+
+        samples += 1
+
+        if on1 then one += 1
+
+        if on1 && on2 then both += 1
+
+        if !on1 && !on2 then neither += 1
+
+    // It keeps going: a period is the time between D1 lighting, again and again. The LED in the
+    // collector's path takes some of the swing the base is thrown down by, so each half is a little
+    // shorter than 0.69 RB C — about nine tenths of it.
+    assert(rises.len() >= 3)
+
+    for k in 1..<rises.len()
+        val period = rises[k] - rises[k - 1]
+
+        assert(period > 0.8 * expected && period < 1.05 * expected)
+
+    // D1 is lit about half the time and D2 the rest; the two are lit together only for the moment
+    // after a switch, while the capacitor the newly dark LED feeds catches up.
+    assert(one > samples * 35 / 100 && one < samples * 65 / 100)
+    assert(both > 0 && both < samples / 10)
+    assert(neither < samples / 10)

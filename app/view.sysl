@@ -22,6 +22,15 @@ const BLACK_LEAD: u32 = 0x9AA0AA
 const SELECTED: u32 = 0x6CB4FF
 const CURRENT: u32 = 0xFFE680
 
+// A transistor's symbol, in squares: the base's bar stands BAR off the line from collector to emitter,
+// the slants leave it SLANT either side of its middle, and they meet the line BEND either side of the
+// middle of the collector and emitter. Its circle, RING across, is centred HUB toward the base.
+const BAR: real = 0.45
+const SLANT: real = 0.15
+const BEND: real = 0.55
+const HUB: real = 0.2
+const RING: real = 0.64
+
 // The whole window: the board, the scope under it, and the status line.
 screen(m: &Model) -> &View =
     column([
@@ -97,10 +106,10 @@ private place(m: &Model, r: Rect) -> Place
     for i in 0..<m.sch.elements.len()
         val e = m.sch.elements[i]
 
-        x0 = min(x0, min(e.x1, e.x2))
-        y0 = min(y0, min(e.y1, e.y2))
-        x1 = max(x1, max(e.x1, e.x2))
-        y1 = max(y1, max(e.y1, e.y2))
+        x0 = min(x0, min(e.x1, min(e.x2, e.x3)))
+        y0 = min(y0, min(e.y1, min(e.y2, e.y3)))
+        x1 = max(x1, max(e.x1, max(e.x2, e.x3)))
+        y1 = max(y1, max(e.y1, max(e.y2, e.y3)))
 
     if x0 > x1
         x0 = 0
@@ -122,6 +131,15 @@ private hit(m: &Model, at: Place, wx: int, wy: int) -> int
 
     for i in 0..<m.sch.elements.len()
         val e = m.sch.elements[i]
+
+        // A transistor is hit anywhere in its circle.
+        if e.shape.points() == 3
+            val g = transistor_frame(e)
+            val (cx, cy) = (at.x(g.gx(0.0, HUB)), at.y(g.gy(0.0, HUB)))
+
+            if (px - cx) * (px - cx) + (py - cy) * (py - cy) < (RING * at.unit) * (RING * at.unit) then return int(i)
+
+            continue
 
         if e.shape.points() != 2 || e.shape == Meter then continue
 
@@ -196,6 +214,7 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
             Ground -> pen.ground(e)
             Label -> ()
             Meter -> ()
+            Npn | Pnp -> pen.transistor(e, most, hot)
             _ -> pen.part(e, most, hot)
 
     // A dot wherever three or more ends meet, as a draughtsman marks a junction.
@@ -203,7 +222,7 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
         val e = m.sch.elements[i]
 
         for end in 0..<e.shape.points()
-            val (x, y) = if end == 0 then (e.x1, e.y1) else (e.x2, e.y2)
+            val (x, y) = e.point(end)
 
             if ends_at(m, x, y) >= 3
                 set(vg, wire_colour(m.volts_at(x, y), most))
@@ -225,7 +244,9 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
         for i in 0..<m.sch.elements.len()
             val e = m.sch.elements[i]
 
-            if e.part >= 0 && dot_speed(m.s.current(e.part), m.most_amps) != 0.0
+            if e.part >= 0 && e.shape.points() == 3
+                pen.transistor_dots(e, m.part_flow[i], m.base_flow[i], m.emitter_flow[i])
+            elif e.part >= 0 && dot_speed(m.s.current(e.part), m.most_amps) != 0.0
                 pen.dots(real(e.x1), real(e.y1), real(e.x2), real(e.y2), m.part_flow[i])
 
     for k in 0..<m.meters.len()
@@ -251,6 +272,10 @@ private ends_at(m: &Model, x: int, y: int) -> int
                 n += 1
             elif e.shape == Wire && between(x, y, e)
                 n += 2
+        elif e.shape.points() == 3
+            if e.x2 == x && e.y2 == y then n += 1
+
+            if e.x3 == x && e.y3 == y then n += 1
 
     n
 
@@ -497,6 +522,70 @@ private struct Pen
         self.vg.circle(f.x(mid, 0.0), f.y(mid, 0.0), self.len(0.35 + 0.35 * t))
         self.vg.fill()
 
+    // A transistor: a lead from each of its three points in its node's colour, and the symbol in a
+    // circle between them — the base's bar, the collector's and emitter's slants to it, and the
+    // emitter's arrow, pointing out of an NPN and into a PNP.
+    transistor(self, e: Element, most: real, hot: bool)
+        val g = transistor_frame(e)
+        val m = self.m
+
+        self.width(3.0)
+        set(self.vg, wire_colour(m.s.voltage(e.a), most))
+        self.line(real(e.x1), real(e.y1), g.gx(BEND, 0.0), g.gy(BEND, 0.0))
+        set(self.vg, wire_colour(m.s.voltage(e.b), most))
+        self.line(real(e.x2), real(e.y2), g.gx(0.0, BAR), g.gy(0.0, BAR))
+        set(self.vg, wire_colour(m.s.voltage(e.c), most))
+        self.line(real(e.x3), real(e.y3), g.gx(-BEND, 0.0), g.gy(-BEND, 0.0))
+
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+        self.vg.begin()
+        self.vg.circle(self.px(g.gx(0.0, HUB)), self.py(g.gy(0.0, HUB)), self.len(RING))
+        self.vg.stroke()
+        self.line(g.gx(SLANT, BAR), g.gy(SLANT, BAR), g.gx(BEND, 0.0), g.gy(BEND, 0.0))
+        self.line(g.gx(-SLANT, BAR), g.gy(-SLANT, BAR), g.gx(-BEND, 0.0), g.gy(-BEND, 0.0))
+        self.width(4.0)
+        self.line(g.gx(-0.4, BAR), g.gy(-0.4, BAR), g.gx(0.4, BAR), g.gy(0.4, BAR))
+
+        // The arrow on the emitter's slant: its tip near the lead for an NPN, near the bar for a PNP.
+        val (s0, t0, s1, t1) = if e.shape == Npn then (-SLANT, BAR, -BEND, 0.0) else (-BEND, 0.0, -SLANT, BAR)
+        val ds = s1 - s0
+        val dt = t1 - t0
+        val length = (ds * ds + dt * dt).sqrt()
+        val (ws, wt) = (ds / length, dt / length)
+        val at = if e.shape == Npn then 0.8 else 0.75
+        val (ts, tt) = (s0 + ds * at, t0 + dt * at)
+
+        self.vg.begin()
+        self.vg.move_to(self.px(g.gx(ts, tt)), self.py(g.gy(ts, tt)))
+        self.vg.line_to(self.px(g.gx(ts - 0.26 * ws - 0.12 * wt, tt - 0.26 * wt + 0.12 * ws)),
+                        self.py(g.gy(ts - 0.26 * ws - 0.12 * wt, tt - 0.26 * wt + 0.12 * ws)))
+        self.vg.line_to(self.px(g.gx(ts - 0.26 * ws + 0.12 * wt, tt - 0.26 * wt - 0.12 * ws)),
+                        self.py(g.gy(ts - 0.26 * ws + 0.12 * wt, tt - 0.26 * wt - 0.12 * ws)))
+        self.vg.close_path()
+        self.vg.fill()
+
+    // A transistor's current dots: along the collector's lead and slant to the bar, from the base to
+    // the bar, and from the bar down the emitter's slant and lead, each moved its own `flow` squares.
+    transistor_dots(self, e: Element, collector: real, base: real, emitter: real)
+        val g = transistor_frame(e)
+        val m = self.m
+        val (bx, by) = (g.gx(BEND, 0.0), g.gy(BEND, 0.0))
+        val (ex, ey) = (g.gx(-BEND, 0.0), g.gy(-BEND, 0.0))
+
+        if dot_speed(m.s.terminal_current(e.part, 0), m.most_amps) != 0.0
+            self.dots(real(e.x1), real(e.y1), bx, by, collector)
+            self.dots(bx, by, g.gx(SLANT, BAR), g.gy(SLANT, BAR), collector - distance(real(e.x1), real(e.y1), bx, by))
+
+        if dot_speed(m.s.terminal_current(e.part, 1), m.most_amps) != 0.0
+            self.dots(real(e.x2), real(e.y2), g.gx(0.0, BAR), g.gy(0.0, BAR), base)
+
+        if dot_speed(m.s.terminal_current(e.part, 2), m.most_amps) != 0.0
+            val (sx, sy) = (g.gx(-SLANT, BAR), g.gy(-SLANT, BAR))
+
+            self.dots(sx, sy, ex, ey, emitter)
+            self.dots(ex, ey, real(e.x3), real(e.y3), emitter - distance(sx, sy, ex, ey))
+
     // Current dots along the line from (`x1`, `y1`) to (`x2`, `y2`), half a square apart, moved `flow`
     // squares along it.
     dots(self, x1: real, y1: real, x2: real, y2: real, flow: real)
@@ -582,6 +671,11 @@ private middle(m: &Model) -> (real, real)
         sy += real(e.y1 + e.y2)
         n += 2.0
 
+        if e.shape.points() == 3
+            sx += real(e.x3)
+            sy += real(e.y3)
+            n += 1.0
+
     if n == 0.0 then (0.0, 0.0) else (sx / n, sy / n)
 
 private led_colour(c: Colour) -> u32 = c match
@@ -621,6 +715,33 @@ private struct Frame
         self.to(s1, t1)
         self.pen.vg.stroke()
 
+// A transistor's own frame, in grid squares: centred midway between its collector and emitter, `s`
+// along the line from the middle toward the collector and `t` across it toward the base.
+private struct TransistorFrame
+    mx: real
+    my: real
+    ux: real
+    uy: real
+    nx: real
+    ny: real
+
+    gx(self, s: real, t: real) -> real = self.mx + s * self.ux + t * self.nx
+    gy(self, s: real, t: real) -> real = self.my + s * self.uy + t * self.ny
+
+private transistor_frame(e: Element) -> TransistorFrame
+    val mx = (real(e.x1) + real(e.x3)) / 2.0
+    val my = (real(e.y1) + real(e.y3)) / 2.0
+    val length = distance(real(e.x3), real(e.y3), real(e.x1), real(e.y1))
+    val ux = real(e.x1 - e.x3) / length
+    val uy = real(e.y1 - e.y3) / length
+    // Across the line, turned whichever way puts the base on the positive side.
+    val toward = (real(e.x2) - mx) * -uy + (real(e.y2) - my) * ux
+    val side = if toward < 0.0 then -1.0 else 1.0
+
+    TransistorFrame(mx, my, ux, uy, -uy * side, ux * side)
+
+private distance(x1: real, y1: real, x2: real, y2: real) -> real = ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)).sqrt()
+
 // --- Labels -----------------------------------------------------------------------------------------
 
 // The text over the picture: each part's name and value, the voltage across it when values are on,
@@ -634,6 +755,10 @@ private labels(m: &Model, c: *Canvas, at: Place)
             continue
 
         if !e.shape.is_part() then continue
+
+        if e.shape.points() == 3
+            transistor_label(m, c, at, e)
+            continue
 
         val mx = at.x((real(e.x1) + real(e.x2)) / 2.0)
         val my = at.y((real(e.y1) + real(e.y2)) / 2.0)
@@ -655,6 +780,23 @@ private labels(m: &Model, c: *Canvas, at: Place)
 
     for k in 0..<m.meters.len()
         dial(m, c, at, m.meters[k])
+
+// A transistor's name and model on the side of its circle away from the base, and with values on, the
+// voltage from its collector to its emitter under them.
+private transistor_label(m: &Model, c: *Canvas, at: Place, e: Element)
+    val g = transistor_frame(e)
+    val x = at.x(g.gx(0.0, -0.75))
+    val y = at.y(g.gy(0.0, -0.75))
+    val name = s"${e.name} ${e.value}"
+    // Beside an upright one, flush against the circle; above or below one lying down, centred.
+    val upright = g.nx.abs() >= g.ny.abs()
+    val left = if upright && g.nx > 0.0 then x - real(c.text_size(name).w) else x
+    val top = if upright then y - 18.0 elif g.ny > 0.0 then y - 36.0 else y
+
+    put(c, left, top, name, INK, !upright)
+
+    if m.values && m.trouble == ""
+        put(c, left, top + 18.0, volts(m.s.across(e.part)), 0xFFB030, !upright)
 
 private dial(m: &Model, c: *Canvas, at: Place, mt: Meter)
     val (cx, cy) = meter_centre(m, mt.x1, mt.y1, mt.x2, mt.y2)

@@ -1,0 +1,46 @@
+# Two LEDs blinking in turn: an astable multivibrator, two transistors that keep switching each other
+# off.
+#
+# While Q1 is on its LED is lit, and C1 holds Q2's base below its emitter, so Q2 is off. RB2 charges C1
+# until Q2's base reaches about 0.6 V; Q2 turns on, its collector drops, and C2 drags Q1's base down
+# just as far, turning Q1 off. Now RB1 charges C2, and the two swap again. Each half lasts about
+# 0.7 × RB × C, a little over half a second, so the pair blinks about once a second.
+#
+# CB1 and CB2 stand in for what a real transistor has and amber's model leaves out: the capacitance of
+# its junctions, which is what makes a switch take time. Without them each swap would be instantaneous
+# and no step short enough to follow it. They are far too small to change the blinking.
+#
+# Nothing has to start it: the red and green LEDs are not quite alike, and that difference grows until
+# one transistor wins.
+
+speed 1
+
+battery   B1   -1 0  -1 14  9V
+wire           -1 0  16 0
+wire           -1 14 16 14
+ground         10 14
+
+resistor  RC1  4 0   4 3    470
+led       D1   4 3   4 5    red
+wire           4 5   4 10
+npn       Q1   4 10  8 12   4 14
+
+resistor  RC2  16 0  16 3   470
+led       D2   16 3  16 5   green
+wire           16 5  16 10
+npn       Q2   16 10 12 12  16 14
+
+resistor  RB1  8 0   8 4    18k
+wire           8 4   8 12
+capacitor CB1  8 12  8 14   100n
+resistor  RB2  12 0  12 4   18k
+wire           12 4  12 12
+capacitor CB2  12 12 12 14  100n
+
+wire           4 6   9 6
+capacitor C1   9 6   11 6   47u
+wire           11 6  12 6
+
+wire           16 9  11 9
+capacitor C2   11 9  9 9    47u
+wire           9 9   8 9

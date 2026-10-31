@@ -171,3 +171,72 @@ restart_resets_switches()
     m.toggle(s1)
     m.restart()
     assert(m.s.circuit.parts[usize(m.sch.elements[usize(s1)].part)].kind == Switch(false))
+
+// A common-emitter stage, its emitter landing along the bottom rail.
+val STAGE = """
+    battery  B1  0 0  0 6  9
+    wire         0 0  8 0
+    resistor RC  4 0  4 2  1k
+    npn      Q1  4 2  6 4  4 6
+    resistor RB  8 0  8 4  470k
+    wire         8 4  6 4
+    wire         0 6  8 6
+    ground       0 6
+    """
+
+// The same stage for a PNP, the battery turned over.
+val PNP_STAGE = """
+    battery  B1  0 6  0 0  9
+    wire         0 0  8 0
+    resistor RC  4 0  4 2  1k
+    pnp      Q1  4 2  6 4  4 6
+    resistor RB  8 0  8 4  470k
+    wire         8 4  6 4
+    wire         0 6  8 6
+    ground       0 0
+    """
+
+@test("meters on a transistor's terminals read its base–emitter and collector–emitter voltages")
+transistor_meters()
+    val m = model("stage.amber", parse_schematic(STAGE).unwrap())
+    val q = m.sch.elements[m.sch.find("Q1").unwrap()].part
+
+    assert(m.probe(6, 4))
+    assert(m.probe(4, 6))
+    assert(m.probe(4, 2))
+    assert(m.probe(4, 6))
+    assert(m.meters.len() == 2)
+    assert(m.reading(m.meters[0]) > 0.55 && m.reading(m.meters[0]) < 0.75)
+    assert((m.reading(m.meters[1]) - m.s.across(q)).abs() < 1e-12)
+
+@test("the status line gives a clicked transistor's voltages and the currents into it, or out of a PNP")
+status_of_a_transistor()
+    val m = model("stage.amber", parse_schematic(STAGE).unwrap())
+
+    m.selected = m.sch.find("Q1").unwrap()
+    assert(status(m).contains("Q1 2N3904 NPN transistor: "))
+    assert(status(m).contains("A into the collector, "))
+    assert(status(m).ends_with("A into the base"))
+
+    val p = model("pnp.amber", parse_schematic(PNP_STAGE).unwrap())
+
+    p.selected = p.sch.find("Q1").unwrap()
+    assert(status(p).contains("Q1 2N3906 PNP transistor: -"))
+    assert(status(p).contains("A out of the collector, "))
+    assert(status(p).ends_with("A out of the base"))
+
+@test("a transistor's dots run in at its collector and base and out at its emitter, and the other way for a PNP")
+transistor_dots()
+    val m = model("stage.amber", parse_schematic(STAGE).unwrap())
+    val i = usize(m.sch.find("Q1").unwrap())
+
+    m.flow(0.1)
+    assert(m.part_flow[i] > 0.0 && m.base_flow[i] > 0.0 && m.emitter_flow[i] > 0.0)
+    // The emitter carries the largest current, so it sets the dots' pace.
+    assert((m.emitter_flow[i] - 0.3).abs() < 1e-9)
+    assert(m.emitter_flow[i] > m.part_flow[i] && m.part_flow[i] > m.base_flow[i])
+
+    val p = model("pnp.amber", parse_schematic(PNP_STAGE).unwrap())
+
+    p.flow(0.1)
+    assert(p.part_flow[i] < 0.0 && p.base_flow[i] < 0.0 && p.emitter_flow[i] < 0.0)
