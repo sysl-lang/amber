@@ -56,6 +56,39 @@ val NPN_2N3904 = TransistorModel(false, 6.734e-15, 416.4, 0.7371, 1.0, 1.0, 74.0
 // Its PNP complement, the 2N3906: a gain of about 180, an Early voltage of 18.7 V.
 val PNP_2N3906 = TransistorModel(true, 1.41e-15, 180.7, 4.977, 1.0, 1.0, 18.7, 0.0)
 
+// The constants a MOSFET's equations are written in: SPICE's level 1, Shichman and Hodges's square law,
+// with the bulk tied to the source.
+//
+// `vto` is the threshold voltage, `kp` the transconductance parameter in A/V², and `lambda` the
+// channel-length modulation in 1/V. A channel `w` wide and `l` long has `β = kp · w / l`. With `vgs`
+// from gate to source, `vds` from drain to source and `vgst = vgs − vto`, the current into the drain
+// is
+//
+//     cutoff,      vgst ≤ 0:    0
+//     linear,      vds < vgst:  β · vds · (vgst − vds / 2) · (1 + lambda · vds)
+//     saturation,  vds ≥ vgst:  β / 2 · vgst² · (1 + lambda · vds)
+//
+// The device is symmetric: with `vds` below zero the drain and source change places, as SPICE has it.
+// A p-channel MOSFET is the same equations with every voltage and current reversed, and SPICE writes
+// its threshold reversed too, so an enhancement PMOS has a negative `vto`.
+struct MosfetModel derives Eq
+    pmos: bool
+    vto: real
+    kp: real
+    lambda: real
+
+// A small-signal n-channel MOSFET with the 2N7000's figures at a level-1 approximation: a threshold
+// of 2 V, and about 4 Ω on at 4.5 V and 1.25 Ω at 10 V on SPICE's square channel.
+val NMOS_2N7000 = MosfetModel(false, 2.0, 0.1, 0.01)
+
+// A small-signal p-channel MOSFET with the BS250's figures at a level-1 approximation: a threshold of
+// −2 V and about 12 Ω on at −10 V.
+val PMOS_BS250 = MosfetModel(true, -2.0, 0.01, 0.02)
+
+// SPICE's channel when a MOSFET's card gives none: 100 µm wide and 100 µm long, so `β` is `kp`.
+const DEFAULT_W: real = 100e-6
+const DEFAULT_L: real = 100e-6
+
 // What a part is, with the values that say how it behaves.
 enum Kind derives Eq
     // A resistor of `ohms`.
@@ -78,9 +111,14 @@ enum Kind derives Eq
     Switch(closed: bool)
     // A bipolar transistor, with three terminals: collector, base and emitter, in that order.
     Transistor(model: TransistorModel)
+    // A MOSFET with a channel `w` wide and `l` long, in metres, with three terminals: drain, gate and
+    // source, in that order. Its bulk is its source.
+    Mosfet(model: MosfetModel, w: real, l: real)
 
     // How many terminals a part of this kind has: 3 for a transistor, 2 for the rest.
-    terminals(self) -> int = if self is Transistor(_) then 3 else 2
+    terminals(self) -> int = self match
+        Transistor(_) | Mosfet(_, _, _) -> 3
+        _ -> 2
 
     // A source's wave; `None` for a part that is not a source.
     wave(self) -> Option[Wave] = self match
@@ -89,7 +127,8 @@ enum Kind derives Eq
         _ -> None
 
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and
-// `b` and has `c` at -1; a transistor's collector, base and emitter are `a`, `b` and `c`.
+// `b` and has `c` at -1; a transistor's collector, base and emitter are `a`, `b` and `c`, and a
+// MOSFET's drain, gate and source.
 struct Part
     name: string
     kind: Kind
@@ -148,7 +187,7 @@ struct Circuit
         self.add(name, kind, na, nb)
 
     // Add a three-terminal part on three nodes named rather than numbered: a transistor's collector,
-    // base and emitter.
+    // base and emitter, or a MOSFET's drain, gate and source.
     connect3(*self, name: string, kind: Kind, a: string, b: string, c: string)
         val na = self.node(a)
         val nb = self.node(b)

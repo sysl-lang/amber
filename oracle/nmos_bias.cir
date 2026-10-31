@@ -1,0 +1,16 @@
+NMOS common-source stage biased by a divider, with a source resistor
+VDD vdd 0 12
+R1 vdd g 100k
+R2 g 0 47k
+RD vdd d 2.2k
+RS s 0 470
+VM d dq 0
+M1 dq g s s nmod W=50u L=10u
+.model nmod NMOS (LEVEL=1 VTO=1 KP=1m LAMBDA=0.02)
+.op
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+run
+wrdata nmos_bias.data v(g) v(dq) v(s) i(vm)
+.endc
+.end

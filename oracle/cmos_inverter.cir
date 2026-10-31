@@ -1,0 +1,14 @@
+A CMOS inverter swept through its input
+VDD vdd 0 5
+VIN in 0 0
+MN out in 0 0 nmod W=10u L=2u
+MP out in vdd vdd pmod W=20u L=2u
+.model nmod NMOS (LEVEL=1 VTO=0.8 KP=100u LAMBDA=0.05)
+.model pmod PMOS (LEVEL=1 VTO=-0.9 KP=40u LAMBDA=0.05)
+.dc VIN 0 5 0.1
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+run
+wrdata cmos_inverter.data v(out) i(vdd)
+.endc
+.end

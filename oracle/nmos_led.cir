@@ -1,0 +1,23 @@
+A MOSFET switching an LED from a pulse at its gate, a capacitor across it
+V1 vcc 0 5
+V2 in 0 PULSE(0 5 1m 10u 10u 2m 5m)
+RG in g 1k
+RL vcc a 220
+D1 a c dred
+VM c dq 0
+CL dq 0 100n
+* A bleeder, so the drain's voltage while the MOSFET is off is set by a part rather than by picoamps:
+* amber puts GMIN across a capacitor at the operating point and ngspice does not, and with nothing
+* else there the two leakages put the drain 40 mV apart.
+RB dq 0 1meg
+M1 dq g 0 0 m2n7000
+.model m2n7000 NMOS (LEVEL=1 VTO=2 KP=0.1 LAMBDA=0.01)
+.model dred D (IS=1e-17 N=2 RS=2)
+.tran 50u 5m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 50u 5m 0 2u
+linearize v(g) v(dq) i(vm)
+wrdata nmos_led.data v(g) v(dq) i(vm)
+.endc
+.end

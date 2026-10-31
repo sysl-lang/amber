@@ -27,4 +27,14 @@ headings()
 report_refusals()
     assert(report("t\nR1 a 0 1\n").unwrap()[1] == "no analysis asked for: .op, .tran or .dc")
     assert(report("t\nV1 a 0 1\nV2 a 0 2\n.op\n").unwrap_err().starts_with("operating point: "))
-    assert(report("t\nM1 d g s s nmos\n").unwrap_err() == "line 2: 'm1' is a field-effect transistor, which amber does not have yet")
+    assert(report("t\nJ1 d g s jmod\n").unwrap_err() == "line 2: 'j1' is a junction field-effect transistor, which amber does not have yet")
+    assert(report("t\nM1 d g s s nmos\n").unwrap_err() == "line 2: 'm1' names model 'nmos', which no .model defines")
+
+@test("a MOSFET's report: its notes, then the drain current its gate sets")
+report_mosfet()
+    val lines = report("t\nV1 d 0 5\nV2 g 0 3\nM1 d g 0 b nm\n.model nm nmos vto=1 kp=1m gamma=0.5\n.op\n").unwrap()
+
+    assert(lines[1] == "note: model nm: gamma is not modelled")
+    assert(lines[2] == "note: 'm1': its bulk is taken to be on its source, '0'")
+    // Saturated: half of KP times the overdrive squared, delivered by the drain's battery.
+    assert(lines.view().any(l -> l == "i(v1)        -2.000000e-03"))

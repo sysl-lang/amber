@@ -68,11 +68,13 @@ analyses and prints their tables. The subset: `R`, `C` and `L` (with `IC=`), `V`
 (DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; an `AC` part is set aside), `D` with `.model … D`
 (`IS`, `N`, `RS`, and an area), `Q` bipolar transistors (collector, base, emitter, an optional
 substrate, a model and an area) with `.model … NPN` or `PNP` (`IS`, `BF`, `BR`, `NF`, `NR`, `VAF`,
-`VAR`), `.op`, `.tran` (with `UIC`), `.dc`, `.end`; a `.control` block is skipped. What a netlist asks
-for that amber reads but does not model — a diode's junction capacitance, a transistor's base
-resistance or high-injection knee, `.options` — is printed as a note rather than dropped, and what
-would change the circuit and cannot be read (a field-effect transistor, a subcircuit, `.param`) is
-refused with its line.
+`VAR`), `M` MOSFETs (drain, gate, source, bulk, a model, and `L=`, `W=` and `M=`, SPICE's 100 µm when
+left off) with `.model … NMOS` or `PMOS` at level 1 (`VTO`, `KP`, `LAMBDA`), `.op`, `.tran` (with
+`UIC`), `.dc`, `.end`; a `.control` block is skipped. What a netlist asks for that amber reads but does
+not model — a diode's junction capacitance, a transistor's base resistance or high-injection knee, a
+MOSFET's body effect (`GAMMA`, `PHI`, a bulk not on its source) or gate oxide, `.options` — is printed
+as a note rather than dropped, and what would change the circuit and cannot be read (a junction
+field-effect transistor, a MOSFET above level 1, a subcircuit, `.param`) is refused with its line.
 
 **ngspice is the oracle.** The netlists in `oracle/` are run through ngspice 47 at a tolerance a
 hundred times tighter than amber's by `oracle/generate.zsh`, which writes its answers into
@@ -84,7 +86,9 @@ circuit rung for twelve cycles and an astable multivibrator's steep edges).
 
 `sh.sysl.amber` builds a circuit — from a schematic, or part by part — and solves it by modified
 nodal analysis, with Newton–Raphson and SPICE's junction limiting for diodes and bipolar transistors
-(`Transistor(NPN_2N3904)`, `connect3` for its collector, base and emitter), and steps it through time
+(`Transistor(NPN_2N3904)`, `connect3` for its collector, base and emitter) and its `fetlim` and
+`limvds` for level-1 MOSFETs (`Mosfet(NMOS_2N7000, DEFAULT_W, DEFAULT_L)` or `PMOS_BS250`, `connect3`
+for its drain, gate and source), and steps it through time
 by the trapezoidal rule with its step chosen from the error it makes:
 
 ```

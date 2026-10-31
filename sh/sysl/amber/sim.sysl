@@ -50,7 +50,9 @@ enum Method: u8
 // straight line touching its curve at the voltage it has now, the linear system is solved, and the
 // voltage moves to the answer; repeated until nothing moves. A transistor is two junctions, base to
 // emitter and base to collector, and each terminal's current is linearised against both. The step a junction may take is limited,
-// since the exponential sends an unlimited step to infinity.
+// since the exponential sends an unlimited step to infinity. A MOSFET's drain current is linearised
+// against its gate–source and drain–source voltages, and their steps are limited too, as SPICE limits
+// them, since a square law far from where it was linearised overshoots as badly.
 //
 // **Time moves in steps.** Over a step of length h a capacitor's dv/dt is written as a difference, so
 // it becomes a conductance in parallel with a current source, both fixed by the voltage and current it
@@ -65,7 +67,8 @@ struct Sim
     // diode's inner node. -1 where the part adds none.
     extra: Buf[int]
     // The junction voltages each part was last linearised at, two by part: at `2i` a diode's junction or
-    // a transistor's base–emitter one, at `2i + 1` a transistor's base–collector one.
+    // a transistor's base–emitter one, at `2i + 1` a transistor's base–collector one. A MOSFET's are its
+    // gate–source voltage at `2i` and its drain–source voltage at `2i + 1`.
     junction: Buf[real]
     size: int
     x: Buf[real]
@@ -112,17 +115,17 @@ struct Sim
         None -> 0.0
 
     // The voltage across part `i`: its first terminal's less its second's. A transistor's is from its
-    // collector to its emitter.
+    // collector to its emitter, and a MOSFET's from its drain to its source.
     across(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
 
-        if p.kind is Transistor(_) then return self.voltage(p.a) - self.voltage(p.c)
+        if p.kind.terminals() == 3 then return self.voltage(p.a) - self.voltage(p.c)
 
         self.voltage(p.a) - self.voltage(p.b)
 
     // The current through part `i`, from its first terminal to its second. A battery delivering power
     // has current flowing out of its first terminal, `+`, so its current here is negative. A
-    // transistor's is the current into its collector.
+    // transistor's is the current into its collector, and a MOSFET's the current into its drain.
     current(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
 
@@ -137,17 +140,31 @@ struct Sim
 
                 diode_current(m, v) + GMIN * v + (diode_conductance(m, v) + GMIN) * (self.junction_now(i) - v)
             Switch(closed) -> if closed then self.across(i) / CLOSED_OHMS else 0.0
-            Transistor(_) -> self.terminal_current(i, 0)
+            Transistor(_) | Mosfet(_, _, _) -> self.terminal_current(i, 0)
 
     // The current flowing into part `i` at terminal `k`, counting from 0. The currents into a part's
-    // terminals sum to zero: a two-terminal part's second is the first's negative, and a transistor's
-    // emitter carries what its collector and base do, back out.
+    // terminals sum to zero: a two-terminal part's second is the first's negative, a transistor's
+    // emitter carries what its collector and base do, back out, and a MOSFET's gate carries nothing,
+    // so its source carries its drain's current back out.
     //
     // A transistor's currents, like a diode's, are read off the lines its junctions were linearised
     // on, at the voltages the solution puts across them, so they are the currents the system balanced
-    // and every node's sum to zero exactly.
+    // and every node's sum to zero exactly. A MOSFET's are read the same way.
     terminal_current(self, i: int, k: int) -> real
         val p = self.circuit.parts[usize(i)]
+
+        if p.kind is Mosfet(m, w, l)
+            val t = if m.pmos then -1.0 else 1.0
+            val vgs = self.junction[usize(2 * i)]
+            val vds = self.junction[usize(2 * i + 1)]
+            val line = mosfet_line(m, w, l, vgs, vds)
+            val (now_gs, now_ds) = self.mosfet_now(i)
+            val id = t * (line.id + line.gm * (now_gs - vgs) + line.gds * (now_ds - vds))
+
+            return k match
+                0 -> id
+                1 -> 0.0
+                _ -> -id
 
         if p.kind is Transistor(m)
             val t = if m.pnp then -1.0 else 1.0
@@ -166,11 +183,11 @@ struct Sim
         if k == 0 then self.current(i) else -self.current(i)
 
     // The power part `i` takes from the circuit, in watts; negative for a part delivering it. A
-    // transistor's is what flows into each terminal times the terminal's voltage, summed.
+    // transistor's or a MOSFET's is what flows into each terminal times the terminal's voltage, summed.
     power(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
 
-        if p.kind is Transistor(_)
+        if p.kind.terminals() == 3
             var w = 0.0
 
             for k in 0..<3
@@ -196,6 +213,15 @@ struct Sim
         val vb = self.voltage(p.b)
 
         (t * (vb - self.voltage(p.c)), t * (vb - self.voltage(p.a)))
+
+    // MOSFET `i`'s gate–source and drain–source voltages in the present solution, reversed for a
+    // p-channel one, so either polarity is on when they are positive.
+    private mosfet_now(self, i: int) -> (real, real)
+        val p = self.circuit.parts[usize(i)]
+        val t = if p.kind is Mosfet(m, _, _) && m.pmos then -1.0 else 1.0
+        val vs = self.voltage(p.c)
+
+        (t * (self.voltage(p.b) - vs), t * (self.voltage(p.a) - vs))
 
     // Open or close switch `i`. The circuit changes abruptly, which is a corner: the next step is short
     // and taken by backward Euler.
@@ -503,6 +529,10 @@ struct Sim
                         val (be, bc) = self.transistor_now(int(i))
 
                         if !close(self.junction[2 * i], be) || !close(self.junction[2 * i + 1], bc) then settled = false
+                    Mosfet(_, _, _) ->
+                        val (gs, ds) = self.mosfet_now(int(i))
+
+                        if !close(self.junction[2 * i], gs) || !close(self.junction[2 * i + 1], ds) then settled = false
                     _ -> ()
 
             if settled then return Ok(())
@@ -527,6 +557,26 @@ struct Sim
 
                     self.junction[2 * i] = limit(be, self.junction[2 * i], VT, vcrit)
                     self.junction[2 * i + 1] = limit(bc, self.junction[2 * i + 1], VT, vcrit)
+                Mosfet(m, _, _) ->
+                    // SPICE's way: the gate's step is limited against the threshold, on whichever
+                    // terminal is the source now, and the drain's step after it.
+                    val (gs, ds) = self.mosfet_now(int(i))
+                    val was_gs = self.junction[2 * i]
+                    val was_ds = self.junction[2 * i + 1]
+                    val vt = threshold(m)
+
+                    if was_ds >= 0.0
+                        val vgs = fetlim(gs, was_gs, vt)
+                        val vds = limvds(vgs - (gs - ds), was_ds)
+
+                        self.junction[2 * i] = vgs
+                        self.junction[2 * i + 1] = vds
+                    else
+                        val vgd = fetlim(gs - ds, was_gs - was_ds, vt)
+                        val vds = -limvds(vgd - gs, -was_ds)
+
+                        self.junction[2 * i] = vgd + vds
+                        self.junction[2 * i + 1] = vds
                 _ -> ()
 
     // Write the linearised system for the present solution at the present time.
@@ -617,6 +667,23 @@ struct Sim
                     self.flow(b, 1.0, t, p, l.ib, l.ib_be, l.ib_bc, vbe, vbc)
                     self.flow(e, -1.0, t, p, l.ic, l.ic_be, l.ic_bc, vbe, vbc)
                     self.flow(e, -1.0, t, p, l.ib, l.ib_be, l.ib_bc, vbe, vbc)
+                Mosfet(m, w, l) ->
+                    // The drain's current, which leaves by the source; the gate carries none. On the
+                    // line touching the curve at `vgs0` and `vds0`, the current into the drain is
+                    // `t · (id − gm · vgs0 − gds · vds0) + gm · (v(gate) − v(source)) + gds · (v(drain) − v(source))`.
+                    val vgs = self.junction[2 * i]
+                    val vds = self.junction[2 * i + 1]
+                    val line = mosfet_line(m, w, l, vgs, vds)
+                    val t = if m.pmos then -1.0 else 1.0
+                    val g = p.b - 1
+                    val s = p.c - 1
+                    val owed = t * (line.id - line.gm * vgs - line.gds * vds)
+
+                    for (row, sign) in [(a, 1.0), (s, -1.0)]
+                        self.sys.at(row, a, sign * line.gds)
+                        self.sys.at(row, g, sign * line.gm)
+                        self.sys.at(row, s, -sign * (line.gm + line.gds))
+                        self.sys.rhs(row, -sign * owed)
 
     // Into the equation of unknown `row`, `s` times a current into transistor `p` of
     // `t · (i0 + gbe · (vbe − vbe0) + gbc · (vbc − vbc0))`, where `vbe = t · (v(base) − v(emitter))` and
@@ -730,6 +797,86 @@ private transistor_line(m: TransistorModel, vbe: real, vbc: real) -> TransistorL
         (-gr - ct * dqb_bc / qb) / qb - gr / m.br - GMIN,
         gf / m.bf + GMIN,
         gr / m.br + GMIN)
+
+// A MOSFET's drain current on the line touching its curve at one gate–source and drain–source
+// voltage: the current there, and its slopes against each voltage. All are as an n-channel MOSFET has
+// them; a p-channel one's are the same with the voltages and the current reversed.
+private struct MosfetLine
+    id: real
+    gm: real
+    gds: real
+
+// The threshold of model `m` on the voltages `mosfet_line` takes: SPICE writes a p-channel MOSFET's
+// reversed, as its gate–source voltage is.
+private threshold(m: MosfetModel) -> real = if m.pmos then -m.vto else m.vto
+
+// The line for model `m` with a channel `w` by `l` at `vgs` and `vds`, with GMIN from drain to
+// source, where SPICE puts it across the drain's junction with the bulk. With `vds` below zero the
+// source is the higher terminal and the two change places: the current is the square law's at the
+// gate–drain voltage and `−vds`, flowing the other way.
+private mosfet_line(m: MosfetModel, w: real, l: real, vgs: real, vds: real) -> MosfetLine
+    if vds >= 0.0
+        val c = channel(m, w, l, vgs, vds)
+
+        return MosfetLine(c.id + GMIN * vds, c.gm, c.gds + GMIN)
+
+    val c = channel(m, w, l, vgs - vds, -vds)
+
+    MosfetLine(-c.id + GMIN * vds, -c.gm, c.gm + c.gds + GMIN)
+
+// The square law with the drain the higher terminal, `vds` not below zero: off below the threshold,
+// a resistor shrinking toward pinch-off in the linear region, and a current the gate sets beyond it,
+// each raised by `lambda · vds`.
+private channel(m: MosfetModel, w: real, l: real, vgs: real, vds: real) -> MosfetLine
+    val vgst = vgs - threshold(m)
+
+    if vgst <= 0.0 then return MosfetLine(0.0, 0.0, 0.0)
+
+    val beta = m.kp * w / l
+    val widened = 1.0 + m.lambda * vds
+
+    if vgst <= vds
+        return MosfetLine(0.5 * beta * vgst * vgst * widened, beta * vgst * widened, 0.5 * m.lambda * beta * vgst * vgst)
+
+    MosfetLine(
+        beta * vds * (vgst - 0.5 * vds) * widened,
+        beta * vds * widened,
+        beta * (vgst - vds) * widened + m.lambda * beta * vds * (vgst - 0.5 * vds))
+
+// SPICE's limit on a step of a MOSFET's gate–source voltage from `was` toward `want`, against its
+// threshold `vto`: a device that is off may come on only to just above the threshold, one that is
+// barely on may move only a few volts, one well on may rise by steps that grow with how far on it is
+// and may turn off only as far as 2 V above the threshold, and one off may fall by steps that grow
+// with how far off it is.
+//
+// SPICE also limits a step down that stays well on, and a step up that stays off, to |was − vto| + 1;
+// neither can be that long, so neither is written here.
+private[amber] fetlim(want: real, was: real, vto: real) -> real
+    val hi = (2.0 * (was - vto)).abs() + 2.0
+    val on = vto + 3.5
+    val step = want - was
+
+    if was >= on
+        if step > 0.0 then return if step >= hi then was + hi else want
+
+        return if want >= on then want else max(want, vto + 2.0)
+
+    if was >= vto then return if step <= 0.0 then max(want, vto - 0.5) else min(want, vto + 4.0)
+
+    if step <= 0.0 then return if -step > hi then was - hi else want
+
+    min(want, vto + 0.5)
+
+// SPICE's limit on a step of a MOSFET's drain–source voltage: no more than about tripling it at a time
+// above 3.5 V, and within −0.5 V and 4 V below.
+private[amber] limvds(want: real, was: real) -> real
+    if was >= 3.5
+        if want > was then return min(want, 3.0 * was + 2.0)
+        if want < 3.5 then return max(want, 2.0)
+
+        return want
+
+    if want > was then min(want, 4.0) else max(want, -0.5)
 
 // The voltage above which a junction of saturation current `is`, on thermal voltage `nvt`, has its
 // steps limited: where its curve bends hardest.

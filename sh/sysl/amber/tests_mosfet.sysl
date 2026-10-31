@@ -1,0 +1,438 @@
+module sh.sysl.amber
+@tests
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// An n-channel MOSFET with round figures: a 1 V threshold, 1 mA/V², and channel-length modulation of
+// 0.02/V. On SPICE's square channel `β` is `kp`.
+val PLAIN_N = MosfetModel(false, 1.0, 1e-3, 0.02)
+
+// Its p-channel mirror: the same figures with the threshold reversed, as SPICE writes it.
+val PLAIN_P = MosfetModel(true, -1.0, 1e-3, 0.02)
+
+// The square law, written out again: the current into the drain of an n-channel MOSFET with `β` and
+// `m`'s threshold and lambda, at `vgs` and `vds` not below zero.
+private square_law(m: MosfetModel, beta: real, vgs: real, vds: real) -> real
+    val vgst = vgs - m.vto
+
+    if vgst <= 0.0 then return 0.0
+
+    if vds >= vgst then return 0.5 * beta * vgst * vgst * (1.0 + m.lambda * vds)
+
+    beta * vds * (vgst - 0.5 * vds) * (1.0 + m.lambda * vds)
+
+// A MOSFET with its drain held at `vd` and its gate at `vg` by batteries, its source grounded.
+private biased(kind: Kind, vd: real, vg: real) -> Sim
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(vd)), "d", "0")
+    c.connect("V2", VoltageSource(Dc(vg)), "g", "0")
+    c.connect3("M1", kind, "d", "g", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s
+
+// --- The model --------------------------------------------------------------------------------------
+
+@test("saturation: half of β times the overdrive squared, raised by lambda · vds")
+mosfet_saturation()
+    val s = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), 5.0, 3.0)
+
+    // GMIN from drain to source carries its picoamps besides.
+    assert(near(s.current(2), 0.5 * 1e-3 * 4.0 * 1.1 + 5.0 * GMIN, 1e-15))
+    assert(near(s.current(2), square_law(PLAIN_N, 1e-3, 3.0, 5.0), 1e-11))
+    assert(s.terminal_current(2, 1) == 0.0)
+    assert(s.terminal_current(2, 2) == -s.current(2))
+    // What the drain's battery delivers is the drain's current; the gate's delivers nothing.
+    assert(near(s.current(0), -s.current(2), 1e-15))
+    assert(s.current(1).abs() < 1e-15)
+    assert(near(s.across(2), 5.0, 1e-12))
+    assert(near(s.power(2), 5.0 * s.current(2), 1e-15))
+
+@test("the channel's width over its length scales β")
+mosfet_width_and_length()
+    val s = biased(Mosfet(PLAIN_N, 20e-6, 10e-6), 5.0, 3.0)
+
+    assert(near(s.current(2), 2.0 * 0.5 * 1e-3 * 4.0 * 1.1 + 5.0 * GMIN, 1e-15))
+
+@test("the linear region: β · vds · (vgst − vds / 2) · (1 + lambda · vds) below pinch-off")
+mosfet_linear()
+    val s = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), 0.5, 3.0)
+
+    assert(near(s.current(2), 1e-3 * 0.5 * (2.0 - 0.25) * 1.01 + 0.5 * GMIN, 1e-15))
+
+@test("at pinch-off, vds = vgst, the two regions give one current")
+mosfet_pinch_off()
+    val s = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), 2.0, 3.0)
+    val sat = 0.5 * 1e-3 * 4.0 * 1.04
+    val lin = 1e-3 * 2.0 * (2.0 - 1.0) * 1.04
+
+    assert(near(sat, lin, 1e-18))
+    assert(near(s.current(2), sat + 2.0 * GMIN, 1e-15))
+
+@test("cutoff: at and below the threshold only GMIN conducts")
+mosfet_cutoff()
+    val below = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), 5.0, 0.9)
+    val at = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), 5.0, 1.0)
+    val reversed = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), 5.0, -3.0)
+
+    assert(near(below.current(2), 5.0 * GMIN, 1e-18))
+    assert(near(at.current(2), 5.0 * GMIN, 1e-18))
+    assert(near(reversed.current(2), 5.0 * GMIN, 1e-18))
+
+@test("drain and source change places when vds is below zero, and the current reverses")
+mosfet_swap()
+    // The drain terminal 2 V below the grounded source terminal: the source terminal is the drain now,
+    // the gate is 5 V above the lower one, and 2 V are across the channel.
+    val swapped = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), -2.0, 3.0)
+    val f = 1e-3 * 2.0 * (4.0 - 1.0) * (1.0 + 0.02 * 2.0)
+
+    assert(near(swapped.current(2), -f - 2.0 * GMIN, 1e-15))
+    assert(near(swapped.across(2), -2.0, 1e-12))
+
+    // The same MOSFET put in the other way round carries the same current the other way.
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(-2.0)), "x", "0")
+    c.connect("V2", VoltageSource(Dc(3.0)), "g", "0")
+    c.connect3("M1", Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), "0", "g", "x")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(near(s.current(2), -swapped.current(2), 1e-15))
+
+@test("swapped at the edge: vds of zero carries nothing, and the current is continuous either side")
+mosfet_swap_edge()
+    val zero = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), 0.0, 3.0)
+    val above = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), 1e-6, 3.0)
+    val below = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), -1e-6, 3.0)
+
+    assert(zero.current(2) == 0.0)
+    // The channel's resistance there is 1 / (β · vgst): 500 Ω.
+    assert(near(above.current(2), 1e-6 / 500.0, 1e-12))
+    assert(near(below.current(2), -1e-6 / 500.0, 1e-12))
+
+@test("a p-channel MOSFET is the n-channel one with every voltage and current reversed")
+pmos_mirror()
+    for (vd, vg) in [(5.0, 3.0), (0.5, 3.0), (2.0, 3.0), (5.0, 0.9), (-2.0, 3.0)]
+        val n = biased(Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), vd, vg)
+        val p = biased(Mosfet(PLAIN_P, DEFAULT_W, DEFAULT_L), -vd, -vg)
+
+        assert(near(p.current(2), -n.current(2), 1e-15))
+        assert(p.terminal_current(2, 1) == 0.0)
+
+    // A PMOS with a positive gate against its source is off.
+    val off = biased(Mosfet(PLAIN_P, DEFAULT_W, DEFAULT_L), -5.0, 3.0)
+
+    assert(near(off.current(2), -5.0 * GMIN, 1e-18))
+
+@test("Kirchhoff's current law holds at every node of a common-source stage")
+mosfet_kcl()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(12.0)), "vdd", "0")
+    c.connect("R1", Resistor(100e3), "vdd", "g")
+    c.connect("R2", Resistor(47e3), "g", "0")
+    c.connect("RD", Resistor(2.2e3), "vdd", "d")
+    c.connect("RS", Resistor(470.0), "s", "0")
+    c.connect3("M1", Mosfet(PLAIN_N, 50e-6, 10e-6), "d", "g", "s")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+
+    val id = s.terminal_current(5, 0)
+
+    assert(id + s.terminal_current(5, 1) + s.terminal_current(5, 2) == 0.0)
+    assert(near(s.current(3), id, 1e-12 * id))
+    assert(near(s.current(4), id, 1e-12 * id))
+    assert(near(s.current(1), s.current(2), 1e-15))
+    // The divider sets the gate, and the square law the rest.
+    assert(near(s.voltage_at("g"), 12.0 * 47.0 / 147.0, 1e-9))
+
+    val vgs = s.voltage_at("g") - s.voltage_at("s")
+    val vds = s.voltage_at("d") - s.voltage_at("s")
+
+    assert(near(id, square_law(PLAIN_N, 5e-3, vgs, vds) + GMIN * vds, 1e-12))
+
+@test("a source follower from far off: Newton reaches the square law's root through limited steps")
+source_follower()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(10.0)), "vdd", "0")
+    c.connect("R1", Resistor(1000.0), "s", "0")
+    c.connect3("M1", Mosfet(MosfetModel(false, 1.0, 1e-3, 0.0), DEFAULT_W, DEFAULT_L), "vdd", "vdd", "s")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    // vs = 1000 · 0.5e-3 · (9 − vs)², so vs² − 20 vs + 81 = 0.
+    assert(near(s.voltage_at("s"), 10.0 - (19.0).sqrt(), 1e-7))
+
+@test("a gate connected to nothing else is a node nothing fixes, since a gate draws no current")
+floating_gate()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "d", "0")
+    c.connect3("M1", Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), "d", "g", "0")
+
+    var s = sim(c)
+
+    assert(s.operating_point().unwrap_err() == "the circuit has a node no part fixes the voltage of, or a loop of voltage sources and inductors")
+
+@test("SPICE's gate limit: off comes on only to just above the threshold, barely on moves a few volts")
+gate_limit()
+    // Off, threshold 1 V: an upward step stops half a volt above the threshold, a small one is taken
+    // whole, and a step down is taken up to 2 |was − vto| + 2.
+    assert(fetlim(10.0, 0.0, 1.0) == 1.5)
+    assert(fetlim(1.2, 0.0, 1.0) == 1.2)
+    assert(fetlim(0.9, -1.0, 1.0) == 0.9)
+    assert(fetlim(-100.0, 0.0, 1.0) == -4.0)
+    assert(fetlim(-3.0, 0.0, 1.0) == -3.0)
+    assert(fetlim(-100.0, -10.0, 1.0) == -34.0)
+    // Barely on: up to 4 V above the threshold, down to half a volt below it.
+    assert(fetlim(50.0, 2.0, 1.0) == 5.0)
+    assert(fetlim(3.0, 2.0, 1.0) == 3.0)
+    assert(fetlim(-50.0, 2.0, 1.0) == 0.5)
+    // Well on, from 10 V: up by at most 2 |was − vto| + 2, down freely while it stays well on, and to
+    // no less than 2 V above the threshold when it would leave.
+    assert(fetlim(100.0, 10.0, 1.0) == 30.0)
+    assert(fetlim(25.0, 10.0, 1.0) == 25.0)
+    assert(fetlim(4.5, 20.0, 1.0) == 4.5)
+    assert(fetlim(4.4, 20.0, 1.0) == 4.4)
+    assert(fetlim(2.0, 20.0, 1.0) == 3.0)
+    assert(fetlim(-10.0, 10.0, 1.0) == 3.0)
+    // A p-channel threshold is reversed before it gets here, so a negative one is an n-channel
+    // depletion device: on at a gate–source voltage of 0.
+    assert(fetlim(5.0, 0.0, -1.0) == 3.0)
+
+@test("SPICE's drain limit: within −0.5 V and 4 V below 3.5 V, and at most tripling above")
+drain_limit()
+    assert(limvds(10.0, 0.0) == 4.0)
+    assert(limvds(3.0, 0.0) == 3.0)
+    assert(limvds(-10.0, 0.0) == -0.5)
+    assert(limvds(-0.2, 0.0) == -0.2)
+    assert(limvds(100.0, 5.0) == 17.0)
+    assert(limvds(12.0, 5.0) == 12.0)
+    assert(limvds(4.0, 10.0) == 4.0)
+    assert(limvds(-10.0, 10.0) == 2.0)
+    assert(limvds(2.5, 10.0) == 2.5)
+
+// A CMOS inverter from a 5 V supply, matched n- and p-channel MOSFETs, its input held at `vin`.
+private inverter(vin: real) -> Sim
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "vdd", "0")
+    c.connect("V2", VoltageSource(Dc(vin)), "in", "0")
+    c.connect3("MN", Mosfet(PLAIN_N, DEFAULT_W, DEFAULT_L), "out", "in", "0")
+    c.connect3("MP", Mosfet(PLAIN_P, DEFAULT_W, DEFAULT_L), "out", "in", "vdd")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s
+
+@test("a CMOS inverter: high for a low input, low for a high one, and the two currents meet between")
+cmos_inverter()
+    assert(near(inverter(0.0).voltage_at("out"), 5.0, 1e-8))
+    assert(near(inverter(5.0).voltage_at("out"), 0.0, 1e-8))
+    // Matched, the two halves balance at half the supply.
+    assert(near(inverter(2.5).voltage_at("out"), 2.5, 1e-9))
+
+    var last = 5.0
+
+    for vin in [0.5, 1.5, 2.0, 2.4, 2.5, 2.6, 3.0, 3.5, 4.5]
+        val s = inverter(vin)
+        val out = s.voltage_at("out")
+
+        assert(out <= last)
+        last = out
+
+        // What the n-channel half sinks, the p-channel half sources, each by its own square law.
+        val n = square_law(PLAIN_N, 1e-3, vin, out) + GMIN * out
+        val p = square_law(PLAIN_N, 1e-3, 5.0 - vin, 5.0 - out) + GMIN * (5.0 - out)
+
+        assert(near(s.current(2), n, 1e-12))
+        assert(near(s.current(3), -p, 1e-12))
+        assert(near(n, p, 1e-12))
+
+    // Just above the n-channel threshold the output has barely moved; just below the p-channel one it
+    // has nearly reached ground.
+    assert(inverter(1.5).voltage_at("out") > 4.9)
+    assert(inverter(3.5).voltage_at("out") < 0.1)
+
+// A 2N7000 switching an LED from a 5 V supply, its gate pulled to the supply by a switch and held
+// down by 100 kΩ otherwise.
+private led_switch(closed: bool) -> Sim
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "vcc", "0")
+    c.connect("R1", Resistor(220.0), "vcc", "anode")
+    c.connect("D1", Diode(RED_LED), "anode", "d")
+    c.connect("S1", Switch(closed), "vcc", "g")
+    c.connect("R2", Resistor(100e3), "g", "0")
+    c.connect3("M1", Mosfet(NMOS_2N7000, DEFAULT_W, DEFAULT_L), "d", "g", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s
+
+@test("a MOSFET switching an LED: on, it drops a few tens of millivolts and the LED and resistor set the current")
+mosfet_led_on()
+    val s = led_switch(true)
+    val id = s.current(5)
+
+    assert(s.across(5) < 0.1)
+    assert(near(id, (5.0 - s.across(2) - s.across(5)) / 220.0, 1e-9))
+    assert(id > 12e-3 && id < 16e-3)
+    // Deep in the linear region: the channel is nearly a resistor of 1 / (β · vgst), 3⅓ Ω at 3 V of
+    // overdrive, and exactly the square law.
+    val vds = s.across(5)
+
+    assert(near(vds / id, 1.0 / (0.1 * 3.0), 0.05))
+    assert(near(id, square_law(NMOS_2N7000, 0.1, s.voltage_at("g"), vds) + GMIN * vds, 1e-12))
+
+@test("a MOSFET switching an LED: off, the LED is dark")
+mosfet_led_off()
+    val s = led_switch(false)
+
+    assert(s.current(5).abs() < 1e-9)
+    assert(s.current(2).abs() < 1e-9)
+    assert(s.across(5) > 2.5)
+
+@test("in time: a MOSFET discharges a capacitor while its gate is driven, and the resistor recharges it after")
+mosfet_transient()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "vdd", "0")
+    c.connect("R1", Resistor(1000.0), "vdd", "d")
+    c.connect("C1", Capacitor(1e-6), "d", "0")
+    c.connect("V2", VoltageSource(Pulse(0.0, 5.0, 1e-3, 1e-6, 1e-6, 1e-3, 10e-3)), "g", "0")
+    c.connect3("M1", Mosfet(NMOS_2N7000, DEFAULT_W, DEFAULT_L), "d", "g", "0")
+
+    var s = sim(c)
+
+    s.advance_to(1e-3).unwrap()
+    assert(near(s.voltage_at("d"), 5.0, 1e-6))
+
+    s.advance_to(2e-3).unwrap()
+
+    // Held there by a divider of the resistor and the channel's 1 / (β · vgst) = 3⅓ Ω.
+    val low = s.voltage_at("d")
+
+    assert(near(low, 5.0 * (1.0 / 0.3) / (1000.0 + 1.0 / 0.3), 1e-4))
+
+    s.advance_to(3e-3 + 1e-6).unwrap()
+    assert(near(s.voltage_at("d"), 5.0 - (5.0 - low) * (-1.0).exp(), 0.02))
+
+@test("a p-channel high-side switch: a BS250 turns on when its gate is pulled to ground")
+pmos_high_side()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(12.0)), "vdd", "0")
+    c.connect("V2", VoltageSource(Dc(0.0)), "g", "0")
+    c.connect3("M1", Mosfet(PMOS_BS250, DEFAULT_W, DEFAULT_L), "load", "g", "vdd")
+    c.connect("R1", Resistor(1000.0), "load", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+
+    // Current flows out of the drain into the load: into the drain it is negative.
+    val id = s.current(2)
+
+    assert(id < -11.8e-3)
+    assert(near(-id, s.voltage_at("load") / 1000.0, 1e-12))
+
+    s.set_wave(1, Dc(12.0))
+    s.operating_point().unwrap()
+    assert(s.voltage_at("load") < 1e-6)
+
+// --- Netlists ---------------------------------------------------------------------------------------
+
+// Whether `kind` is a MOSFET of model `m` with a channel `w` by `l`, to the last few bits a scaled
+// value like `10u` rounds in.
+private mosfet_is(kind: Kind, m: MosfetModel, w: real, l: real) -> bool = kind match
+    Mosfet(got, gw, gl) -> got == m && near(gw, w, 1e-15 * w) && near(gl, l, 1e-15 * l)
+    _ -> false
+
+@test("an M card reads its drain, gate and source, its W and L, and a .model NMOS its parameters")
+netlist_m_card()
+    val net = parse_netlist("""
+        m
+        V1 d 0 5
+        V2 g 0 3
+        M1 d g 0 0 nm L=2u W=10u
+        .model nm NMOS (LEVEL=1 VTO=1 KP=1m LAMBDA=0.02)
+        .op
+        """).unwrap()
+
+    val p = net.circuit.parts[2]
+
+    assert(mosfet_is(p.kind, PLAIN_N, 10e-6, 2e-6))
+    assert(net.circuit.nodes[usize(p.a)] == "d")
+    assert(net.circuit.nodes[usize(p.b)] == "g")
+    assert(p.c == 0)
+    assert(net.notes.len() == 0)
+
+    val t = run_analysis(net, net.analyses[0]).unwrap()
+
+    assert(near(t.rows[0][t.column("i(v1)").unwrap()], -(5.0 * 0.5 * 1e-3 * 4.0 * 1.1 + 5.0 * GMIN), 1e-12))
+
+@test("an M card with no W or L takes SPICE's 100 µm, M= is MOSFETs side by side, and a .model PMOS reads VT0")
+netlist_m_defaults()
+    val net = parse_netlist("t\nM1 d g s s pm\nM2 d g s s pm M=3 W=10u\nM3 d g s s nd\n.model pm pmos vt0=-0.7\n.model nd nmos\n")
+        .unwrap()
+
+    assert(net.circuit.parts[0].kind == Mosfet(MosfetModel(true, -0.7, 2e-5, 0.0), 100e-6, 100e-6))
+    assert(mosfet_is(net.circuit.parts[1].kind, MosfetModel(true, -0.7, 2e-5, 0.0), 30e-6, 100e-6))
+    // SPICE's defaults for a model with nothing on it.
+    assert(net.circuit.parts[2].kind == Mosfet(MosfetModel(false, 0.0, 2e-5, 0.0), 100e-6, 100e-6))
+    assert(net.notes.len() == 0)
+
+@test("what an M card or .model NMOS has that level 1 here does not model leaves a note")
+netlist_m_notes()
+    val net = parse_netlist("t\nM1 d g s b nm W=1u AD=1p PD=4u off\n.model nm nmos gamma=0.5 phi=0.6 tox=10n\n").unwrap()
+
+    assert(net.notes.len() == 7)
+    assert(net.notes[0] == "model nm: gamma is not modelled")
+    assert(net.notes[1] == "model nm: phi is not modelled")
+    assert(net.notes[2] == "model nm: tox is not modelled")
+    assert(net.notes[3] == "'m1': ad is not modelled")
+    assert(net.notes[4] == "'m1': pd is not modelled")
+    assert(net.notes[5] == "'m1': off is not acted on")
+    assert(net.notes[6] == "'m1': its bulk is taken to be on its source, 's'")
+
+    val bulk = parse_netlist("t\nM1 d g s b nm\n.model nm nmos\n").unwrap()
+
+    assert(bulk.notes.len() == 1)
+    assert(bulk.notes[0] == "'m1': its bulk is taken to be on its source, 's'")
+    assert(bulk.circuit.find_node("b").is_none())
+
+@test("an M card is refused with too few nodes, no model, another part's model, or a bad W, L or M")
+netlist_m_refusals()
+    val needs = "line 2: 'm1' needs a drain, a gate, a source and a bulk node, and a model"
+
+    assert(parse_netlist("t\nM1 d g s nm\n.model nm nmos\n").unwrap_err() == needs)
+    assert(parse_netlist("t\nM1 d g s\n").unwrap_err() == needs)
+    assert(parse_netlist("t\nM1 d g s s nm\n").unwrap_err() == "line 2: 'm1' names model 'nm', which no .model defines")
+    assert(parse_netlist("t\nM1 d g s s qn\n.model qn npn\n").unwrap_err() == "line 2: 'm1' is a MOSFET, and model 'qn' is a transistor's")
+    assert(parse_netlist("t\nM1 d g s s dm\n.model dm d\n").unwrap_err() == "line 2: 'm1' is a MOSFET, and model 'dm' is a diode's")
+    assert(parse_netlist("t\nQ1 c b e nm\n.model nm nmos\n").unwrap_err() == "line 2: 'q1' is a transistor, and model 'nm' is a MOSFET's")
+    assert(parse_netlist("t\nD1 a 0 nm\n.model nm pmos\n").unwrap_err() == "line 2: 'd1' is a diode, and model 'nm' is a MOSFET's")
+    assert(parse_netlist("t\nM1 d g s s nm L=0\n.model nm nmos\n").unwrap_err() == "line 2: a channel length is more than zero")
+    assert(parse_netlist("t\nM1 d g s s nm W=-1u\n.model nm nmos\n").unwrap_err() == "line 2: a channel width is more than zero")
+    assert(parse_netlist("t\nM1 d g s s nm M=0\n.model nm nmos\n").unwrap_err() == "line 2: a multiplier is more than zero")
+    assert(parse_netlist("t\nM1 d g s s nm L=abc\n.model nm nmos\n").is_err())
+    assert(parse_netlist("t\nM1 d g s s nm W\n.model nm nmos\n").unwrap_err() == "line 2: 'w' on 'm1' needs '= value'")
+    assert(parse_netlist("t\nM1 d g s s nm 10u\n.model nm nmos\n").unwrap_err() == "line 2: '10u' on 'm1' needs '= value'")
+
+@test("a .model NMOS or PMOS is refused above level 1, with no KP, or with a negative LAMBDA")
+netlist_mos_model_refusals()
+    assert(parse_netlist("t\n.model nm nmos level=3\n").unwrap_err() == "line 2: model 'nm' is level 3; amber has level 1")
+    assert(parse_netlist("t\n.model nm pmos level=1 kp=0\n").unwrap_err() == "line 2: model 'nm' needs KP above zero and LAMBDA not below")
+    assert(parse_netlist("t\n.model nm nmos lambda=-0.1\n").unwrap_err() == "line 2: model 'nm' needs KP above zero and LAMBDA not below")

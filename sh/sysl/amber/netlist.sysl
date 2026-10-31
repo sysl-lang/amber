@@ -27,8 +27,10 @@ import sysl.text.{Search, fields, split, to_lower}
 // | `I<name> n+ n- [DC] value` or a wave | current source, flowing from n+ through it to n- |
 // | `D<name> anode cathode model [area]` | diode |
 // | `Q<name> collector base emitter [substrate] model [area]` | bipolar transistor |
+// | `M<name> drain gate source bulk model [L=l] [W=w] [M=m]` | MOSFET, its bulk taken as its source |
 // | `.model <name> D (IS= N= RS= …)` | a diode's parameters |
 // | `.model <name> NPN (IS= BF= BR= NF= NR= VAF= VAR= …)`, or `PNP` | a transistor's parameters |
+// | `.model <name> NMOS (LEVEL=1 VTO= KP= LAMBDA= …)`, or `PMOS` | a MOSFET's parameters |
 // | `.op` | the operating point |
 // | `.tran tstep tstop [tstart [tmax]] [UIC]` | a run through time, printed every `tstep` |
 // | `.dc source start stop step` | the operating point at each value of a source |
@@ -39,10 +41,11 @@ import sysl.text.{Search, fields, split, to_lower}
 // read and set aside; a `.control` block is ngspice's own scripting and is skipped whole.
 //
 // **What is read but not modelled is said, not dropped.** A diode model's junction capacitance, a
-// transistor model's base resistance, a `.options` line, a `.print`: each leaves a note on the
-// netlist, and a program running it shows the notes, so a reader knows where amber's answer may part
-// from another simulator's. What would change the circuit itself and cannot be read — a subcircuit, a
-// field-effect transistor, a `.param` — is refused.
+// transistor model's base resistance, a MOSFET's body effect or a bulk not on its source, a `.options`
+// line, a `.print`: each leaves a note on the netlist, and a program running it shows the notes, so a
+// reader knows where amber's answer may part from another simulator's. What would change the circuit
+// itself and cannot be read — a subcircuit, a junction field-effect transistor, a MOSFET model above
+// level 1, a `.param` — is refused.
 
 // One analysis a netlist asks for.
 enum Analysis derives Eq
@@ -66,13 +69,15 @@ struct Netlist
 private enum CardModel
     DiodeCard(diode: DiodeModel)
     TransistorCard(transistor: TransistorModel)
+    MosfetCard(mosfet: MosfetModel)
 
 // A model as the netlist gives it.
 private struct ModelCard
     name: string
     model: CardModel
 
-// An element line read: the part, the nodes its terminals are on (the third only for a transistor),
+// An element line read: the part, the nodes its terminals are on (the third only for a transistor or
+// a MOSFET),
 // and what it holds when switched on.
 private struct Element
     kind: Kind
@@ -233,26 +238,32 @@ private words_of(line: string) -> Buf[string]
 
     out
 
-// `.model name d (is=… n=… rs=…)`, or `npn` or `pnp` for a transistor, with SPICE's defaults for the
-// parameters left off.
+// `.model name d (is=… n=… rs=…)`, `npn` or `pnp` for a transistor, or `nmos` or `pmos` for a
+// MOSFET, with SPICE's defaults for the parameters left off.
 private model_card(words: Buf[string], notes: *Buf[string]) -> Result[ModelCard, string]
     if words.len() < 3 then return Err(".model needs a name and a type")
 
     val name = words[1]
     val diode = words[2] == "d"
+    val mos = words[2] == "nmos" || words[2] == "pmos"
 
-    if !diode && words[2] != "npn" && words[2] != "pnp"
-        return Err(s"model type '${words[2]}' is not supported yet; amber has diodes and bipolar transistors")
+    if !diode && !mos && words[2] != "npn" && words[2] != "pnp"
+        return Err(s"model type '${words[2]}' is not supported yet; amber has diodes, bipolar transistors and MOSFETs")
 
     var d = DiodeModel(1e-14, 1.0, 0.0)
     var t = TransistorModel(words[2] == "pnp", 1e-16, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0)
+    var f = MosfetModel(words[2] == "pmos", 0.0, 2e-5, 0.0)
     var k: usize = 3
 
     while k < words.len()
         if k + 2 >= words.len() || words[k + 1] != "=" then return Err(s"'${words[k]}' in model '${name}' needs '= value'")
 
         val v = parse_value(words[k + 2])?
-        val known = if diode then diode_param(&d, words[k], v) else transistor_param(&t, words[k], v)
+
+        // Level 1 is the square law; the others are other equations, which would be a different circuit.
+        if mos && words[k] == "level" && v != 1.0 then return Err(s"model '${name}' is level ${words[k + 2]}; amber has level 1")
+
+        val known = if diode then diode_param(&d, words[k], v) else if mos then mosfet_param(&f, words[k], v) else transistor_param(&t, words[k], v)
 
         if !known then notes.push(s"model ${name}: ${words[k]} is not modelled")
 
@@ -262,6 +273,11 @@ private model_card(words: Buf[string], notes: *Buf[string]) -> Result[ModelCard,
         if d.is <= 0.0 || d.n <= 0.0 || d.rs < 0.0 then return Err(s"model '${name}' needs IS and N above zero and RS not below")
 
         return Ok(ModelCard(name, DiodeCard(d)))
+
+    if mos
+        if f.kp <= 0.0 || f.lambda < 0.0 then return Err(s"model '${name}' needs KP above zero and LAMBDA not below")
+
+        return Ok(ModelCard(name, MosfetCard(f)))
 
     if t.is <= 0.0 || t.bf <= 0.0 || t.br <= 0.0 || t.nf <= 0.0 || t.nr <= 0.0
         return Err(s"model '${name}' needs IS, BF, BR, NF and NR above zero")
@@ -291,6 +307,18 @@ private transistor_param(m: *TransistorModel, key: string, v: real) -> bool
         "nr" -> m.nr = v
         "vaf" | "va" -> m.early_f = v
         "var" | "vb" -> m.early_r = v
+        _ -> return false
+
+    true
+
+// Set the MOSFET parameter `key` to `v`; false for one amber does not model. `vt0` is SPICE's other
+// name for VTO, and `level` is read by the card, which refuses any but 1.
+private mosfet_param(m: *MosfetModel, key: string, v: real) -> bool
+    key match
+        "level" -> ()
+        "vto" | "vt0" -> m.vto = v
+        "kp" -> m.kp = v
+        "lambda" -> m.lambda = v
         _ -> return false
 
     true
@@ -337,6 +365,8 @@ private element_card(words: Buf[string], models: *Buf[ModelCard], tstep: real, t
 
     if name.bytes[0] == u8('q') then return transistor_card(words, models)
 
+    if name.bytes[0] == u8('m') then return mosfet_card(words, models, notes)
+
     if words.len() < 4 then return Err(s"'${name}' needs two nodes and a value")
 
     val a = words[1]
@@ -367,12 +397,12 @@ private element_card(words: Buf[string], models: *Buf[ModelCard], tstep: real, t
 
             val m = find_model(name, rest[0], models)? match
                 DiodeCard(m) -> m
-                TransistorCard(_) -> return Err(s"'${name}' is a diode, and model '${rest[0]}' is a transistor's")
+                other -> return Err(s"'${name}' is a diode, and model '${rest[0]}' is ${owner(other)}")
             val area = if rest.len == 2 then positive(rest[1], "an area")? else 1.0
 
             // An area scales the junction: more saturation current, less series resistance.
             Ok(Element(Diode(DiodeModel(m.is * area, m.n, m.rs / area)), a, b, None, 0.0))
-        'm' | 'j' -> Err(s"'${name}' is a field-effect transistor, which amber does not have yet")
+        'j' -> Err(s"'${name}' is a junction field-effect transistor, which amber does not have yet")
         'x' -> Err(s"'${name}' is a subcircuit, which amber does not read")
         _ -> Err(s"'${name}' is not an element amber reads")
 
@@ -395,7 +425,7 @@ private transistor_card(words: Buf[string], models: *Buf[ModelCard]) -> Result[E
 
     val m = find_model(name, rest[0], models)? match
         TransistorCard(m) -> m
-        DiodeCard(_) -> return Err(s"'${name}' is a transistor, and model '${rest[0]}' is a diode's")
+        other -> return Err(s"'${name}' is a transistor, and model '${rest[0]}' is ${owner(other)}")
     val area = if rest.len == 2 then positive(rest[1], "an area")? else 1.0
 
     // An area is that many transistors side by side: each junction's saturation current is scaled.
@@ -403,6 +433,54 @@ private transistor_card(words: Buf[string], models: *Buf[ModelCard]) -> Result[E
 
     scaled.is = m.is * area
     Ok(Element(Transistor(scaled), words[1], words[2], Some(words[3]), 0.0))
+
+// `M<name> drain gate source bulk model [l=…] [w=…] [m=…]`, with SPICE's 100 µm for a length or width
+// left off. `m` is that many MOSFETs side by side, which is a channel that many times as wide. The bulk
+// is read and taken to be on the source, which is what level 1 needs no body effect for; a bulk
+// elsewhere leaves a note. The other instance parameters, the junctions' areas and perimeters and
+// `off`, leave a note each.
+private mosfet_card(words: Buf[string], models: *Buf[ModelCard], notes: *Buf[string]) -> Result[Element, string]
+    val name = words[0]
+
+    if words.len() < 6 then return Err(s"'${name}' needs a drain, a gate, a source and a bulk node, and a model")
+
+    val m = find_model(name, words[5], models)? match
+        MosfetCard(m) -> m
+        other -> return Err(s"'${name}' is a MOSFET, and model '${words[5]}' is ${owner(other)}")
+    var w = DEFAULT_W
+    var l = DEFAULT_L
+    var times = 1.0
+    var k: usize = 6
+
+    while k < words.len()
+        if words[k] == "off"
+            notes.push(s"'${name}': off is not acted on")
+            k += 1
+            continue
+
+        if k + 2 >= words.len() || words[k + 1] != "=" then return Err(s"'${words[k]}' on '${name}' needs '= value'")
+
+        val v = words[k + 2]
+
+        words[k] match
+            "w" -> w = positive(v, "a channel width")?
+            "l" -> l = positive(v, "a channel length")?
+            "m" -> times = positive(v, "a multiplier")?
+            _ ->
+                parse_value(v)?
+                notes.push(s"'${name}': ${words[k]} is not modelled")
+
+        k += 3
+
+    if words[4] != words[3] then notes.push(s"'${name}': its bulk is taken to be on its source, '${words[3]}'")
+
+    Ok(Element(Mosfet(m, w * times, l), words[1], words[2], Some(words[3]), 0.0))
+
+// What a model is for, as an error puts it.
+private owner(model: CardModel) -> string = model match
+    DiodeCard(_) -> "a diode's"
+    TransistorCard(_) -> "a transistor's"
+    MosfetCard(_) -> "a MOSFET's"
 
 private models_have(models: *Buf[ModelCard], name: string) -> bool
     for k in 0..<models.len()

@@ -42,6 +42,15 @@ two junctions, base–emitter and base–collector, are each limited by `pnjlim`
 voltage, and the collector and base currents are each linearised against both; the emitter carries
 both back out. Its terminal currents are read off the linearisation like a diode's.
 
+A MOSFET is SPICE's level 1 (Shichman–Hodges: VTO, KP, LAMBDA, and W and L on the instance), NMOS or
+PMOS, with its bulk on its source, so there is no body effect and no bulk diode; a netlist's GAMMA and
+PHI, and a bulk node elsewhere, leave notes. Drain and source change places when `vds` is below zero,
+as SPICE has it, and GMIN runs from drain to source, where SPICE's drain–bulk junction puts it. Its
+drain current is linearised against `vgs` and `vds`, which are limited as SPICE's `fetlim` (against
+the threshold, on whichever terminal is the source now) and `limvds` limit them; its gate carries
+nothing and its source carries the drain's current back out, read off the linearisation like a
+diode's.
+
 ## Roadmap
 
 Each is a piece of work of its own, in this order.
@@ -56,8 +65,10 @@ Each is a piece of work of its own, in this order.
    as the oracle; `amber-cli` runs one.~~
 4. **Active devices**: ~~BJT (Gummel–Poon transport and Early terms) in the library and netlists
    (`Q` cards, `.model NPN|PNP`), held to ngspice on a biased amplifier, a mirror, a switch and an
-   astable multivibrator;~~ the transistor in schematics and the viewer, with an astable multivibrator
-   blinking two LEDs; MOSFET level 1.
+   astable multivibrator; MOSFET level 1 in the library and netlists (`M` cards, `.model NMOS|PMOS`),
+   held to ngspice on a common-source stage, a CMOS inverter's transfer curve and an LED switch;~~ the
+   transistor and the MOSFET in schematics and the viewer, with an astable multivibrator blinking two
+   LEDs.
 5. **DC sweep and AC analysis** (complex MNA, Bode plot in the viewer).
 6. **Sparse LU** with a symbolic factorisation reused across iterations and steps.
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save.
