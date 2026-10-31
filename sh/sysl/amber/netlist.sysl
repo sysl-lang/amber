@@ -126,7 +126,7 @@ parse_netlist(text: string) -> Result[Netlist, string]
 
             if !found then return Err(s".dc sweeps '${source}', which is not a source in the netlist")
 
-    Ok(Netlist(lines[0].1.join(" "), c, analyses, initial, notes))
+    Ok(Netlist(split(text, "\n")[0].trim(), c, analyses, initial, notes))
 
 // The netlist's lines with comments taken out and continuations joined, each with the number of the
 // line it began on, split into words. The title keeps its case; everything else is lower case, with

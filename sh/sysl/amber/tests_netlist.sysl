@@ -1,6 +1,8 @@
 module sh.sysl.amber
 @tests
 
+import sysl.math.max
+
 private close(got: real, want: real, rel: real) -> bool = (got - want).abs() <= rel * want.abs() + 1e-12
 
 val RC_NETLIST = """
@@ -24,6 +26,7 @@ netlist_reads()
     val net = parse_netlist(RC_NETLIST).unwrap()
 
     assert(net.title == "RC charge")
+    assert(parse_netlist("A divider, halved\nR1 a 0 1\n").unwrap().title == "A divider, halved")
     assert(net.circuit.parts.len() == 3)
     assert(net.circuit.parts[2].kind == Capacitor(1e-6))
     assert(net.circuit.parts[0].kind.wave() == Some(Pulse(0.0, 5.0, 0.0, 1e-9, 1e-9, 10e-3, 20e-3)))
@@ -130,3 +133,41 @@ netlist_refusals()
     assert(parse_netlist("t\n.tran 1m\n").unwrap_err() == "line 2: .tran takes a step, a stop, and perhaps a start and a longest step")
     assert(parse_netlist("t\nV1 a 0 PWL(1 0 0 1)\n").unwrap_err() == "line 2: 'v1': PWL's times run forward")
     assert(parse_netlist("t\nC1 a 0 1u IC 3\n").unwrap_err() == "line 2: 'c1' takes a value and perhaps IC=")
+
+// --- Against ngspice --------------------------------------------------------------------------------
+
+// Run a netlist's first analysis and hold it to ngspice's answer: `expected` is rows of the time or
+// swept value followed by one value for each of `names`.
+//
+// **A run through time may stray by 0.2% of the largest value its vector reaches.** ngspice is run
+// with a tolerance a hundred times tighter than amber's, so the difference is amber's own error, and
+// errors add up over a run: a sine ringing a resonant circuit for twelve cycles is the worst case
+// here, at 0.14%; the rest stay under 0.03%. The operating point and a sweep, which take no steps, must
+// agree to a part in ten thousand, and do to a few parts in ten million.
+agree(net: Netlist, names: []const string, expected: []const real)
+    val width = names.len + 1
+    val a = net.analyses[0]
+    val t = run_analysis(net, a).unwrap()
+    val rows = expected.len / width
+    val stepped = a is Tran(_, _, _, _, _)
+
+    if a != Op then assert(t.rows.len() == rows)
+
+    for j in 0..<names.len
+        val col = usize(t.column(names[j]).unwrap())
+        var span = 0.0
+
+        for r in 0..<rows
+            span = max(span, expected[r * width + 1 + j].abs())
+
+        for r in 0..<rows
+            val got_row = if a == Op then t.rows[0] else t.rows[r]
+            val want = expected[r * width + 1 + j]
+            val got = got_row[col]
+            val tol = if stepped then 2e-3 * span + 1e-6 else 1e-4 * want.abs() + 1e-6
+
+            if a != Op then assert((got_row[0] - expected[r * width]).abs() <= 1e-9 * max(1.0, expected[r * width].abs()))
+
+            if (got - want).abs() > tol
+                print(s"${names[j]} at ${expected[r * width]}: amber ${got}, ngspice ${want}")
+                assert(false)

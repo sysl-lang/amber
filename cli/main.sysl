@@ -1,0 +1,72 @@
+// Run a SPICE netlist's analyses and print their tables.
+//
+//     amber-cli <netlist.cir>
+//
+// The notes come first — what the netlist asks for that amber reads but does not model — then each
+// analysis in the order the netlist gives them: the operating point as a list of values, a run
+// through time or a sweep as a table, one row a print step or a swept value.
+
+import sh.sysl.amber.{Netlist, parse_netlist, run_analysis, engineering, Analysis, Op, Tran, Sweep, Table}
+import sysl.buf.{Buf, buf}
+import sysl.fs.read_text
+
+main(args: []string) -> Result[unit, string]
+    if args.len != 2 then return Err("usage: amber-cli <netlist.cir>")
+
+    val file = args[1]
+    val text = read_text(file).map_err(e -> s"${file}: ${e}")?
+    val lines = report(text).map_err(e -> s"${file}: ${e}")?
+
+    for k in 0..<lines.len()
+        print(lines[k])
+
+    Ok(())
+
+// What running the netlist `text` prints, line by line.
+report(text: string) -> Result[Buf[string], string]
+    val net = parse_netlist(text)?
+    var out: Buf[string] = buf()
+
+    out.push(net.title)
+
+    for k in 0..<net.notes.len()
+        out.push(s"note: ${net.notes[k]}")
+
+    if net.analyses.len() == 0 then out.push("no analysis asked for: .op, .tran or .dc")
+
+    for k in 0..<net.analyses.len()
+        val a = net.analyses[k]
+        val t = run_analysis(net, a).map_err(e -> s"${heading(a)}: ${e}")?
+
+        out.push("")
+        out.push(heading(a))
+
+        if a == Op then point(t, &out) else table(t, &out)
+
+    Ok(out)
+
+heading(a: Analysis) -> string = a match
+    Op -> "operating point"
+    Tran(step, stop, _, _, from_empty) ->
+        s"transient, every ${engineering(step)}s to ${engineering(stop)}s${if from_empty then ", from empty" else ""}"
+    Sweep(source, from, to, step) -> s"sweep of ${source} from ${engineering(from)} to ${engineering(to)} by ${engineering(step)}"
+
+private point(t: Table, out: *Buf[string])
+    for k in 0..<t.columns.len()
+        out.push(f"${t.columns[k]}%-12s ${t.rows[0][k]}%.6e")
+
+private table(t: Table, out: *Buf[string])
+    var line = ""
+
+    for k in 0..<t.columns.len()
+        line = line + f"${t.columns[k]}%14s"
+
+    out.push(line)
+
+    for r in 0..<t.rows.len()
+        line = ""
+
+        for k in 0..<t.columns.len()
+            line = line + f"${t.rows[r][k]}%14.6e"
+
+        out.push(line)

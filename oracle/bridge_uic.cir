@@ -1,0 +1,16 @@
+A charged capacitor discharging into a resistor bridge, switched on with its charge
+R1 a b 1k
+R2 b 0 2.2k
+R3 a c 3.3k
+R4 c 0 470
+R5 b c 1k
+C1 a 0 2.2u IC=5
+L1 c 0 50m IC=1m
+.tran 20u 4m UIC
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 20u 4m 0 0.4u UIC
+linearize v(a) v(b) v(c)
+wrdata bridge_uic.data v(a) v(b) v(c)
+.endc
+.end

@@ -12,7 +12,7 @@ package { name = "amber", version = "0.1.0", sysl = "0.8.9" }
 
 optimization = "2"
 
-workspace = ["app"]
+workspace = ["app", "cli"]
 
 // `heap` for the circuit's parts and the solver's matrix.
 requires {

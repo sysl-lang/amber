@@ -1,0 +1,14 @@
+Half-wave rectifier with a smoothing capacitor
+V1 in 0 SIN(0 10 50)
+D1 in out d1n4148
+C1 out 0 100u
+R1 out 0 2k
+.model d1n4148 D (IS=2.52n N=1.752 RS=0.568)
+.tran 0.25m 60m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 0.25m 60m 0 5u
+linearize v(out)
+wrdata rectifier.data v(out)
+.endc
+.end

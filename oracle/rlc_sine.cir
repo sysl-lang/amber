@@ -1,0 +1,13 @@
+Series RLC driven near resonance by a sine
+V1 in 0 SIN(0 1 4k)
+R1 in a 20
+L1 a b 1m
+C1 b 0 1.5u
+.tran 5u 3m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 5u 3m 0 0.1u
+linearize v(a) v(b)
+wrdata rlc_sine.data v(a) v(b)
+.endc
+.end

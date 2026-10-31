@@ -1,0 +1,13 @@
+A damped, delayed, phase-shifted sine into a divider and a capacitor
+V1 in 0 SIN(1 2 1k 0.2m 500 30)
+R1 in a 2k
+R2 a 0 1k
+C1 a 0 220n
+.tran 10u 4m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 10u 4m 0 0.2u
+linearize v(in) v(a)
+wrdata damped.data v(in) v(a)
+.endc
+.end

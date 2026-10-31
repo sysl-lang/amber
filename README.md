@@ -56,6 +56,27 @@ Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `curre
 `square 0 5 1k [duty]`, `pulse low high delay rise fall width period` (SPICE's), and
 `pwl t v t v …`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg` (and `1m` is a milliohm).
 
+## SPICE netlists
+
+```
+sysl build cli
+cli/amber-cli oracle/rc_pulse.cir
+```
+
+reads a SPICE netlist — the format published circuits and every other simulator use — runs its
+analyses and prints their tables. The subset: `R`, `C` and `L` (with `IC=`), `V` and `I` sources
+(DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; an `AC` part is set aside), `D` with `.model … D`
+(`IS`, `N`, `RS`, and an area), `.op`, `.tran` (with `UIC`), `.dc`, `.end`; a `.control` block is
+skipped. What a netlist asks for that amber reads but does not model — a diode's junction capacitance,
+`.options` — is printed as a note rather than dropped, and what would change the circuit and cannot be
+read (a transistor, a subcircuit, `.param`) is refused with its line.
+
+**ngspice is the oracle.** The netlists in `oracle/` are run through ngspice 47 at a tolerance a
+hundred times tighter than amber's by `oracle/generate.zsh`, which writes its answers into
+`tests_oracle.sysl`; amber agrees with them to a few parts in ten million at an operating point and
+along a sweep, and to within 0.2% of each waveform's swing through time (0.03% but for a resonant
+circuit rung for twelve cycles).
+
 ## The library
 
 `sh.sysl.amber` builds a circuit — from a schematic, or part by part — and solves it by modified
@@ -95,4 +116,4 @@ needs nothing but an allocator. What is planned is in [DESIGN.md](DESIGN.md).
 sysl test .
 ```
 
-runs both the library's tests and the viewer's.
+runs the library's tests, the viewer's and the command line's.

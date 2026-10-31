@@ -1,0 +1,30 @@
+@tests
+
+import sysl.text.Search
+import sh.sysl.amber.{Op, Tran, Sweep}
+
+@test("a netlist's report: its title, its notes, then each analysis with its heading")
+report_layout()
+    val lines = report("A divider\nV1 a 0 10\nR1 a b 1k\nR2 b 0 1k\n.options reltol=1e-4\n.op\n.dc v1 0 2 1\n").unwrap()
+
+    assert(lines[0] == "A divider")
+    assert(lines[1] == "note: line 5: .options is not acted on")
+    assert(lines[3] == "operating point")
+    assert(lines[5] == "v(b)         5.000000e+00")
+    assert(lines[8] == "sweep of v1 from 0 to 2 by 1")
+    assert(lines[9] == "            v1          v(a)          v(b)         i(v1)")
+    assert(lines[12] == "  2.000000e+00  2.000000e+00  1.000000e+00 -1.000000e-03")
+    assert(lines.len() == 13)
+
+@test("headings give their times in engineering form")
+headings()
+    assert(heading(Op) == "operating point")
+    assert(heading(Tran(20e-6, 6e-3, 0.0, 1e-6, false)) == "transient, every 20µs to 6ms")
+    assert(heading(Tran(1e-3, 1.0, 0.0, 1e-3, true)) == "transient, every 1ms to 1s, from empty")
+    assert(heading(Sweep("v1", -2.0, 5.0, 0.25)) == "sweep of v1 from -2 to 5 by 250m")
+
+@test("a netlist with nothing to run says so, and one that cannot be solved names the analysis")
+report_refusals()
+    assert(report("t\nR1 a 0 1\n").unwrap()[1] == "no analysis asked for: .op, .tran or .dc")
+    assert(report("t\nV1 a 0 1\nV2 a 0 2\n.op\n").unwrap_err().starts_with("operating point: "))
+    assert(report("t\nQ1 a b c npn\n").unwrap_err() == "line 2: 'q1' is a transistor, which amber does not have yet")

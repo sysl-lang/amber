@@ -438,3 +438,19 @@ rounding_remainder()
 
         s.advance_to(t).unwrap()
         assert(s.time == t)
+
+@test("a time asked for a rounding error past a corner just landed on is where the solution already is")
+rounding_past_a_corner()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Pulse(0.0, 5.0, 1e-4, 1e-5, 1e-5, 1e-3, 2e-3)), "in", "0")
+    c.connect("R1", Resistor(1000.0), "in", "out")
+    c.connect("C1", Capacitor(1e-6), "out", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s.advance_to(1e-4).unwrap()
+    s.advance_to(5.0 * 2e-5).unwrap()
+    s.advance_to(1e-3).unwrap()
+    assert(s.time == 1e-3)

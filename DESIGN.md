@@ -17,6 +17,8 @@
 
 - `sh.sysl.amber` — the library. `Circuit` (named nodes, parts), `Sim` (the solver), `Schematic` (the
   grid file format, which builds a `Circuit`), value parsing in SPICE's notation. No OS, no SDL.
+- `cli/` — `amber-cli`, which runs a SPICE netlist and prints its tables.
+- `oracle/` — netlists and the script that runs them through ngspice into `tests_oracle.sysl`.
 - `app/` — the viewer, a workspace member, on syslui-sdl. The schematic's lines are drawn into a
   PlutoVG surface handed to the canvas as an image, since syslui's canvas is rectangles and text by
   design.
@@ -43,8 +45,8 @@ Each is a piece of work of its own, in this order.
    parabola through the last three points, with rejected steps; the incremental API (`power_on`,
    `advance_to`, `set_switch`, `set_wave`). The viewer runs the clock, animates current, and has a
    scope of every meter.~~
-3. **SPICE netlists**: read a `.cir` subset (elements, `.model`, `.op`, `.tran`, `.dc`), so ngspice
-   (or published waveforms) can be the oracle.
+3. ~~**SPICE netlists**: read a `.cir` subset (elements, `.model`, `.op`, `.tran`, `.dc`), with ngspice
+   as the oracle; `amber-cli` runs one.~~
 4. **Active devices**: BJT (Ebers–Moll / Gummel–Poon subset), MOSFET level 1. Example: an astable
    multivibrator blinking two LEDs.
 5. **DC sweep and AC analysis** (complex MNA, Bode plot in the viewer).

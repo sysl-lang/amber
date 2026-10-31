@@ -5,3 +5,4 @@
 scratch/
 bench/bench
 app/amber-app
+cli/amber-cli

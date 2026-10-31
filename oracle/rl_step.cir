@@ -1,0 +1,12 @@
+An inductor's current rising and falling through a resistor
+V1 in 0 PWL(0 0 0.1m 0 0.11m 2 1.5m 2 1.51m 0)
+R1 in a 50
+L1 a 0 20m
+.tran 10u 3m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 10u 3m 0 0.2u
+linearize v(in) v(a)
+wrdata rl_step.data v(in) v(a)
+.endc
+.end

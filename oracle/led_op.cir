@@ -1,0 +1,16 @@
+A battery, a resistor, and two LEDs in parallel with their own resistors
+V1 top 0 9
+R1 top a 470
+D1 a 0 dred
+R2 top b 330
+D2 b c dgreen
+R3 c 0 100
+.model dred D (IS=1e-17 N=2 RS=2)
+.model dgreen D (IS=3.5e-20 N=2 RS=2)
+.op
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+run
+wrdata led_op.data v(a) v(b) v(c)
+.endc
+.end

@@ -3,8 +3,9 @@ module sh.sysl.amber
 import sysl.buf.{Buf, buf}
 import sysl.math.{max, min}
 
-// The thermal voltage at 27 °C, kT/q.
-const VT: real = 0.025851991
+// The thermal voltage kT/q at 27 °C, 300.15 K, the temperature SPICE assumes, from the exact SI values of
+// Boltzmann's constant and the electron's charge.
+const VT: real = 1.380649e-23 * 300.15 / 1.602176634e-19
 
 // A conductance put across every junction, so a reverse-biased diode is a very large resistor rather
 // than an open circuit that leaves its node floating. A capacitor is one too while the circuit is
@@ -240,7 +241,20 @@ struct Sim
         if !self.started then self.operating_point()?
 
         while self.time < until
+            // A time a rounding error past where a step landed — a corner at 0.1 ms, asked for as
+            // 5 × 20 µs = 0.10000000000000002 ms — is where the solution already is.
+            if until - self.time <= 1e-12 * until.abs()
+                self.time = until
+                break
+
             val target = self.step_end(until)
+
+            // Likewise a corner a rounding error ahead, where a step of 20 µs from 80 µs landed at
+            // 99.99999999999999 µs: the solution is moved onto it, and starts afresh from it.
+            if target - self.time <= 1e-12 * target.abs()
+                self.time = target
+                self.corner()
+                continue
 
             self.take_step(target)?
 

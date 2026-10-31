@@ -1,0 +1,12 @@
+A diode's curve, swept through a resistor
+V1 a 0 0
+R1 a k 220
+D1 k 0 dmod
+.model dmod D (IS=1e-14 N=1.05 RS=1.5)
+.dc V1 -2 5 0.25
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+run
+wrdata diode_dc.data v(k)
+.endc
+.end

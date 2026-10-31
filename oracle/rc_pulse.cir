@@ -1,0 +1,12 @@
+RC low-pass driven by a pulse train
+V1 in 0 PULSE(0 5 0.1m 10u 10u 1m 2m)
+R1 in out 1k
+C1 out 0 470n
+.tran 20u 6m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 20u 6m 0 0.4u
+linearize v(in) v(out)
+wrdata rc_pulse.data v(in) v(out)
+.endc
+.end
