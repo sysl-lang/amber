@@ -13,7 +13,12 @@
 # Click the generator to turn it up. Past about 150 mV the output's top flattens — the transistor
 # cannot pass less than no current — and further on its bottom does too, as it saturates.
 
+# It starts settled at its operating point, every capacitor already charged to its bias, so the swing
+# is there from the first cycle; `r` restarts it that way and `s` does too, while switched on from
+# empty it would take a few seconds of the window's time to find its feet.
+
 speed 2m
+start settled
 
 gen       G1    2 5   2 10   sine 1k 10m
 wire            2 5   5 5

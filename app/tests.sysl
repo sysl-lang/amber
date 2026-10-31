@@ -1,6 +1,8 @@
 @tests
 
 import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator}
+import sh.sysl.sdl3.{SCANCODE_R, SCANCODE_S}
+import sysl.buf.{Buf, buf}
 import sysl.math.max
 import sysl.text.Search
 
@@ -549,3 +551,204 @@ supply_switched_to_raw()
     m.panels[0].knobs[0].set(0.5)
     m.sync()
     assert(m.panels[0].summary() == "500mV 1A raw 1V 120Hz")
+
+// --- Current that alternates ------------------------------------------------------------------------
+
+// A generator driving a resistor, whose current is its sine and passes through zero every half
+// millisecond; and beside it an open switch in front of a second resistor, which carries nothing.
+val SWING = """
+    speed 1m
+    gen       G1  0 0  0 4  sine 1k 1
+    resistor  R1  0 0  4 0  1k
+    wire          4 0  4 4
+    wire          4 4  0 4
+    ground        0 4
+    switch    S1  4 0  8 0
+    resistor  R2  8 0  8 4  1k
+    wire          8 4  4 4
+    """
+
+@test("a hold remembers a current each way, fading, and says an alternating one is carrying at zero")
+hold_through_zero()
+    var h = Hold(0.0, 0.0)
+
+    h.see(2e-3, 1.0)
+    assert(!h.alternating(2e-3))
+    // A current that only goes one way moves exactly as it always did, and stops below a trickle.
+    assert(h.speed(1e-3, 2e-3) == dot_speed(1e-3, 2e-3))
+    assert(!h.carrying(1e-8, 2e-3) && h.speed(1e-8, 2e-3) == 0.0)
+
+    h.see(-1e-3, 0.5)
+    assert(h.forward == 1e-3 && h.back == 1e-3)
+    assert(h.alternating(2e-3))
+
+    // Through zero its speed passes smoothly: small, nothing, and small the other way.
+    assert(h.carrying(0.0, 2e-3) && h.carrying(1e-9, 2e-3))
+    assert(h.speed(0.0, 2e-3) == 0.0)
+    assert(h.speed(1e-9, 2e-3) > 0.0 && h.speed(-1e-9, 2e-3) < 0.0)
+    assert(h.speed(1e-9, 2e-3) == -h.speed(-1e-9, 2e-3))
+    // Measured against the most it has carried lately, so its peak moves the dots at full speed.
+    assert(h.speed(1e-3, 2e-3) == 3.0)
+
+    // What was held fades away, and the current is then a one-way trickle again.
+    for _ in 0..<40
+        h.see(0.0, 0.5)
+
+    assert(!h.alternating(2e-3) && !h.carrying(0.0, 2e-3))
+
+@test("an alternating current stays drawn as carrying through its zero crossings, and its dots rock back and forth")
+alternating_dots_rock()
+    val m = model("swing.amber", parse_schematic(SWING).unwrap())
+    val r1 = usize(m.sch.find("R1").unwrap())
+    var moves: Buf[real] = buf()
+
+    // A first cycle, to see the current go both ways: until it has, a current passing through zero is
+    // not yet known to alternate.
+    for _ in 0..<20
+        tick(m, 0.05)
+
+    // Twenty frames of fifty microseconds: one whole cycle of the sine.
+    for k in 1..20
+        val before = m.part_flow[r1]
+
+        tick(m, 0.05)
+        moves.push(m.part_flow[r1] - before)
+
+        val amps = m.s.current(m.sch.elements[r1].part)
+        val wires = m.sch.segment_currents(m.s)
+
+        assert(m.part_hold[r1].carrying(amps, m.most_amps))
+
+        for g in 0..<m.sch.segments.len()
+            val e = m.sch.elements[usize(m.sch.segments[g].element)]
+
+            if e.y1 == 4 && e.x1 == 4 && e.x2 == 0 then assert(m.segment_hold[g].carrying(wires[g], m.most_amps))
+
+        // At the half cycle the current is next to nothing: once it would have vanished.
+        if k == 10
+            assert(amps.abs() < 1e-4 * m.most_amps)
+            assert(dot_speed(amps, m.most_amps) == 0.0)
+
+    // The dots go one way for the first half cycle and back the other way for the second.
+    val first = if moves[0] > 0.0 then 1.0 else -1.0
+
+    for k in 0..<9
+        assert(moves[k] * first > 0.0)
+        assert(moves[k + 10] * first < 0.0)
+
+@test("a branch behind an open switch never carries, beside one that alternates")
+open_branch_idle()
+    val m = model("swing.amber", parse_schematic(SWING).unwrap())
+    val s1 = usize(m.sch.find("S1").unwrap())
+    val r2 = usize(m.sch.find("R2").unwrap())
+
+    for _ in 0..<20
+        tick(m, 0.05)
+
+        for i in [s1, r2]
+            assert(!m.part_hold[i].carrying(m.s.current(m.sch.elements[i].part), m.most_amps))
+            assert(m.part_flow[i] == 0.0)
+
+// --- Starting settled ---------------------------------------------------------------------------------
+
+val CHARGE = """
+    speed 1
+    battery   B1  0 0  0 6  9V
+    resistor  R1  0 0  7 0  10k
+    capacitor C1  7 0  7 6  100u
+    wire          7 6  0 6
+    ground        0 6
+    meter     M1  7 0  7 6
+    """
+
+@test("s starts the circuit again settled at its operating point; r starts it again as the file says")
+settle_key()
+    val m = model("charge.amber", parse_schematic(CHARGE).unwrap())
+
+    assert(m.reading(m.meters[0]).abs() < 1e-9)
+    tick(m, 0.1)
+    assert(press(m, SCANCODE_S))
+    assert(m.s.time == 0.0 && m.meters[0].times.len() == 1)
+    assert((m.reading(m.meters[0]) - 9.0).abs() < 1e-6)
+
+    // Settled, it stays where it is.
+    tick(m, 0.1)
+    assert((m.reading(m.meters[0]) - 9.0).abs() < 1e-6)
+
+    assert(press(m, SCANCODE_R))
+    assert(m.s.time == 0.0 && m.reading(m.meters[0]).abs() < 1e-9)
+
+@test("a file that says start settled starts settled, and r starts it settled again")
+settled_file()
+    val m = model("charge.amber", parse_schematic(s"start settled\n${CHARGE}").unwrap())
+
+    assert(m.sch.settled)
+    assert((m.reading(m.meters[0]) - 9.0).abs() < 1e-6)
+    m.running = false
+    m.restart()
+    assert((m.reading(m.meters[0]) - 9.0).abs() < 1e-6)
+    assert(press(m, SCANCODE_R))
+    assert((m.reading(m.meters[0]) - 9.0).abs() < 1e-6)
+
+// --- The scope's scales -------------------------------------------------------------------------------
+
+// Whether `x` is 1, 2 or 5 times a power of ten.
+private one_two_five(x: real) -> bool
+    val m = x / 10.0.pow(x.log10().floor())
+
+    for want in [1.0, 2.0, 5.0, 10.0]
+        if (m - want).abs() < 1e-9 then return true
+
+    false
+
+@test("a division's worth is the smallest step of 1, 2 and 5 times a power of ten that fits")
+steps_one_two_five()
+    assert(close(step_125(1.0), 1.0))
+    assert(close(step_125(1.01), 2.0))
+    assert(close(step_125(2.0), 2.0))
+    assert(close(step_125(3.0), 5.0))
+    assert(close(step_125(5.5), 10.0))
+    assert(close(step_125(0.0042), 0.005))
+    assert(close(step_125(0.001), 0.001))
+    assert(close(step_125(170.0), 200.0))
+
+@test("two channels of very different size each fill most of the scope's height, at 1-2-5 volts a division")
+channels_scale_alone()
+    for (lo, hi) in [(-10e-3, 10e-3), (-2.5, 2.5), (6.77, 7.23), (0.0, 9.0), (-0.3, 0.05), (1.0, 1.0), (0.0, 0.0)]
+        val (centre, per_div) = channel_scale(lo, hi)
+        val height = 5.0 * per_div
+
+        assert(one_two_five(per_div))
+        // Nothing runs off the top or the bottom.
+        assert(hi <= centre + height / 2.0 && lo >= centre - height / 2.0)
+
+    // A 10 mV sine and a 2.5 V one, the amplifier's input and something two hundred times larger.
+    val (small_centre, small) = channel_scale(-10e-3, 10e-3)
+    val (_, large) = channel_scale(-2.5, 2.5)
+
+    assert(small_centre == 0.0)
+    assert(close(small, 5e-3) && close(large, 2.0))
+    assert(20e-3 / (5.0 * small) > 0.75 && 5.0 / (5.0 * large) >= 0.5)
+
+    // The amplifier's collector, a swing on a bias: centred on the swing, not on zero.
+    val (centre, per_div) = channel_scale(6.77, 7.23)
+
+    assert(close(per_div, 0.1) && (centre - 7.0).abs() < 0.02)
+
+    // A steady 9 V is a flat line in the middle rather than its rounding errors blown up.
+    assert(close(channel_scale(9.0, 9.0).1, 0.1))
+
+@test("a channel's reach is what its meter read within the window")
+channel_reach()
+    val m = bench()
+
+    m.run(2e-3, 200)
+
+    val mt = m.meters[0]
+    val (lo, hi) = reach(mt, 1e-3)
+
+    assert(lo < 0.0 && hi > 0.0)
+    assert(reach(mt, 1.0) == (0.0, 0.0))
+
+    for j in 0..<mt.times.len()
+        if mt.times[j] >= 1e-3 then assert(mt.readings[j] >= lo && mt.readings[j] <= hi)

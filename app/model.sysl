@@ -2,7 +2,7 @@
 
 import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, Supply, Waveform, sim, engineering, parse_generator}
 import sh.sysl.ui_sdl.stop
-import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_C, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R,
+import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_C, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
 import sh.sysl.plutovg
 import sh.sysl.ui.Rect
@@ -20,6 +20,9 @@ const SAMPLES_PER_FRAME: int = 8
 
 // How many seconds of the window's time the scope shows.
 const SCOPE_SECONDS: real = 5.0
+
+// How many seconds of the window's time what a branch has carried takes to fade by a factor of e.
+const HOLD_SECONDS: real = 1.0
 
 // The colours meters are drawn in, one each, in the order they were placed.
 val METER_COLOURS = [0xFFB030, 0x4FD1E8, 0xE86FD8, 0x9BE15D, 0xFF6B6B, 0xB79CFF]
@@ -107,6 +110,14 @@ struct Model
     part_flow: Buf[real]
     base_flow: Buf[real]
     emitter_flow: Buf[real]
+    // What each of those has carried lately, each way, so a current that alternates is still drawn as
+    // flowing while it passes through zero.
+    segment_hold: Buf[Hold]
+    part_hold: Buf[Hold]
+    base_hold: Buf[Hold]
+    emitter_hold: Buf[Hold]
+    // The circuit's time the holds were last brought up to.
+    held_at: real
     // The largest current any part has carried since the circuit was switched on: the dots move at a
     // speed in proportion to it, so a current dying away is seen to slow.
     most_amps: real
@@ -209,20 +220,30 @@ struct Model
 
         self.s.set_switch(e.part, !closed)
 
-    // Switch the circuit on again from empty, forgetting what the meters read.
-    restart(*self)
+    // Start the circuit again the way its file says, forgetting what the meters read.
+    restart(*self) = self.start(self.sch.settled)
+
+    // Start the circuit again, forgetting what the meters read: `settled` at its DC operating point,
+    // every capacitor charged and every inductor's current steady, or else switched on from empty.
+    start(*self, settled: bool)
         self.s = sim(self.sch.circuit)
         self.trouble = ""
         self.most_amps = 0.0
+        self.held_at = 0.0
+
+        forget(&self.segment_hold)
+        forget(&self.part_hold)
+        forget(&self.base_hold)
+        forget(&self.emitter_hold)
 
         for k in 0..<self.meters.len()
             self.meters[k].forget()
 
-        // The instruments keep their settings: the circuit is switched on again with them as they are.
+        // The instruments keep their settings: the circuit is started again with them as they are.
         for k in 0..<self.panels.len()
             self.panels[k].apply(&self.s, true)
 
-        if self.s.power_on() is Err(why)
+        if (if settled then self.s.operating_point() else self.s.power_on()) is Err(why)
             self.trouble = why
             return
 
@@ -258,31 +279,87 @@ struct Model
             if e.part >= 0 && e.shape.points() == 3
                 self.most_amps = max(self.most_amps, self.s.terminal_current(e.part, 2).abs())
 
-    // Move the current dots on by `dt` seconds of the window's time.
-    flow(*self, dt: real)
-        if self.trouble != "" then return
-
+        // What was held fades by a factor of e in HOLD_SECONDS of the window's time.
+        val keep = (-(self.s.time - self.held_at) / (HOLD_SECONDS * self.pace())).exp()
         val amps = self.sch.segment_currents(self.s)
 
+        self.held_at = self.s.time
+
         for k in 0..<amps.len()
-            self.segment_flow[k] += dt * dot_speed(amps[k], self.most_amps)
+            self.segment_hold[k].see(amps[k], keep)
 
         for i in 0..<self.sch.elements.len()
             val e = self.sch.elements[i]
 
-            if e.part >= 0 then self.part_flow[i] += dt * dot_speed(self.s.current(e.part), self.most_amps)
+            if e.part >= 0 then self.part_hold[i].see(self.s.current(e.part), keep)
+
+            if e.part >= 0 && e.shape.points() == 3
+                self.base_hold[i].see(self.s.terminal_current(e.part, 1), keep)
+                self.emitter_hold[i].see(self.s.terminal_current(e.part, 2), keep)
+
+    // Move the current dots on by `dt` seconds of the window's time.
+    flow(*self, dt: real)
+        if self.trouble != "" then return
+
+        val most = self.most_amps
+        val amps = self.sch.segment_currents(self.s)
+
+        for k in 0..<amps.len()
+            self.segment_flow[k] += dt * self.segment_hold[k].speed(amps[k], most)
+
+        for i in 0..<self.sch.elements.len()
+            val e = self.sch.elements[i]
+
+            if e.part >= 0 then self.part_flow[i] += dt * self.part_hold[i].speed(self.s.current(e.part), most)
 
             // The base's current flows in toward the bar, and the emitter's out of it: the current into
             // the emitter, turned round.
             if e.part >= 0 && e.shape.points() == 3
-                self.base_flow[i] += dt * dot_speed(self.s.terminal_current(e.part, 1), self.most_amps)
-                self.emitter_flow[i] -= dt * dot_speed(self.s.terminal_current(e.part, 2), self.most_amps)
+                self.base_flow[i] += dt * self.base_hold[i].speed(self.s.terminal_current(e.part, 1), most)
+                self.emitter_flow[i] -= dt * self.emitter_hold[i].speed(self.s.terminal_current(e.part, 2), most)
 end Model
+
+// What a branch has carried lately: the largest current it has carried each way, each fading as time
+// goes on. A current that alternates passes through zero twice a cycle; what it carried a moment ago
+// says it is still flowing, and its dots slow, stop and come back the other way rather than vanish.
+struct Hold
+    forward: real
+    back: real
+
+    // Take in a current of `amps`, after what was held has faded to `keep` of itself.
+    see(*self, amps: real, keep: real)
+        self.forward = max(amps, self.forward * keep)
+        self.back = max(-amps, self.back * keep)
+
+    // Whether the current has lately gone both ways, each more than a trickle beside `most`.
+    alternating(self, most: real) -> bool = self.forward >= trickle(most) && self.back >= trickle(most)
+
+    // Whether a branch now carrying `amps` is drawn as carrying current: a current more than a trickle,
+    // or one that alternates.
+    carrying(self, amps: real, most: real) -> bool = amps.abs() >= trickle(most) || self.alternating(most)
+
+    // How fast its dots move for a current of `amps`, in grid squares a second. A current that only
+    // goes one way moves them as `dot_speed` says. One that alternates passes through zero smoothly,
+    // and is measured against the most it has carried lately rather than the most the circuit has, so
+    // a small signal beside a large bias still rocks its dots to and fro where they can be seen.
+    speed(self, amps: real, most: real) -> real
+        if !self.alternating(most) then return dot_speed(amps, most)
+
+        3.0 * amps / min(most, max(self.forward, self.back))
+
+// Every hold in `holds` emptied.
+private forget(holds: *Buf[Hold])
+    for k in 0..<holds.len()
+        holds[k] = Hold(0.0, 0.0)
+
+// The smallest current that moves dots: a ten-thousandth of the largest the circuit has carried, and
+// never less than a nanoamp.
+private trickle(most: real) -> real = max(1e-9, 1e-4 * most)
 
 // How fast dots move for a current of `amps`, in grid squares a second: three at the largest current
 // the circuit has carried, and none for a current too small to matter.
 dot_speed(amps: real, most: real) -> real
-    if amps.abs() < 1e-9 || amps.abs() < 1e-4 * most then return 0.0
+    if amps.abs() < trickle(most) then return 0.0
 
     3.0 * amps / most
 
@@ -291,17 +368,26 @@ model(file: string, sch: Schematic) -> &Model
     var parts: Buf[real] = buf()
     var bases: Buf[real] = buf()
     var emitters: Buf[real] = buf()
+    var held_segments: Buf[Hold] = buf()
+    var held_parts: Buf[Hold] = buf()
+    var held_bases: Buf[Hold] = buf()
+    var held_emitters: Buf[Hold] = buf()
 
     for _ in 0..<sch.segments.len()
         flows.push(0.0)
+        held_segments.push(Hold(0.0, 0.0))
 
     for _ in 0..<sch.elements.len()
         parts.push(0.0)
         bases.push(0.0)
         emitters.push(0.0)
+        held_parts.push(Hold(0.0, 0.0))
+        held_bases.push(Hold(0.0, 0.0))
+        held_emitters.push(Hold(0.0, 0.0))
 
     val m: &Model = Model(file, sch, sim(sch.circuit), "", buf(), false, 0, 0, -1, true, true, speed_index(sch.speed), flows,
-                  parts, bases, emitters, 0.0, Picture(None, None), Picture(None, None), panels(sch))
+                  parts, bases, emitters, held_segments, held_parts, held_bases, held_emitters, 0.0, 0.0,
+                  Picture(None, None), Picture(None, None), panels(sch))
 
     // The meters the file places are the first ones.
     for i in 0..<sch.elements.len()
@@ -357,8 +443,10 @@ tick(m: &Model, dt: real)
 shortcut(m: &Model, e: Event) -> bool
     if e.kind() != EventKind.KeyDown then return false
 
-    val key = e.key_scancode()
+    press(m, e.key_scancode())
 
+// The key with scancode `key` pressed: whether it is one of the shortcuts.
+press(m: &Model, key: i32) -> bool
     if key == SCANCODE_ESCAPE
         if m.probing then m.probing = false else stop()
     elif key == SCANCODE_C
@@ -370,6 +458,8 @@ shortcut(m: &Model, e: Event) -> bool
         m.running = !m.running
     elif key == SCANCODE_R
         m.restart()
+    elif key == SCANCODE_S
+        m.start(true)
     elif key == SCANCODE_EQUALS || key == SCANCODE_KP_PLUS
         m.speed = min(int(SPEEDS.len) - 1, m.speed + 1)
     elif key == SCANCODE_MINUS || key == SCANCODE_KP_MINUS

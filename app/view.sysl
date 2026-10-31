@@ -57,9 +57,9 @@ screen(m: &Model) -> &View =
         row([text(status(m)), spacer(), text(hint(m))], 10).padding(8),
     ])
 
-const HINT: string = "click two points: a meter · click a switch to flip it · space pause · +/- speed · r restart · v values · c clear"
-const INSTRUMENT_HINT: string = "click two points: a meter · click a generator to tune it · space pause · +/- speed · r restart · v values · c clear"
-const SUPPLY_HINT: string = "click two points: a meter · click a supply to set it · space pause · +/- speed · r restart · v values · c clear"
+const HINT: string = "click two points: a meter · a switch: flip it · space pause · +/- speed · r restart · s settle · v values · c clear"
+const INSTRUMENT_HINT: string = "click two points: a meter · a generator: tune it · space pause · +/- speed · r restart · s settle · v values · c clear"
+const SUPPLY_HINT: string = "click two points: a meter · a supply: set it · space pause · +/- speed · r restart · s settle · v values · c clear"
 
 // The line of hints under the board, naming the instrument there is to click.
 private hint(m: &Model) -> string
@@ -260,7 +260,7 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
                 pen.dot(real(x), real(y), 4.0)
 
     // The current, as dots moving along the wires and through the parts the way it flows.
-    // A current too small to move them shows none.
+    // A current too small to move them shows none, unless it is an alternating one passing through zero.
     set(vg, CURRENT)
 
     if m.trouble == ""
@@ -269,17 +269,17 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
         for k in 0..<m.sch.segments.len()
             val g = m.sch.segments[k]
 
-            if dot_speed(amps[k], m.most_amps) != 0.0
+            if m.segment_hold[k].carrying(amps[k], m.most_amps)
                 pen.dots(real(g.x1), real(g.y1), real(g.x2), real(g.y2), m.segment_flow[k])
 
         for i in 0..<m.sch.elements.len()
             val e = m.sch.elements[i]
 
             if e.part >= 0 && (e.shape == Nmos || e.shape == Pmos)
-                pen.mosfet_dots(e, m.part_flow[i])
+                pen.mosfet_dots(e, i, m.part_flow[i])
             elif e.part >= 0 && e.shape.points() == 3
-                pen.transistor_dots(e, m.part_flow[i], m.base_flow[i], m.emitter_flow[i])
-            elif e.part >= 0 && dot_speed(m.s.current(e.part), m.most_amps) != 0.0
+                pen.transistor_dots(e, i, m.part_flow[i], m.base_flow[i], m.emitter_flow[i])
+            elif e.part >= 0 && m.part_hold[i].carrying(m.s.current(e.part), m.most_amps)
                 pen.dots(real(e.x1), real(e.y1), real(e.x2), real(e.y2), m.part_flow[i])
 
     for k in 0..<m.meters.len()
@@ -401,17 +401,19 @@ private struct Pen
 
         e.shape match
             Resistor ->
-                val teeth = 6
-                val step = body / real(teeth * 2)
-                var s = s0
+                // Three zigzags, peak to peak, in a square of the middle, as a schematic draws one.
+                val zigzag = min(1.0, body)
+                val r0 = (length - zigzag) / 2.0
+                val step = zigzag / 6.0
 
                 self.vg.begin()
-                f.move(s, 0.0)
+                f.move(s0, 0.0)
+                f.to(r0, 0.0)
 
-                for k in 0..<teeth * 2
-                    s += step
-                    f.to(s - step / 2.0, if k % 2 == 0 then 0.22 else -0.22)
+                for k in 0..<6
+                    f.to(r0 + (real(k) + 0.5) * step, if k % 2 == 0 then 0.2 else -0.2)
 
+                f.to(r0 + zigzag, 0.0)
                 f.to(s1, 0.0)
                 self.vg.stroke()
             Capacitor ->
@@ -729,20 +731,20 @@ private struct Pen
 
     // A transistor's current dots: along the collector's lead and slant to the bar, from the base to
     // the bar, and from the bar down the emitter's slant and lead, each moved its own `flow` squares.
-    transistor_dots(self, e: Element, collector: real, base: real, emitter: real)
+    transistor_dots(self, e: Element, i: usize, collector: real, base: real, emitter: real)
         val g = transistor_frame(e)
         val m = self.m
         val (bx, by) = (g.gx(BEND, 0.0), g.gy(BEND, 0.0))
         val (ex, ey) = (g.gx(-BEND, 0.0), g.gy(-BEND, 0.0))
 
-        if dot_speed(m.s.terminal_current(e.part, 0), m.most_amps) != 0.0
+        if m.part_hold[i].carrying(m.s.terminal_current(e.part, 0), m.most_amps)
             self.dots(real(e.x1), real(e.y1), bx, by, collector)
             self.dots(bx, by, g.gx(SLANT, BAR), g.gy(SLANT, BAR), collector - distance(real(e.x1), real(e.y1), bx, by))
 
-        if dot_speed(m.s.terminal_current(e.part, 1), m.most_amps) != 0.0
+        if m.base_hold[i].carrying(m.s.terminal_current(e.part, 1), m.most_amps)
             self.dots(real(e.x2), real(e.y2), g.gx(0.0, BAR), g.gy(0.0, BAR), base)
 
-        if dot_speed(m.s.terminal_current(e.part, 2), m.most_amps) != 0.0
+        if m.emitter_hold[i].carrying(m.s.terminal_current(e.part, 2), m.most_amps)
             val (sx, sy) = (g.gx(-SLANT, BAR), g.gy(-SLANT, BAR))
 
             self.dots(sx, sy, ex, ey, emitter)
@@ -793,8 +795,8 @@ private struct Pen
 
     // A MOSFET's current dots, along its drain's lead and stub, its channel, and its source's stub and
     // lead, moved `flow` squares along the way from the drain.
-    mosfet_dots(self, e: Element, flow: real)
-        if dot_speed(self.m.s.terminal_current(e.part, 0), self.m.most_amps) == 0.0 then return
+    mosfet_dots(self, e: Element, i: usize, flow: real)
+        if !self.m.part_hold[i].carrying(self.m.s.terminal_current(e.part, 0), self.m.most_amps) then return
 
         val g = transistor_frame(e)
         val xs = [real(e.x1), g.gx(REACH, 0.0), g.gx(REACH, CHANNEL), g.gx(-REACH, CHANNEL), g.gx(-REACH, 0.0), real(e.x3)]

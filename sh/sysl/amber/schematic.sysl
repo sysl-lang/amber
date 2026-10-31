@@ -74,7 +74,9 @@ import sysl.text.{Search, fields, split}
 //     supply   P2  0 4  0 8  15 500m raw 2 60 1.5
 //
 // and a line `speed <seconds>` says how many seconds of the circuit's time a viewer should show in each
-// second of its own. `#` starts a comment, and a blank line is nothing.
+// second of its own; a line `start settled` says a viewer should switch it on already settled at its
+// DC operating point rather than from every capacitor empty. `#` starts a comment, and a blank line is
+// nothing.
 //
 // **Points join where they meet.** Two elements whose ends are at the same point are connected, and so
 // is an end that lands anywhere along a wire, which is how a junction is drawn. Every set of joined
@@ -178,6 +180,8 @@ struct Schematic
     // Seconds of the circuit's time a viewer shows in a second of its own; 0 where the file does not
     // say.
     speed: real
+    // Whether a viewer starts the circuit at its DC operating point rather than switched on from empty.
+    settled: bool
 
     // The element called `name`, if there is one.
     find(self, name: string) -> Option[int]
@@ -334,6 +338,7 @@ parse_schematic(text: string) -> Result[Schematic, string]
     var elements: Buf[Element] = buf()
     var kinds: Buf[Option[Kind]] = buf()
     var speed = 0.0
+    var settled = false
     var line_no = 0
 
     for raw in split(text, "\n")
@@ -356,6 +361,14 @@ parse_schematic(text: string) -> Result[Schematic, string]
 
             continue
 
+        if words[0] == "start"
+            if words.len != 2 then return Err(s"line ${line_no}: start takes one word, settled")
+
+            if words[1] != "settled" then return Err(s"line ${line_no}: '${words[1]}' is not a way to start: settled")
+
+            settled = true
+            continue
+
         val (e, kind) = element(words).map_err(why -> s"line ${line_no}: ${why}")?
 
         if e.name != ""
@@ -370,6 +383,7 @@ parse_schematic(text: string) -> Result[Schematic, string]
     var sch = build(elements, kinds)?
 
     sch.speed = speed
+    sch.settled = settled
     Ok(sch)
 
 // One line's element, its nodes not yet known, and the part it is if it is one.
@@ -809,7 +823,7 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
 
             if kind.terminals() == 3 then c.add3(e.name, kind, e.a, e.b, e.c) else c.add(e.name, kind, e.a, e.b)
 
-    Ok(Schematic(elements, c, segments_of(elements), 0.0))
+    Ok(Schematic(elements, c, segments_of(elements), 0.0, false))
 
 // Every wire cut at the points along it where something else ends.
 private segments_of(elements: Buf[Element]) -> Buf[Segment]
