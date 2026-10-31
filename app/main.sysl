@@ -2,16 +2,18 @@
 // can be put across anything.
 //
 //     amber <file.amber>
-//     amber <file.amber> --shot <out.png> [--meter <x1>,<y1>,<x2>,<y2>]...
+//     amber <file.amber> --shot <out.png> [--time <seconds>] [--meter <x1>,<y1>,<x2>,<y2>]...
 //
-// Click a grid point to put a meter's red lead there, and a second one for its black lead; the meter
-// reads the first point's voltage less the second's. Click a part to see the voltage across it and
-// the current through it.
+// The circuit is switched on when the window opens and its clock runs at the file's speed. Click a grid
+// point to put a meter's red lead there, and a second one for its black lead; the meter reads the first
+// point's voltage less the second's, and the scope under the circuit draws what it has read. Click a
+// part to see the voltage across it and the current through it, and a switch to flip it.
 //
-// `--shot` draws one frame with no window and writes it to a PNG, with any meters `--meter` places, so
-// the picture a person would see is one a machine can check.
+// `--shot` draws one frame with no window and writes it to a PNG, after running the circuit for
+// `--time` seconds of its own, with any meters `--meter` places, so the picture a person would see is
+// one a machine can check.
 
-import sh.sysl.amber.{parse_schematic}
+import sh.sysl.amber.{parse_schematic, parse_value}
 import sh.sysl.ui.{Rect, render, pluto_canvas, fraction}
 import sh.sysl.ui_sdl.{app, run, system_font}
 import sh.sysl.plutovg
@@ -25,7 +27,8 @@ const HEIGHT: int = 720
 main(args: []string) -> Result[unit, string]
     var file = ""
     var shot = ""
-    var placed: Buf[Meter] = buf()
+    var time = 0.0
+    var placed: Buf[(int, int, int, int)] = buf()
     var i: usize = 1
 
     while i < args.len
@@ -34,6 +37,9 @@ main(args: []string) -> Result[unit, string]
         if a == "--shot" && i + 1 < args.len
             shot = args[i + 1]
             i += 2
+        elif a == "--time" && i + 1 < args.len
+            time = parse_value(args[i + 1]).map_err(e -> s"--time: ${e}")?
+            i += 2
         elif a == "--meter" && i + 1 < args.len
             placed.push(meter_option(args[i + 1])?)
             i += 2
@@ -41,19 +47,27 @@ main(args: []string) -> Result[unit, string]
             file = a
             i += 1
         else
-            return Err(s"usage: amber <file.amber> [--shot <out.png>] [--meter x1,y1,x2,y2]... ('${a}' is not one of these)")
+            return Err(s"usage: amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]... ('${a}' is not one of these)")
 
-    if file == "" then return Err("usage: amber <file.amber> [--shot <out.png>] [--meter x1,y1,x2,y2]...")
+    if file == "" then return Err("usage: amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]...")
 
     val text = read_text(file).map_err(e -> s"${file}: ${e}")?
     val sch = parse_schematic(text).map_err(e -> s"${file}: ${e}")?
     val m = model(file, sch)
 
     for k in 0..<placed.len()
-        m.meters.push(placed[k])
+        val (x1, y1, x2, y2) = placed[k]
+
+        m.add_meter(x1, y1, x2, y2)
 
     if shot == "" then return run(app(s"amber — ${file}", () -> screen(m), () -> GROUND, WIDTH, HEIGHT,
-                                      on_event = e -> shortcut(m, e)))
+                                      on_event = e -> shortcut(m, e), on_frame = dt -> tick(m, dt)))
+
+    m.running = false
+
+    if time > 0.0
+        m.run(time, 600)
+        m.flow(0.1)
 
     val font = system_font()
 
@@ -74,7 +88,7 @@ main(args: []string) -> Result[unit, string]
 end main
 
 // A meter from `--meter x1,y1,x2,y2`.
-private meter_option(arg: string) -> Result[Meter, string]
+private meter_option(arg: string) -> Result[(int, int, int, int), string]
     val parts = split(arg, ",")
 
     if parts.len != 4 then return Err(s"--meter takes x1,y1,x2,y2, not '${arg}'")
@@ -84,4 +98,4 @@ private meter_option(arg: string) -> Result[Meter, string]
     for k in 0..<4
         xy[k] = parse_int(parts[k]).map_err(e -> s"--meter takes x1,y1,x2,y2, not '${arg}'")?
 
-    Ok(Meter(xy[0], xy[1], xy[2], xy[3]))
+    Ok((xy[0], xy[1], xy[2], xy[3]))

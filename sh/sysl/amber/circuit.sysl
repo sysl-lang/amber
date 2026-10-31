@@ -45,7 +45,7 @@ enum Kind derives Eq
     CurrentSource(wave: Wave)
     // A junction diode, conducting from its first terminal (the anode) to its second (the cathode).
     Diode(model: DiodeModel)
-    // A switch: a hundredth of an ohm closed, a teraohm open.
+    // A switch: a hundredth of an ohm closed, and no connection open.
     Switch(closed: bool)
 
     // A source's wave; `None` for a part that is not a source.

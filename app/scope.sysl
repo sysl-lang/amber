@@ -1,0 +1,135 @@
+// The scope: what every meter has read over the last few seconds, each in its meter's colour, against
+// the circuit's own time.
+
+import sh.sysl.amber.engineering
+import sh.sysl.ui.{View, Canvas, Size, Rect, Image}
+import sh.sysl.plutovg
+import sysl.math.{max, min}
+
+const SCOPE_HEIGHT: int = 170
+const SCOPE_GROUND: u32 = 0x0B0D10
+const GRATICULE: u32 = 0x22262E
+const AXIS: u32 = 0x3A404C
+
+private struct Scope
+    m: &Model
+
+scope(m: &Model) -> &View = Scope(m)
+
+impl View for Scope
+    measure(&self, c: *Canvas, avail: Size) -> Size = Size(avail.w, SCOPE_HEIGHT)
+
+    paint(&self, c: *Canvas, r: Rect)
+        val m = self.m
+
+        c.fill(r, SCOPE_GROUND)
+
+        if m.meters.len() == 0
+            c.ink(DIM)
+            c.text(Rect(r.x + 16, r.y + r.h / 2 - 10, r.w - 32, 20), "put a meter across two points to watch its voltage here")
+            c.unink()
+            return
+
+        // The plot leaves room on the left for the voltage scale and on the right for the legend.
+        val plot = Rect(r.x + 70, r.y + 12, r.w - 70 - 150, r.h - 34)
+        val now = m.s.time
+        val from = now - m.window()
+        val (lo, hi) = span(m, from)
+
+        if m.scope.fit(r, c.pixel_scale()) is Some(vg)
+            trace_all(m, vg, r, plot, c.pixel_scale(), from, lo, hi)
+            c.draw_image(r, Image(m.scope.surface.unwrap()))
+
+        c.ink(DIM)
+        c.text(Rect(r.x + 8, plot.y - 8, 60, 18), volts(hi))
+        c.text(Rect(r.x + 8, plot.bottom() - 10, 60, 18), volts(lo))
+        c.text(Rect(plot.x, plot.bottom() + 4, 200, 18), s"${engineering(m.window())}s across")
+        c.text(Rect(plot.right() - 120, plot.bottom() + 4, 120, 18), s"t = ${engineering(now)}s")
+        c.unink()
+
+        for k in 0..<m.meters.len()
+            val mt = m.meters[k]
+            val y = r.y + 14 + int(k) * 22
+
+            if y + 18 > r.bottom() then break
+
+            c.fill(Rect(plot.right() + 16, y + 6, 14, 4), mt.colour)
+            c.ink(INK)
+            c.text(Rect(plot.right() + 36, y, 110, 18), s"${mt.name}  ${volts(m.reading(mt))}")
+            c.unink()
+
+// The lowest and highest reading any meter has made since `from`, always taking in zero, and widened
+// a tenth each way so a trace does not run along the edge.
+private span(m: &Model, from: real) -> (real, real)
+    var lo = 0.0
+    var hi = 0.0
+
+    for k in 0..<m.meters.len()
+        val mt = m.meters[k]
+
+        for j in 0..<mt.times.len()
+            if mt.times[j] >= from
+                lo = min(lo, mt.readings[j])
+                hi = max(hi, mt.readings[j])
+
+    if hi - lo < 1e-9
+        hi += 1.0
+        lo -= 1.0
+
+    val pad = (hi - lo) / 10.0
+
+    (lo - pad, hi + pad)
+
+// Draw the graticule and every meter's trace into the scope's picture.
+private trace_all(m: &Model, vg: &plutovg.Canvas, r: Rect, plot: Rect, scale: real, from: real, lo: real, hi: real)
+    val left = real(plot.x - r.x)
+    val top = real(plot.y - r.y)
+    val w = real(plot.w)
+    val h = real(plot.h)
+    val window = m.window()
+
+    vg.line_width(f32(scale))
+
+    for k in 0..5
+        tone(vg, if k == 0 || k == 5 then AXIS else GRATICULE)
+        vg.begin()
+        vg.move_to(f32(left * scale), f32((top + h * real(k) / 5.0) * scale))
+        vg.line_to(f32((left + w) * scale), f32((top + h * real(k) / 5.0) * scale))
+        vg.stroke()
+
+    // Zero volts, a little brighter.
+    if lo < 0.0 && hi > 0.0
+        val y0 = top + h * hi / (hi - lo)
+
+        tone(vg, AXIS)
+        vg.begin()
+        vg.move_to(f32(left * scale), f32(y0 * scale))
+        vg.line_to(f32((left + w) * scale), f32(y0 * scale))
+        vg.stroke()
+
+    vg.line_width(f32(2.0 * scale))
+    vg.line_join(plutovg.LineJoin.Round)
+
+    for k in 0..<m.meters.len()
+        val mt = m.meters[k]
+        var started = false
+
+        tone(vg, mt.colour)
+        vg.begin()
+
+        for j in 0..<mt.times.len()
+            val t = mt.times[j]
+
+            if t < from then continue
+
+            val x = (left + w * (t - from) / window) * scale
+            val y = (top + h * (hi - mt.readings[j]) / (hi - lo)) * scale
+
+            if started then vg.line_to(f32(x), f32(y)) else vg.move_to(f32(x), f32(y))
+
+            started = true
+
+        vg.stroke()
+
+private tone(vg: &plutovg.Canvas, colour: u32) =
+    vg.rgb(f32(int((colour >> 16) & 0xFF)) / 255.0, f32(int((colour >> 8) & 0xFF)) / 255.0, f32(int(colour & 0xFF)) / 255.0)

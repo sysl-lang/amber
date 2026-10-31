@@ -1,0 +1,13 @@
+# An LED blinking: a square wave, once a second, through a resistor.
+#
+# While the source is at 5 V the LED takes about 1.9 V and the resistor the rest; while it is at 0 V
+# nothing flows and the LED is dark.
+
+speed 1
+
+source    V1  0 0  0 6  square 0 5 1
+resistor  R1  0 0  6 0  220
+led       D1  6 0  6 6  green
+wire          6 6  0 6
+ground        0 6
+meter     M1  6 0  6 6

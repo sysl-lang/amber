@@ -1,0 +1,17 @@
+# A capacitor charging through a resistor.
+#
+# Click the switch to close it. The capacitor's voltage rises quickly at first and then more and more
+# slowly, as the voltage left across the resistor, and so the current, shrinks: after one time
+# constant, R × C = 10 kΩ × 100 µF = 1 s, it has reached 63% of the battery's 9 V. Open the switch
+# and the capacitor keeps its charge; there is nowhere for it to go.
+
+speed 1
+
+battery   B1  0 0  0 6  9V
+switch    S1  0 0  3 0
+resistor  R1  3 0  7 0  10k
+capacitor C1  7 0  7 6  100u
+wire          7 6  0 6
+ground        0 6
+meter     M1  7 0  7 6
+meter     M2  3 0  7 0

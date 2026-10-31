@@ -1,0 +1,15 @@
+# A low-pass filter: a square wave through a resistor into a capacitor.
+#
+# The capacitor cannot follow the square wave's sudden steps. It charges a little while the input is
+# high and discharges a little while it is low, so the output is the input's average, 2.5 V, with a
+# small ripple left on it. A larger resistor or capacitor smooths it more.
+
+speed 2m
+
+source    V1  0 0  0 6  square 0 5 1k
+resistor  R1  0 0  6 0  1k
+capacitor C1  6 0  6 6  2.2u
+wire          6 6  0 6
+ground        0 6
+meter     IN  0 0  0 6
+meter     OUT 6 0  6 6

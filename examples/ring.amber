@@ -1,0 +1,18 @@
+# A capacitor and an inductor trading energy back and forth.
+#
+# The battery charges the capacitor through S1. Open S1 and close S2: the capacitor drives current
+# through the inductor, which keeps it flowing after the capacitor is empty and charges it the other
+# way round, again and again, at 1 / (2π √(LC)), about 5 kHz. The resistor in series loses a little
+# energy each swing, so the ringing dies away.
+
+speed 2m
+
+battery   B1  0 0  0 6  5V
+switch    S1  0 0  4 0  closed
+capacitor C1  4 0  4 6  1u
+switch    S2  4 0  8 0
+resistor  R1  8 0  8 3  2
+inductor  L1  8 3  8 6  1m
+wire          8 6  0 6
+ground        0 6
+meter     V   4 0  4 6

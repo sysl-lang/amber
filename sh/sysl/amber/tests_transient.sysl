@@ -74,11 +74,13 @@ rc_charge()
     var s = rc()
 
     s.power_on().unwrap()
-    assert(s.voltage_at("top").abs() < 1e-6)
+    // Left open, the switch lets nothing through, however long it waits.
+    s.advance_to(1.0).unwrap()
+    assert(s.voltage_at("top") == 0.0)
     s.set_switch(1, true)
 
     for k in 1..5
-        val t = real(k) * 1e-3
+        val t = 1.0 + real(k) * 1e-3
 
         s.advance_to(t).unwrap()
         assert(s.time == t)
@@ -87,7 +89,7 @@ rc_charge()
     // The current is the resistor's: what flows into the capacitor is what charges it.
     assert(close(s.current(3), s.current(2), 1e-3))
 
-@test("a charged capacitor holds its voltage when the switch opens, and drains when it is shorted through a resistor")
+@test("a charged capacitor holds its voltage when the switch opens")
 rc_hold()
     var s = rc()
 
@@ -99,8 +101,9 @@ rc_hold()
     assert(close(full, 5.0, 1e-3))
     s.set_switch(1, false)
     s.advance_to(20e-3).unwrap()
-    // A teraohm switch and a microfarad: a time constant of eleven days.
+    // Nothing crosses an open switch; the capacitor keeps its charge but for GMIN's teraohm.
     assert(close(s.voltage_at("top"), full, 1e-6))
+    assert(s.current(1) == 0.0)
 
 @test("an inductor's current rises through a resistor as 1 − e^(−tR/L)")
 rl_rise()
@@ -343,3 +346,33 @@ advance_starts_from_operating_point()
 
     s.advance_to(1e-6).unwrap()
     assert(close(s.voltage_at("top"), 10.0, 1e-9))
+
+@test("a simulator flips its own copy of a switch, not the circuit it was made from")
+own_copy()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(1.0)), "a", "0")
+    c.connect("S1", Switch(false), "a", "b")
+    c.connect("R1", Resistor(1.0), "b", "0")
+
+    var s = sim(c)
+
+    s.set_switch(1, true)
+    assert(c.parts[1].kind == Switch(false))
+    assert(s.circuit.parts[1].kind == Switch(true))
+
+@test("the README's example: a microfarad charged for a millisecond through a kilohm")
+readme_example()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(5.0)), "plus", "0")
+    c.connect("S1", Switch(false), "plus", "a")
+    c.connect("R1", Resistor(1000.0), "a", "top")
+    c.connect("C1", Capacitor(1e-6), "top", "0")
+
+    var s = sim(c)
+
+    s.power_on().unwrap()
+    s.set_switch(1, true)
+    s.advance_to(1e-3).unwrap()
+    assert(close(s.voltage_at("top"), 5.0 * (1.0 - (-1.0).exp()), 2e-3))

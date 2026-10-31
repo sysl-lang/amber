@@ -1,6 +1,7 @@
 @tests
 
-import sh.sysl.amber.parse_schematic
+import sh.sysl.amber.{parse_schematic, Switch}
+import sysl.text.Search
 
 val LED = """
     battery  B1  0 0  0 6  9V
@@ -59,7 +60,7 @@ status_of_a_part()
     val m = led_model()
 
     m.selected = m.sch.find("R1").unwrap()
-    assert(status(m).starts_with("R1 470Ω resistor: 7.16V across, 15.2mA through, 109mW taken"))
+    assert(status(m).contains("R1 470Ω resistor: 7.16V across, 15.2mA through, 109mW taken"))
     m.selected = m.sch.find("B1").unwrap()
     assert(status(m).ends_with("delivered"))
 
@@ -67,4 +68,106 @@ status_of_a_part()
 unsolvable()
     val m = model("bad.amber", parse_schematic("battery B1 0 0 0 1 5\nwire 0 0 0 1\nground 0 1").unwrap())
 
-    assert(status(m).starts_with("cannot solve:"))
+    assert(status(m).contains("cannot solve:"))
+
+val RC = """
+    speed 1
+    battery   B1  0 0  0 6  9V
+    switch    S1  0 0  3 0
+    resistor  R1  3 0  7 0  10k
+    capacitor C1  7 0  7 6  100u
+    wire          7 6  0 6
+    ground        0 6
+    meter     M1  7 0  7 6
+    """
+
+private rc_model() -> &Model = model("rc.amber", parse_schematic(RC).unwrap())
+
+@test("the file's meters are the model's first, and the file's speed is the clock's")
+file_meters_and_speed()
+    val m = rc_model()
+
+    assert(m.meters.len() == 1)
+    assert(m.pace() == 1.0)
+    assert(m.meters[0].times.len() == 1)
+
+@test("clicking a switch closes it, and the clock then charges the capacitor")
+switch_and_clock()
+    val m = rc_model()
+    val s1 = m.sch.find("S1").unwrap()
+
+    // Open, a second passes and nothing happens.
+    tick(m, 0.1)
+    assert(m.reading(m.meters[0]).abs() < 1e-9)
+    m.toggle(s1)
+    m.selected = s1
+    assert(status(m).contains("closed switch"))
+
+    // A tenth of a second at a second a second, ten frames: 0.1 time constants.
+    for _ in 0..<10
+        tick(m, 0.1)
+
+    assert((m.s.time - 1.1).abs() < 1e-9)
+    assert((m.reading(m.meters[0]) - 9.0 * (1.0 - (-1.0).exp())).abs() < 0.02)
+    // Every frame sampled the meter several times.
+    assert(int(m.meters[0].times.len()) == 1 + 11 * SAMPLES_PER_FRAME)
+
+@test("a paused clock does not move, and a restart starts again from empty")
+pause_and_restart()
+    val m = rc_model()
+
+    m.toggle(m.sch.find("S1").unwrap())
+    tick(m, 0.1)
+    m.running = false
+    tick(m, 0.1)
+    assert((m.s.time - 0.1).abs() < 1e-9)
+    m.restart()
+    assert(m.s.time == 0.0)
+    assert(m.meters[0].times.len() == 1)
+    assert(m.reading(m.meters[0]).abs() < 1e-9)
+
+@test("a frame owes no more than a tenth of a second, however late it is")
+late_frame()
+    val m = rc_model()
+
+    tick(m, 3.0)
+    assert((m.s.time - 0.1).abs() < 1e-9)
+
+@test("dots move with the current, in proportion to the largest seen, and not at all for a trickle")
+dot_speeds()
+    assert(dot_speed(1e-3, 1e-3) == 3.0)
+    assert(dot_speed(-0.5e-3, 1e-3) == -1.5)
+    assert(dot_speed(1e-12, 1e-3) == 0.0)
+    assert(dot_speed(1e-8, 1e-3) == 0.0)
+
+@test("a meter forgets its oldest half once it has read many times")
+meter_memory()
+    val m = rc_model()
+    var mt = m.meters[0]
+
+    for k in 0..<9000
+        mt.record(real(k), 0.0)
+
+    assert(mt.times.len() < 8192)
+    assert(mt.times[mt.times.len() - 1] == 8999.0)
+
+@test("a meter clicked into place is named after the meters already there")
+meter_names()
+    val m = rc_model()
+
+    m.probe(0, 0)
+    m.probe(0, 6)
+    m.probe(3, 0)
+    m.probe(7, 0)
+    assert(m.meters[0].name == "M1")
+    assert(m.meters[1].name == "M2")
+    assert(m.meters[2].name == "M3")
+
+@test("a restart puts the switches back as the file has them")
+restart_resets_switches()
+    val m = rc_model()
+    val s1 = m.sch.find("S1").unwrap()
+
+    m.toggle(s1)
+    m.restart()
+    assert(m.s.circuit.parts[usize(m.sch.elements[usize(s1)].part)].kind == Switch(false))

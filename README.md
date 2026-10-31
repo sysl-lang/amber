@@ -1,26 +1,37 @@
 # amber
 
 An analog circuit simulator in [sysl](https://sysl.sh), and a viewer that draws the circuit with the
-voltage on every wire. Named for *ēlektron*, the Greek for amber, which is where the word
-"electricity" comes from.
+voltage on every wire and the current moving through it. Named for *ēlektron*, the Greek for amber,
+which is where the word "electricity" comes from.
 
-![A battery, a resistor and an LED, with three voltmeters](shot.png)
+![A square wave smoothed by a resistor and a capacitor, with the scope showing input and output](shot.png)
 
 ## The viewer
 
 ```
 sysl build app
-app/amber-app examples/led.amber
+app/amber-app examples/filter.amber
 ```
 
-Wires are grey at ground, warming to amber as their voltage rises (and cooling to blue below ground).
-**Click two grid points to put a voltmeter across them** — the red lead first, the black lead second;
-it reads the first point's voltage less the second's. Click a part for the voltage across it, the
-current through it and the power it takes or delivers. `v` toggles the voltage beside every part, `c`
-clears the meters, Escape quits.
+The circuit is switched on when the window opens, every capacitor empty, and its clock runs at the
+speed the file asks for. Wires are grey at ground, warming to amber as their voltage rises (and cooling
+to blue below ground); yellow dots move along the wires and through the parts the way the current
+flows, faster for more current.
 
-`--shot out.png` draws one frame to a PNG without a window, and `--meter x1,y1,x2,y2` places a meter
-from the command line.
+- **Click two grid points to put a voltmeter across them** — the red lead first, the black lead
+  second; it reads the first point's voltage less the second's. **The scope** under the circuit draws
+  what every meter has read over the last five seconds, each in its meter's colour.
+- **Click a switch** to flip it; click any part for the voltage across it, the current through it and
+  the power it takes or delivers.
+- `space` pauses, `+` and `-` change the speed, `r` switches the circuit on again from empty, `v`
+  toggles the voltage beside every part, `c` clears the meters, Escape quits.
+
+`--shot out.png --time 10m` runs the circuit for ten milliseconds of its own time and draws that frame
+to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command line.
+
+The examples: `led` (a battery, a resistor and an LED), `rc` (a capacitor charging when you close the
+switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave) and `ring` (a capacitor
+and an inductor trading energy).
 
 ## Schematics
 
@@ -28,23 +39,28 @@ A schematic is one element per line, placed on a grid; elements whose ends meet 
 end landing anywhere along a wire joins it:
 
 ```
-# A battery, a resistor and an LED.
-battery  B1   0 0  0 6  9V       # + end first
-resistor R1   0 0  6 0  470
-led      D1   6 0  6 6  red      # anode first
+# A low-pass filter.
+speed 2m                                   # 2 ms of circuit time a second
+
+source    V1  0 0  0 6  square 0 5 1k      # + end first
+resistor  R1  0 0  6 0  1k
+capacitor C1  6 0  6 6  2.2u
 wire          6 6  0 6
 ground        0 6
-meter    M2   6 0  6 6           # red lead first
+meter     OUT 6 0  6 6                     # red lead first
 ```
 
-Kinds: `wire`, `resistor`, `battery`, `current`, `diode`, `led` (`red`, `yellow`, `green`, `blue`),
-`ground`, `label` (names a node), `meter`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg` (and
-`1m` is a milliohm).
+Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
+`switch` (`open` or `closed`), `diode`, `led` (`red`, `yellow`, `green`, `blue`). Also `wire`,
+`ground`, `label` (names a node) and `meter`. Waves: `dc 5`, `sine 5 1k [offset]`,
+`square 0 5 1k [duty]`, `pulse low high delay rise fall width period` (SPICE's), and
+`pwl t v t v …`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg` (and `1m` is a milliohm).
 
 ## The library
 
 `sh.sysl.amber` builds a circuit — from a schematic, or part by part — and solves it by modified
-nodal analysis, with Newton–Raphson and SPICE's junction limiting for diodes:
+nodal analysis, with Newton–Raphson and SPICE's junction limiting for diodes, and steps it through time
+by the trapezoidal rule with its step chosen from the error it makes:
 
 ```
 dependencies {
@@ -53,21 +69,27 @@ dependencies {
 ```
 
 ```sysl
-import sh.sysl.amber.{circuit, sim, VoltageSource, Resistor, Diode, RED_LED}
+import sh.sysl.amber.{circuit, sim, Dc, VoltageSource, Resistor, Capacitor, Switch}
 
 var c = circuit()
 
-c.connect("B1", VoltageSource(9.0), "plus", "0")
-c.connect("R1", Resistor(470.0), "plus", "anode")
-c.connect("D1", Diode(RED_LED), "anode", "0")
+c.connect("B1", VoltageSource(Dc(5.0)), "plus", "0")
+c.connect("S1", Switch(false), "plus", "a")
+c.connect("R1", Resistor(1000.0), "a", "top")
+c.connect("C1", Capacitor(1e-6), "top", "0")
 
 var s = sim(c)
 
-s.operating_point().unwrap()
-print(s.across(2), s.current(1))
+s.power_on().unwrap()
+s.set_switch(1, true)
+s.advance_to(1e-3).unwrap()
+print(s.voltage_at("top"))      // 5 (1 − e⁻¹) ≈ 3.16
 ```
 
-It needs nothing but an allocator. What is planned is in [DESIGN.md](DESIGN.md).
+`operating_point()` finds the circuit settled; `power_on()` starts it from empty; `advance_to(t)`
+runs it to a time, landing on it exactly; `set_switch` and `set_wave` change it between steps. That
+incremental shape is what lets a program — an emulated microcontroller, say — drive it as it runs. It
+needs nothing but an allocator. What is planned is in [DESIGN.md](DESIGN.md).
 
 ```
 sysl test .

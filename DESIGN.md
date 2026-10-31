@@ -38,10 +38,11 @@ exactly at every node in what is reported.
 Each is a piece of work of its own, in this order.
 
 1. ~~DC operating point: R, V, I, diode/LED; schematics; the viewer with voltmeters.~~
-2. **Transient analysis**: capacitors and inductors (trapezoidal, backward Euler at breakpoints),
-   time-varying sources (pulse, sine, PWL), switches, timestep control from local truncation error
-   with rejected steps; the incremental API (`advance_to`, `set_source`). The viewer runs the clock,
-   animates current, and gains a scope plotting chosen nodes against time.
+2. ~~**Transient analysis**: capacitors and inductors (trapezoidal, backward Euler at corners),
+   sources with waves (dc, sine, pulse/square, PWL), switches, step control from the error against a
+   parabola through the last three points, with rejected steps; the incremental API (`power_on`,
+   `advance_to`, `set_switch`, `set_wave`). The viewer runs the clock, animates current, and has a
+   scope of every meter.~~
 3. **SPICE netlists**: read a `.cir` subset (elements, `.model`, `.op`, `.tran`, `.dc`), so ngspice
    (or published waveforms) can be the oracle.
 4. **Active devices**: BJT (Ebers–Moll / Gummel–Poon subset), MOSFET level 1. Example: an astable

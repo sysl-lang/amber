@@ -13,9 +13,10 @@ const GMIN: real = 1e-12
 
 const MOST_ITERATIONS: int = 150
 
-// A switch's resistance closed and open.
+// A closed switch's resistance. An open one is no connection at all: each side is held to ground by
+// GMIN alone, so a node the switch was the only way to is left at nothing rather than floating, and
+// nothing leaks across it.
 const CLOSED_OHMS: real = 0.01
-const OPEN_OHMS: real = 1e12
 
 // How closely a step must follow the circuit: a node's error may be a thousandth of its voltage, or a
 // microvolt, whichever is larger.
@@ -123,7 +124,7 @@ struct Sim
                 val v = self.junction[usize(i)]
 
                 diode_current(m, v) + GMIN * v + (diode_conductance(m, v) + GMIN) * (self.junction_now(i) - v)
-            Switch(closed) -> self.across(i) / (if closed then CLOSED_OHMS else OPEN_OHMS)
+            Switch(closed) -> if closed then self.across(i) / CLOSED_OHMS else 0.0
 
     // The power part `i` takes from the circuit, in watts; negative for a part delivering it.
     power(self, i: int) -> real = self.across(i) * self.current(i)
@@ -447,7 +448,12 @@ struct Sim
 
             p.kind match
                 Resistor(r) -> self.conductance(a, b, 1.0 / r)
-                Switch(closed) -> self.conductance(a, b, 1.0 / (if closed then CLOSED_OHMS else OPEN_OHMS))
+                Switch(closed) ->
+                    if closed
+                        self.conductance(a, b, 1.0 / CLOSED_OHMS)
+                    else
+                        self.sys.at(a, a, GMIN)
+                        self.sys.at(b, b, GMIN)
                 Capacitor(farads) ->
                     val (g, owed) = self.capacitor_companion(farads, int(i))
 
@@ -514,8 +520,15 @@ struct Sim
         "the circuit has a node no part fixes the voltage of, or a loop of voltage sources and inductors"
 end Sim
 
-// A simulator for `c`, not yet solved.
-sim(c: Circuit) -> Sim
+// A simulator for `c`, not yet solved. It works on its own copy of the parts, so flipping a switch or
+// changing a wave in it leaves `c` as it was.
+sim(given: Circuit) -> Sim
+    var own: Buf[Part] = buf()
+
+    for i in 0..<given.parts.len()
+        own.push(given.parts[i])
+
+    val c = Circuit(given.nodes, own)
     var extra: Buf[int] = buf()
     var size = c.node_count() - 1
 
