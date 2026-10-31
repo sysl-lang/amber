@@ -338,8 +338,8 @@ private part_kind(e: Element) -> Result[Kind, string] = e.shape match
         if ohms <= 0.0 then return Err("a resistance is more than zero")
 
         Ok(Resistor(ohms))
-    Battery -> Ok(VoltageSource(parse_value(e.value)?))
-    CurrentSource -> Ok(CurrentSource(parse_value(e.value)?))
+    Battery -> Ok(VoltageSource(Dc(parse_value(e.value)?)))
+    CurrentSource -> Ok(CurrentSource(Dc(parse_value(e.value)?)))
     Diode -> Ok(Diode(SILICON))
     Led -> Ok(Diode(e.colour.model()))
     _ -> Err("is not a part")

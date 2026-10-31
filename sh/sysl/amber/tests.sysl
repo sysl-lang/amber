@@ -35,7 +35,7 @@ values_written()
 divider()
     var c = circuit()
 
-    c.connect("B1", VoltageSource(9.0), "top", "0")
+    c.connect("B1", VoltageSource(Dc(9.0)), "top", "0")
     c.connect("R1", Resistor(1000.0), "top", "mid")
     c.connect("R2", Resistor(1000.0), "mid", "0")
 
@@ -53,7 +53,7 @@ divider()
 current_source()
     var c = circuit()
 
-    c.connect("I1", CurrentSource(1e-3), "0", "n")
+    c.connect("I1", CurrentSource(Dc(1e-3)), "0", "n")
     c.connect("R1", Resistor(2000.0), "n", "0")
 
     var s = sim(c)
@@ -65,8 +65,8 @@ current_source()
 floating_node()
     var c = circuit()
 
-    c.connect("B1", VoltageSource(5.0), "a", "0")
-    c.connect("I1", CurrentSource(1e-3), "b", "c")
+    c.connect("B1", VoltageSource(Dc(5.0)), "a", "0")
+    c.connect("I1", CurrentSource(Dc(1e-3)), "b", "c")
 
     var s = sim(c)
 
@@ -80,7 +80,7 @@ floating_node()
 battery_resistor_led()
     var c = circuit()
 
-    c.connect("B1", VoltageSource(9.0), "plus", "0")
+    c.connect("B1", VoltageSource(Dc(9.0)), "plus", "0")
     c.connect("R1", Resistor(470.0), "plus", "anode")
     c.connect("D1", Diode(RED_LED), "anode", "0")
 
@@ -103,7 +103,7 @@ battery_resistor_led()
 red_led_knee()
     var c = circuit()
 
-    c.connect("I1", CurrentSource(10e-3), "0", "a")
+    c.connect("I1", CurrentSource(Dc(10e-3)), "0", "a")
     c.connect("D1", Diode(RED_LED), "a", "0")
 
     var s = sim(c)
@@ -115,7 +115,7 @@ red_led_knee()
 silicon_knee()
     var c = circuit()
 
-    c.connect("I1", CurrentSource(1e-3), "0", "a")
+    c.connect("I1", CurrentSource(Dc(1e-3)), "0", "a")
     c.connect("D1", Diode(SILICON), "a", "0")
 
     var s = sim(c)
@@ -127,7 +127,7 @@ silicon_knee()
 reversed_led()
     var c = circuit()
 
-    c.connect("B1", VoltageSource(9.0), "plus", "0")
+    c.connect("B1", VoltageSource(Dc(9.0)), "plus", "0")
     c.connect("R1", Resistor(470.0), "plus", "k")
     c.connect("D1", Diode(RED_LED), "0", "k")
 
@@ -145,7 +145,7 @@ led_colours()
     for k in 0..<4
         var c = circuit()
 
-        c.connect("I1", CurrentSource(10e-3), "0", "a")
+        c.connect("I1", CurrentSource(Dc(10e-3)), "0", "a")
         c.connect("D1", Diode(models[k]), "a", "0")
 
         var s = sim(c)

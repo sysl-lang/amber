@@ -1,0 +1,98 @@
+module sh.sysl.amber
+
+import sysl.buf.{Buf, buf}
+import sysl.math.tau
+
+// What a source puts out over time.
+//
+// **A wave tells the solver where it has corners.** A pulse's edges and a piecewise-linear wave's
+// points are moments where the value stops changing smoothly, and a step that straddles one smears it;
+// `next_corner` names the first one after a time, and the solver lands a step exactly on it. A sine has
+// no corners but curves everywhere, so it asks for steps no longer than a twentieth of its period.
+enum Wave
+    // A constant.
+    Dc(value: real)
+    // `offset + amplitude · sin(2π · frequency · (t − delay))`, holding `offset` until `delay`.
+    Sine(offset: real, amplitude: real, frequency: real, delay: real)
+    // SPICE's PULSE: `low` until `delay`, rising to `high` over `rise`, holding for `width`, falling
+    // over `fall`, and back at `low` until the next `period` begins.
+    Pulse(low: real, high: real, delay: real, rise: real, fall: real, width: real, period: real)
+    // Straight lines between (time, value) points, holding the first value before them and the last
+    // after them.
+    Pwl(points: Buf[(real, real)])
+
+    // The value at time `t`.
+    at(self, t: real) -> real = self match
+        Dc(v) -> v
+        Sine(offset, amplitude, frequency, delay) ->
+            if t <= delay then offset else offset + amplitude * (tau * frequency * (t - delay)).sin()
+        Pulse(low, high, delay, rise, fall, width, period) ->
+            if t <= delay then return low
+
+            val u = (t - delay).fmod(period)
+
+            if u < rise then low + (high - low) * u / rise
+            elif u < rise + width then high
+            elif u < rise + width + fall then high - (high - low) * (u - rise - width) / fall
+            else low
+        Pwl(points) ->
+            if points.len() == 0 then return 0.0
+
+            if t <= points[0].0 then return points[0].1
+
+            for k in 1..<points.len()
+                val (t1, v1) = points[k]
+
+                if t <= t1
+                    val (t0, v0) = points[k - 1]
+
+                    return if t1 == t0 then v1 else v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+
+            points[points.len() - 1].1
+
+    // The first corner strictly after `t`, if the wave has one.
+    next_corner(self, t: real) -> Option[real] = self match
+        Dc(_) -> None
+        Sine(_, _, _, delay) -> if t < delay then Some(delay) else None
+        Pulse(_, _, delay, rise, fall, width, period) ->
+            if t < delay then return Some(delay)
+
+            val start = delay + ((t - delay) / period).floor() * period
+            val corners = [start + rise, start + rise + width, start + rise + width + fall, start + period]
+
+            for k in 0..<4
+                // A corner within a femtosecond of `t` is the one just landed on.
+                if corners[k] > t + 1e-15 then return Some(corners[k])
+
+            Some(start + period + rise)
+        Pwl(points) ->
+            for k in 0..<points.len()
+                if points[k].0 > t + 1e-15 then return Some(points[k].0)
+
+            None
+
+    // The longest step the wave can be followed with between corners; infinite for one that is straight
+    // there.
+    longest_step(self) -> real = self match
+        Sine(_, _, frequency, _) -> if frequency > 0.0 then 1.0 / (20.0 * frequency) else 1e300
+        _ -> 1e300
+
+    // Whether the wave never changes.
+    is_constant(self) -> bool = self is Dc(_)
+
+// A square wave between `low` and `high` at `frequency`, high for `duty` of each period, its edges a
+// thousandth of the period long.
+square(low: real, high: real, frequency: real, duty: real = 0.5) -> Wave
+    val period = 1.0 / frequency
+    val edge = period / 1000.0
+
+    Pulse(low, high, 0.0, edge, edge, duty * period - edge, period)
+
+// A piecewise-linear wave through `points`, which must be in time order.
+pwl(points: [](real, real)) -> Wave
+    var b: Buf[(real, real)] = buf()
+
+    for k in 0..<points.len
+        b.push(points[k])
+
+    Pwl(b)

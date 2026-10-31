@@ -31,14 +31,28 @@ val BLUE_LED = DiodeModel(1e-28, 2.0, 2.0)
 enum Kind
     // A resistor of `ohms`.
     Resistor(ohms: real)
-    // An ideal voltage source: the second terminal is `volts` below the first, whatever is drawn
-    // from it. A battery is one.
-    VoltageSource(volts: real)
-    // An ideal current source: `amps` flows through it from its first terminal to its second, so out of
-    // the second into the circuit, as SPICE has it.
-    CurrentSource(amps: real)
+    // A capacitor of `farads`: the current through it is C · dv/dt, so it passes no current once it is
+    // charged, and its voltage cannot jump.
+    Capacitor(farads: real)
+    // An inductor of `henries`: the voltage across it is L · di/dt, so it is a plain wire once its
+    // current is steady, and its current cannot jump.
+    Inductor(henries: real)
+    // An ideal voltage source: the first terminal is the wave's value above the second, whatever is
+    // drawn from it. A battery is one whose wave is `Dc`.
+    VoltageSource(wave: Wave)
+    // An ideal current source: the wave's value flows through it from its first terminal to its second,
+    // so out of the second into the circuit, as SPICE has it.
+    CurrentSource(wave: Wave)
     // A junction diode, conducting from its first terminal (the anode) to its second (the cathode).
     Diode(model: DiodeModel)
+    // A switch: a hundredth of an ohm closed, a teraohm open.
+    Switch(closed: bool)
+
+    // A source's wave; `None` for a part that is not a source.
+    wave(self) -> Option[Wave] = self match
+        VoltageSource(w) -> Some(w)
+        CurrentSource(w) -> Some(w)
+        _ -> None
 
 // One part: its name, what it is, and the nodes its two terminals are on.
 struct Part

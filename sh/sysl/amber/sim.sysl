@@ -1,33 +1,63 @@
 module sh.sysl.amber
 
 import sysl.buf.{Buf, buf}
-import sysl.math.max
+import sysl.math.{max, min}
 
 // The thermal voltage at 27 °C, kT/q.
 const VT: real = 0.025851991
 
 // A conductance put across every junction, so a reverse-biased diode is a very large resistor rather
-// than an open circuit that leaves its node floating.
+// than an open circuit that leaves its node floating. A capacitor is one too while the circuit is
+// solved for DC, where it is otherwise no connection at all.
 const GMIN: real = 1e-12
 
 const MOST_ITERATIONS: int = 150
 
-// The circuit's solution, found by modified nodal analysis.
+// A switch's resistance closed and open.
+const CLOSED_OHMS: real = 0.01
+const OPEN_OHMS: real = 1e12
+
+// How closely a step must follow the circuit: a node's error may be a thousandth of its voltage, or a
+// microvolt, whichever is larger.
+const REL_TOL: real = 1e-3
+const ABS_TOL: real = 1e-6
+
+// The first step after the start and after a corner, a nanosecond, and the shortest step the solver
+// will take before giving up.
+const FIRST_STEP: real = 1e-9
+const SHORTEST_STEP: real = 1e-18
+
+// How the parts that remember are written into the system: not at all (DC, where a capacitor is open
+// and an inductor a wire), by backward Euler, or by the trapezoidal rule.
+enum Method: u8
+    Steady
+    Euler
+    Trapezoid
+
+// The circuit's solution, found by modified nodal analysis, at a moment in time.
 //
 // **The unknowns are the node voltages and some currents.** Kirchhoff's current law at every node but
 // ground gives one equation per voltage. A voltage source fixes the difference between two nodes
 // rather than a current, so it adds the current through itself as an unknown and its own voltage as
-// the equation for it. A diode's series resistance puts a node inside the diode, between the
-// resistance and the junction, which is an unknown the circuit never names.
+// the equation for it; an inductor does the same. A diode's series resistance puts a node inside the
+// diode, between the resistance and the junction, which is an unknown the circuit never names.
 //
 // **A diode is not linear**, so the system is solved by Newton–Raphson: the diode is replaced by the
 // straight line touching its curve at the voltage it has now, the linear system is solved, and the
 // voltage moves to the answer; repeated until nothing moves. The step a junction may take is limited,
 // since the exponential sends an unlimited step to infinity.
+//
+// **Time moves in steps.** Over a step of length h a capacitor's dv/dt is written as a difference, so
+// it becomes a conductance in parallel with a current source, both fixed by the voltage and current it
+// had at the step's start — its *companion*. The trapezoidal rule averages the slopes at both ends and
+// is accurate; backward Euler takes the slope at the end and is crude but cannot ring, so it takes the
+// first step after the start and after every corner, where the trapezoidal rule would oscillate. Each
+// step's answer is compared with where the last three put it; a step that strayed too far is thrown
+// away and taken again shorter, and a step that followed closely lets the next be longer.
 struct Sim
     circuit: Circuit
-    // The unknown each part adds, by part: the current through a voltage source, or a diode's inner
-    // node. -1 where the part adds none.
+    // The unknown each part adds, by part: the current through a voltage source or an inductor, or a
+    // diode's inner node. -1 where the part adds none.
     extra: Buf[int]
     // The junction voltage each diode was last linearised at.
     junction: Buf[real]
@@ -36,6 +66,33 @@ struct Sim
     sys: System
     // A conductance from every node to ground while the solution is approached by steps; 0 otherwise.
     shunt: real
+    // The time the solution is at, in seconds.
+    time: real
+    method: Method
+    // The length of the step being solved, and the one the next step will try.
+    step: real
+    next_step: real
+    // The longest step the caller allows; the waves may ask for less.
+    longest_step: real
+    // What each capacitor and inductor had at the last accepted time: the voltage across it and the
+    // current through it.
+    held_v: Buf[real]
+    held_i: Buf[real]
+    // The two accepted solutions before the present one, and their times, for judging a step's error;
+    // `history` counts how many of them are since the last corner.
+    back1: Buf[real]
+    back2: Buf[real]
+    time1: real
+    time2: real
+    history: int
+    // Whether the operating point has been found, which time starts from.
+    started: bool
+    // A copy of the solution and junctions to go back to when a step is thrown away.
+    saved_x: Buf[real]
+    saved_junction: Buf[real]
+    // Steps taken and steps thrown away, for anyone curious how hard the circuit was.
+    accepted: int
+    rejected: int
 
     // The voltage at node `node` against ground.
     voltage(self, node: int) -> real = if node <= 0 then 0.0 else self.x[usize(node - 1)]
@@ -58,12 +115,15 @@ struct Sim
 
         p.kind match
             Resistor(r) -> self.across(i) / r
+            Capacitor(_) -> self.held_i[usize(i)]
+            Inductor(_) -> self.x[usize(self.extra[usize(i)])]
             VoltageSource(_) -> self.x[usize(self.extra[usize(i)])]
-            CurrentSource(amps) -> amps
+            CurrentSource(w) -> w.at(self.time)
             Diode(m) ->
                 val v = self.junction[usize(i)]
 
                 diode_current(m, v) + GMIN * v + (diode_conductance(m, v) + GMIN) * (self.junction_now(i) - v)
+            Switch(closed) -> self.across(i) / (if closed then CLOSED_OHMS else OPEN_OHMS)
 
     // The power part `i` takes from the circuit, in watts; negative for a part delivering it.
     power(self, i: int) -> real = self.across(i) * self.current(i)
@@ -76,31 +136,249 @@ struct Sim
 
         anode - self.voltage(p.b)
 
-    // Find the DC operating point: every voltage and current with the circuit settled.
+    // Open or close switch `i`. The circuit changes abruptly, which is a corner: the next step is short
+    // and taken by backward Euler.
+    set_switch(*self, i: int, closed: bool)
+        self.circuit.parts[usize(i)].kind = Switch(closed)
+        self.corner()
+
+    // Give source `i` a new wave from now on; a corner, as `set_switch` is.
+    set_wave(*self, i: int, w: Wave)
+        self.circuit.parts[usize(i)].kind match
+            VoltageSource(_) -> self.circuit.parts[usize(i)].kind = VoltageSource(w)
+            CurrentSource(_) -> self.circuit.parts[usize(i)].kind = CurrentSource(w)
+            _ -> return
+
+        self.corner()
+
+    // Find the DC operating point at the present time: every voltage and current with the circuit
+    // settled, capacitors charged and inductors' currents steady. Time starts from here.
     //
     // Newton–Raphson from the last solution; if that does not converge, the circuit is first solved
     // with a conductance from every node to ground, which makes it easy, and the conductance is taken
     // away a decade at a time, each solution starting the next.
     operating_point(*self) -> Result[unit, string]
+        self.method = Steady
         self.shunt = 0.0
 
-        if self.newton().is_ok() then return Ok(())
+        if self.newton().is_err()
+            self.reset()
 
-        self.reset()
+            var g = 1e-2
 
-        var g = 1e-2
+            while g > 1e-13
+                self.shunt = g
 
-        while g > 1e-13
-            self.shunt = g
+                if self.newton() is Err(why)
+                    self.shunt = 0.0
+                    return Err(why)
 
-            if self.newton() is Err(why)
-                self.shunt = 0.0
-                return Err(why)
+                g /= 10.0
 
-            g /= 10.0
+            self.shunt = 0.0
+            self.newton()?
 
+        for i in 0..<self.circuit.parts.len()
+            self.held_v[i] = self.across(int(i))
+            self.held_i[i] = self.circuit.parts[i].kind match
+                Inductor(_) -> self.x[usize(self.extra[i])]
+                _ -> 0.0
+
+        self.started = true
+        self.corner()
+        Ok(())
+
+    // Switch the circuit on at the present time with every capacitor empty and no current in any
+    // inductor, rather than settled as `operating_point` finds it. This is a circuit just built and
+    // connected to its battery: it starts where it is and moves from there.
+    //
+    // The solution at the instant of switching on is found with each capacitor a short circuit holding
+    // zero volts and each inductor an open one carrying nothing: a backward Euler step a femtosecond
+    // long, from all of them empty.
+    power_on(*self) -> Result[unit, string]
+        for i in 0..<self.circuit.parts.len()
+            self.held_v[i] = 0.0
+            self.held_i[i] = 0.0
+
+        self.method = Euler
+        self.step = 1e-15
         self.shunt = 0.0
-        self.newton()
+        self.newton()?
+
+        for i in 0..<self.circuit.parts.len()
+            self.circuit.parts[i].kind match
+                Capacitor(farads) ->
+                    val (g, owed) = self.capacitor_companion(farads, int(i))
+
+                    self.held_i[i] = g * self.across(int(i)) - owed
+                    self.held_v[i] = 0.0
+                _ -> ()
+
+        self.started = true
+        self.corner()
+        Ok(())
+
+    // Run the circuit forward to time `until`, landing on it exactly. The operating point is found
+    // first if it has not been.
+    advance_to(*self, until: real) -> Result[unit, string]
+        if !self.started then self.operating_point()?
+
+        while self.time < until
+            val target = self.step_end(until)
+
+            self.take_step(target)?
+
+        Ok(())
+
+    // Where the next step should end: no further than the step the error allows, the longest step the
+    // caller and the waves allow, the next corner of any wave, or `until`.
+    private step_end(self, until: real) -> real
+        var h = min(self.next_step, self.longest_step)
+
+        for i in 0..<self.circuit.parts.len()
+            if self.circuit.parts[i].kind.wave() is Some(w) then h = min(h, w.longest_step())
+
+        var end = min(until, self.time + h)
+
+        for i in 0..<self.circuit.parts.len()
+            if self.circuit.parts[i].kind.wave() is Some(w)
+                if w.next_corner(self.time) is Some(c) then end = min(end, c)
+
+        end
+
+    // Take one step to `target`, shortening it and trying again while it fails to converge or strays
+    // too far.
+    private take_step(*self, target: real) -> Result[unit, string]
+        var end = target
+
+        copy(&self.x, &self.saved_x)
+        copy(&self.junction, &self.saved_junction)
+
+        loop
+            val h = end - self.time
+
+            if h < SHORTEST_STEP then return Err(s"the step needed at t = ${engineering(self.time)}s is too short: the circuit changes faster than it can be followed")
+
+            self.step = h
+
+            val solved = self.newton_at(end)
+
+            if solved.is_ok()
+                val err = self.step_error(end)
+
+                if err <= 1.0
+                    self.accept(end, err)
+                    return Ok(())
+
+                self.rejected += 1
+                end = self.time + h * max(0.2, 0.9 * (1.0 / err).cbrt())
+            else
+                self.rejected += 1
+                end = self.time + h / 8.0
+
+            copy(&self.saved_x, &self.x)
+            copy(&self.saved_junction, &self.junction)
+
+    // Solve the system for the time `end`, the step length already set.
+    private newton_at(*self, end: real) -> Result[unit, string]
+        val now = self.time
+
+        self.time = end
+
+        val result = self.newton()
+
+        self.time = now
+        result
+
+    // How far the step's solution strayed from where the last three solutions point, as a multiple of
+    // what the tolerances allow. Until three solutions since the last corner are known, nothing can be
+    // judged and the step is taken as good.
+    private step_error(self, end: real) -> real
+        if self.history < 2 || self.method != Trapezoid then return 0.5
+
+        val t0 = self.time
+        val t1 = self.time1
+        val t2 = self.time2
+        var worst = 0.0
+
+        for k in 0..<self.size
+            val x0 = self.saved_x[usize(k)]
+            val x1 = self.back1[usize(k)]
+            val x2 = self.back2[usize(k)]
+            // The parabola through the last three solutions, read at `end`.
+            val predicted = x0 * (end - t1) * (end - t2) / ((t0 - t1) * (t0 - t2)) +
+                x1 * (end - t0) * (end - t2) / ((t1 - t0) * (t1 - t2)) +
+                x2 * (end - t0) * (end - t1) / ((t2 - t0) * (t2 - t1))
+            val got = self.x[usize(k)]
+            // The trapezoidal rule's own error is about a twelfth of the parabola's miss.
+            val err = (got - predicted).abs() / 12.0 / (REL_TOL * max(got.abs(), x0.abs()) + ABS_TOL)
+
+            worst = max(worst, err)
+
+        worst
+
+    // Make the step to `end` the present: remember what the capacitors and inductors now hold, shift
+    // the history, and choose the next step's length from how well this one went.
+    private accept(*self, end: real, err: real)
+        val h = end - self.time
+
+        for i in 0..<self.circuit.parts.len()
+            self.circuit.parts[i].kind match
+                Capacitor(farads) ->
+                    val v = self.across(int(i))
+                    val (g, owed) = self.capacitor_companion(farads, int(i))
+
+                    self.held_i[i] = g * v - owed
+                    self.held_v[i] = v
+                Inductor(_) ->
+                    self.held_i[i] = self.x[usize(self.extra[i])]
+                    self.held_v[i] = self.across(int(i))
+                _ -> ()
+
+        copy(&self.back1, &self.back2)
+        copy(&self.saved_x, &self.back1)
+        self.time2 = self.time1
+        self.time1 = self.time
+        self.time = end
+        self.history += 1
+        self.accepted += 1
+
+        // A step landing on a corner makes the next one a fresh start.
+        var on_corner = false
+
+        for i in 0..<self.circuit.parts.len()
+            if self.circuit.parts[i].kind.wave() is Some(w)
+                if w.next_corner(self.time1) is Some(c)
+                    if (c - end).abs() <= 1e-15 * max(1.0, end.abs()) then on_corner = true
+
+        val grown = if err > 0.0 then h * min(2.0, 0.9 * (1.0 / err).cbrt()) else h * 2.0
+
+        self.next_step = max(grown, FIRST_STEP)
+
+        if on_corner
+            self.corner()
+        else
+            self.method = Trapezoid
+
+    // Something changed abruptly: start again with a short step by backward Euler, with no history to
+    // judge it by.
+    private corner(*self)
+        self.method = Euler
+        self.next_step = FIRST_STEP
+        self.history = 0
+
+    // A capacitor's companion for the present step: the conductance, and the current it is offset by,
+    // so that the current through it is `g · v − owed`.
+    private capacitor_companion(self, farads: real, i: int) -> (real, real) = self.method match
+        Steady -> (GMIN, 0.0)
+        Euler ->
+            val g = farads / self.step
+
+            (g, g * self.held_v[usize(i)])
+        Trapezoid ->
+            val g = 2.0 * farads / self.step
+
+            (g, g * self.held_v[usize(i)] + self.held_i[usize(i)])
 
     // Forget the solution and start the next one from zero.
     private reset(*self)
@@ -152,7 +430,7 @@ struct Sim
                     self.junction[i] = limit(want, self.junction[i], m)
                 _ -> ()
 
-    // Write the linearised system for the present solution.
+    // Write the linearised system for the present solution at the present time.
     private stamp(*self)
         self.sys.clear()
 
@@ -169,15 +447,45 @@ struct Sim
 
             p.kind match
                 Resistor(r) -> self.conductance(a, b, 1.0 / r)
-                VoltageSource(v) ->
+                Switch(closed) -> self.conductance(a, b, 1.0 / (if closed then CLOSED_OHMS else OPEN_OHMS))
+                Capacitor(farads) ->
+                    val (g, owed) = self.capacitor_companion(farads, int(i))
+
+                    self.conductance(a, b, g)
+                    self.sys.rhs(a, owed)
+                    self.sys.rhs(b, -owed)
+                Inductor(henries) ->
+                    // The branch equation v_a − v_b − r · i = e, where the companion's resistance `r`
+                    // and voltage `e` come from the current and voltage at the step's start.
+                    val k = self.extra[i]
+                    val (r, e) = self.method match
+                        Steady -> (0.0, 0.0)
+                        Euler ->
+                            val r = henries / self.step
+
+                            (r, -r * self.held_i[i])
+                        Trapezoid ->
+                            val r = 2.0 * henries / self.step
+
+                            (r, -r * self.held_i[i] - self.held_v[i])
+
+                    self.sys.at(a, k, 1.0)
+                    self.sys.at(b, k, -1.0)
+                    self.sys.at(k, a, 1.0)
+                    self.sys.at(k, b, -1.0)
+                    self.sys.at(k, k, -r)
+                    self.sys.rhs(k, e)
+                VoltageSource(w) ->
                     val k = self.extra[i]
 
                     self.sys.at(a, k, 1.0)
                     self.sys.at(b, k, -1.0)
                     self.sys.at(k, a, 1.0)
                     self.sys.at(k, b, -1.0)
-                    self.sys.rhs(k, v)
-                CurrentSource(amps) ->
+                    self.sys.rhs(k, w.at(self.time))
+                CurrentSource(w) ->
+                    val amps = w.at(self.time)
+
                     self.sys.rhs(a, -amps)
                     self.sys.rhs(b, amps)
                 Diode(m) ->
@@ -203,20 +511,17 @@ struct Sim
 
     // Why the matrix could not be solved, as a person would put it.
     private singular(self) -> string
-        "the circuit has a node no part fixes the voltage of, or a loop of voltage sources"
+        "the circuit has a node no part fixes the voltage of, or a loop of voltage sources and inductors"
 end Sim
 
 // A simulator for `c`, not yet solved.
 sim(c: Circuit) -> Sim
     var extra: Buf[int] = buf()
-    var junction: Buf[real] = buf()
     var size = c.node_count() - 1
 
     for i in 0..<c.parts.len()
-        junction.push(0.0)
-
         c.parts[i].kind match
-            VoltageSource(_) ->
+            VoltageSource(_) | Inductor(_) ->
                 extra.push(size)
                 size += 1
             Diode(m) ->
@@ -227,12 +532,23 @@ sim(c: Circuit) -> Sim
                     extra.push(-1)
             _ -> extra.push(-1)
 
-    var x: Buf[real] = buf()
+    val parts = int(c.parts.len())
 
-    for _ in 0..<size
-        x.push(0.0)
+    Sim(c, extra, zeros(parts), size, zeros(size), system(size), 0.0, 0.0, Steady, 0.0, FIRST_STEP, 1e300,
+        zeros(parts), zeros(parts), zeros(size), zeros(size), 0.0, 0.0, 0, false, zeros(size), zeros(parts), 0, 0)
 
-    Sim(c, extra, junction, size, x, system(size), 0.0)
+private zeros(n: int) -> Buf[real]
+    var b: Buf[real] = buf()
+
+    for _ in 0..<n
+        b.push(0.0)
+
+    b
+
+// Copy `from` into `to`, which is as long.
+private copy(from: *Buf[real], to: *Buf[real])
+    for k in 0..<from.len()
+        to[k] = from[k]
 
 // The current through a junction at `v`.
 diode_current(m: DiodeModel, v: real) -> real = m.is * ((v / (m.n * VT)).exp() - 1.0)

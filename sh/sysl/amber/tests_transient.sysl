@@ -1,0 +1,345 @@
+module sh.sysl.amber
+@tests
+
+import sysl.math.{pi, tau}
+
+// Time, checked against circuits whose answer is a formula.
+
+private close(got: real, want: real, rel: real) -> bool = (got - want).abs() <= rel * want.abs() + 1e-12
+
+// --- Waves ------------------------------------------------------------------------------------------
+
+@test("a pulse rises, holds, falls and repeats, with its corners where SPICE puts them")
+pulse_shape()
+    val w = Pulse(0.0, 5.0, 1.0, 0.1, 0.2, 1.0, 4.0)
+
+    assert(w.at(0.5) == 0.0)
+    assert(close(w.at(1.05), 2.5, 1e-12))
+    assert(w.at(1.5) == 5.0)
+    assert(close(w.at(2.2), 2.5, 1e-12))
+    assert(w.at(3.0) == 0.0)
+    assert(w.at(5.5) == 5.0)
+    assert(w.next_corner(0.0) == Some(1.0))
+    assert(close(w.next_corner(1.0).unwrap(), 1.1, 1e-12))
+    assert(close(w.next_corner(1.5).unwrap(), 2.1, 1e-12))
+    assert(close(w.next_corner(2.2).unwrap(), 2.3, 1e-12))
+    assert(close(w.next_corner(3.0).unwrap(), 5.0, 1e-12))
+
+@test("a square wave is high for its duty of each period")
+square_wave()
+    val w = square(0.0, 3.3, 1000.0, 0.25)
+
+    assert(w.at(0.0001) == 3.3)
+    assert(w.at(0.0004) == 0.0)
+    assert(w.at(0.0011) == 3.3)
+
+@test("a piecewise-linear wave holds its ends and runs straight between its points")
+pwl_shape()
+    val w = pwl([(1.0, 0.0), (2.0, 10.0), (4.0, 10.0), (5.0, -5.0)])
+
+    assert(w.at(0.0) == 0.0)
+    assert(w.at(1.5) == 5.0)
+    assert(w.at(3.0) == 10.0)
+    assert(w.at(4.5) == 2.5)
+    assert(w.at(9.0) == -5.0)
+    assert(w.next_corner(2.0) == Some(4.0))
+    assert(w.next_corner(5.0).is_none())
+    assert(pwl([]).at(1.0) == 0.0)
+
+@test("a sine holds its offset until its delay, and asks for twenty steps a period")
+sine_shape()
+    val w = Sine(1.0, 2.0, 50.0, 0.01)
+
+    assert(w.at(0.005) == 1.0)
+    assert(close(w.at(0.01 + 0.005), 3.0, 1e-12))
+    assert(close(w.longest_step(), 0.001, 1e-12))
+    assert(w.next_corner(0.0) == Some(0.01))
+    assert(w.next_corner(0.02).is_none())
+
+// --- Capacitors and inductors -----------------------------------------------------------------------
+
+// 5 V through a closed switch and 1 kΩ into 1 µF: v = 5 (1 − e^(−t/RC)), RC = 1 ms.
+private rc() -> Sim
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(5.0)), "plus", "0")
+    c.connect("S1", Switch(false), "plus", "a")
+    c.connect("R1", Resistor(1000.0), "a", "top")
+    c.connect("C1", Capacitor(1e-6), "top", "0")
+
+    sim(c)
+
+@test("a capacitor charges through a resistor as 1 − e^(−t/RC)")
+rc_charge()
+    var s = rc()
+
+    s.power_on().unwrap()
+    assert(s.voltage_at("top").abs() < 1e-6)
+    s.set_switch(1, true)
+
+    for k in 1..5
+        val t = real(k) * 1e-3
+
+        s.advance_to(t).unwrap()
+        assert(s.time == t)
+        assert(close(s.voltage_at("top"), 5.0 * (1.0 - (-real(k)).exp()), 2e-3))
+
+    // The current is the resistor's: what flows into the capacitor is what charges it.
+    assert(close(s.current(3), s.current(2), 1e-3))
+
+@test("a charged capacitor holds its voltage when the switch opens, and drains when it is shorted through a resistor")
+rc_hold()
+    var s = rc()
+
+    s.set_switch(1, true)
+    s.advance_to(10e-3).unwrap()
+
+    val full = s.voltage_at("top")
+
+    assert(close(full, 5.0, 1e-3))
+    s.set_switch(1, false)
+    s.advance_to(20e-3).unwrap()
+    // A teraohm switch and a microfarad: a time constant of eleven days.
+    assert(close(s.voltage_at("top"), full, 1e-6))
+
+@test("an inductor's current rises through a resistor as 1 − e^(−tR/L)")
+rl_rise()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(1.0)), "plus", "0")
+    c.connect("S1", Switch(false), "plus", "a")
+    c.connect("R1", Resistor(10.0), "a", "b")
+    c.connect("L1", Inductor(10e-3), "b", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s.set_switch(1, true)
+
+    // L/R = 1 ms.
+    for k in 1..4
+        s.advance_to(real(k) * 1e-3).unwrap()
+        assert(close(s.current(3), 0.1 * (1.0 - (-real(k)).exp()), 2e-3))
+
+@test("an inductor is a wire at DC")
+inductor_at_dc()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(2.0)), "plus", "0")
+    c.connect("L1", Inductor(1.0), "plus", "a")
+    c.connect("R1", Resistor(100.0), "a", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(close(s.voltage_at("a"), 2.0, 1e-12))
+    assert(close(s.current(1), 0.02, 1e-12))
+
+@test("a capacitor is open at DC")
+capacitor_at_dc()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(2.0)), "plus", "0")
+    c.connect("R1", Resistor(100.0), "plus", "a")
+    c.connect("C1", Capacitor(1e-6), "a", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(close(s.voltage_at("a"), 2.0, 1e-9))
+    assert(s.current(2).abs() < 1e-12)
+
+// A capacitor charged to 1 V and then switched across an inductor rings at 1 / (2π √(LC)), and with
+// nothing to lose energy in, keeps its amplitude.
+@test("a charged capacitor across an inductor rings at its resonant frequency and keeps its amplitude")
+lc_ring()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(1.0)), "plus", "0")
+    c.connect("S1", Switch(true), "plus", "top")
+    c.connect("C1", Capacitor(1e-6), "top", "0")
+    c.connect("S2", Switch(false), "top", "coil")
+    c.connect("L1", Inductor(1e-3), "coil", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s.set_switch(1, false)
+    s.set_switch(3, true)
+
+    val period = tau * (1e-3 * 1e-6).sqrt()
+    // Find upward zero crossings and the largest swing, sampling a hundred times a period.
+    var crossings: [8]real = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var found = 0
+    var last = s.voltage_at("top")
+    var lowest = 0.0
+
+    for k in 1..500
+        val t = real(k) * period / 100.0
+
+        s.advance_to(t).unwrap()
+
+        val v = s.voltage_at("top")
+
+        if last < 0.0 && v >= 0.0 && found < 8
+            // Interpolate where the line between the two samples crosses zero.
+            crossings[found] = t - period / 100.0 * v / (v - last)
+            found += 1
+
+        if v < lowest then lowest = v
+
+        last = v
+
+    assert(found >= 4)
+    assert(close(crossings[3] - crossings[0], 3.0 * period, 2e-3))
+    // The trapezoidal rule loses no energy: the swing to −1 V is still there after five periods.
+    assert(close(lowest, -1.0, 1e-2))
+
+// --- Sources ----------------------------------------------------------------------------------------
+
+@test("a sine source drives its wave exactly onto its node")
+sine_source()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Sine(0.0, 2.0, 1000.0, 0.0)), "a", "0")
+    c.connect("R1", Resistor(1000.0), "a", "0")
+
+    var s = sim(c)
+
+    for k in 1..7
+        val t = real(k) * 0.13e-3
+
+        s.advance_to(t).unwrap()
+        assert(close(s.voltage_at("a"), 2.0 * (tau * 1000.0 * t).sin(), 1e-9))
+
+@test("an RC filter smooths a square wave: the output settles round the mean with a small ripple")
+rc_filter()
+    var c = circuit()
+
+    // 1 kHz square wave, 0 to 5 V, into 10 kΩ and 1 µF: RC = 10 ms, ten periods.
+    c.connect("V1", VoltageSource(square(0.0, 5.0, 1000.0)), "in", "0")
+    c.connect("R1", Resistor(10e3), "in", "out")
+    c.connect("C1", Capacitor(1e-6), "out", "0")
+
+    var s = sim(c)
+
+    s.advance_to(100e-3).unwrap()
+
+    var low = 1e9
+    var high = -1e9
+
+    for k in 1..40
+        s.advance_to(100e-3 + real(k) * 25e-6).unwrap()
+
+        val v = s.voltage_at("out")
+
+        if v < low then low = v
+
+        if v > high then high = v
+
+    // A ripple of about V / (4 f RC) = 0.125 V peak to peak, round 2.5 V.
+    assert(close((low + high) / 2.0, 2.5, 1e-2))
+    assert(close(high - low, 0.125, 0.05))
+
+@test("a current source's wave flows into its second terminal's node")
+current_wave()
+    var c = circuit()
+
+    c.connect("I1", CurrentSource(pwl([(0.0, 0.0), (1e-3, 2e-3)])), "0", "a")
+    c.connect("R1", Resistor(1000.0), "a", "0")
+
+    var s = sim(c)
+
+    s.advance_to(0.5e-3).unwrap()
+    assert(close(s.voltage_at("a"), 1.0, 1e-9))
+    s.advance_to(3e-3).unwrap()
+    assert(close(s.voltage_at("a"), 2.0, 1e-9))
+
+@test("a half-wave rectifier charges its capacitor to the peak less a diode drop")
+rectifier()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Sine(0.0, 10.0, 50.0, 0.0)), "in", "0")
+    c.connect("D1", Diode(SILICON), "in", "out")
+    c.connect("C1", Capacitor(100e-6), "out", "0")
+    c.connect("R1", Resistor(10e3), "out", "0")
+
+    var s = sim(c)
+
+    s.advance_to(0.1).unwrap()
+    // Peak, at the quarter of the next period.
+    s.advance_to(0.105).unwrap()
+
+    val v = s.voltage_at("out")
+
+    assert(v > 9.0 && v < 9.6)
+
+@test("a new wave from now on is a corner, and the solution follows it")
+new_wave()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(1.0)), "a", "0")
+    c.connect("R1", Resistor(1000.0), "a", "b")
+    c.connect("C1", Capacitor(1e-9), "b", "0")
+
+    var s = sim(c)
+
+    s.advance_to(1e-3).unwrap()
+    s.set_wave(0, Dc(3.0))
+    s.advance_to(2e-3).unwrap()
+    assert(close(s.voltage_at("b"), 3.0, 1e-6))
+
+@test("a voltage source and an inductor in a loop with nothing else cannot be solved")
+source_shorted_by_inductor()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(1.0)), "a", "0")
+    c.connect("L1", Inductor(1e-3), "a", "0")
+
+    var s = sim(c)
+
+    assert(s.operating_point().is_err())
+
+@test("the step grows while nothing happens: a settled circuit needs few steps")
+steps_grow()
+    var s = rc()
+
+    s.set_switch(1, true)
+    s.advance_to(1.0).unwrap()
+    assert(s.accepted < 400)
+
+@test("switched on, a capacitor starts empty and an inductor starts with no current")
+power_on_empty()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(10.0)), "plus", "0")
+    c.connect("R1", Resistor(1000.0), "plus", "top")
+    c.connect("C1", Capacitor(1e-6), "top", "0")
+    c.connect("R2", Resistor(100.0), "plus", "coil")
+    c.connect("L1", Inductor(0.1), "coil", "0")
+
+    var s = sim(c)
+
+    s.power_on().unwrap()
+    assert(s.voltage_at("top").abs() < 1e-6)
+    // The empty capacitor takes the whole 10 mA the resistor lets through at the first instant.
+    assert(close(s.current(2), 10e-3, 1e-6))
+    assert(s.current(4).abs() < 1e-9)
+    assert(close(s.voltage_at("coil"), 10.0, 1e-6))
+    // Settled, the same circuit is where the operating point puts it.
+    s.advance_to(0.1).unwrap()
+    assert(close(s.voltage_at("top"), 10.0, 1e-6))
+    assert(close(s.current(4), 0.1, 1e-6))
+
+@test("before any step is asked for, the operating point is where time starts")
+advance_starts_from_operating_point()
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(10.0)), "plus", "0")
+    c.connect("R1", Resistor(1000.0), "plus", "top")
+    c.connect("C1", Capacitor(1e-6), "top", "0")
+
+    var s = sim(c)
+
+    s.advance_to(1e-6).unwrap()
+    assert(close(s.voltage_at("top"), 10.0, 1e-9))
