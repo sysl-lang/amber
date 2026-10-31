@@ -35,6 +35,13 @@ decade at a time.
 A diode's reported current is read off the line the last system was linearised on, so KCL holds
 exactly at every node in what is reported.
 
+A part has two terminals (`a`, `b`) or three (`a`, `b`, `c`; `c` is -1 on a two-terminal part). A
+bipolar transistor is SPICE's Gummel–Poon model reduced to its transport and Early terms (IS, BF, BR,
+NF, NR, VAF, VAR), NPN or PNP, with GMIN across each junction in the base current as SPICE puts it. Its
+two junctions, base–emitter and base–collector, are each limited by `pnjlim` on the bare thermal
+voltage, and the collector and base currents are each linearised against both; the emitter carries
+both back out. Its terminal currents are read off the linearisation like a diode's.
+
 ## Roadmap
 
 Each is a piece of work of its own, in this order.
@@ -47,8 +54,10 @@ Each is a piece of work of its own, in this order.
    scope of every meter.~~
 3. ~~**SPICE netlists**: read a `.cir` subset (elements, `.model`, `.op`, `.tran`, `.dc`), with ngspice
    as the oracle; `amber-cli` runs one.~~
-4. **Active devices**: BJT (Ebers–Moll / Gummel–Poon subset), MOSFET level 1. Example: an astable
-   multivibrator blinking two LEDs.
+4. **Active devices**: ~~BJT (Gummel–Poon transport and Early terms) in the library and netlists
+   (`Q` cards, `.model NPN|PNP`), held to ngspice on a biased amplifier, a mirror, a switch and an
+   astable multivibrator;~~ the transistor in schematics and the viewer, with an astable multivibrator
+   blinking two LEDs; MOSFET level 1.
 5. **DC sweep and AC analysis** (complex MNA, Bode plot in the viewer).
 6. **Sparse LU** with a symbolic factorisation reused across iterations and steps.
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save.

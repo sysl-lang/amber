@@ -1,0 +1,17 @@
+PNP current mirror sourcing into a load, and an NPN emitter follower after it
+VCC vcc 0 10
+Q1 ref ref vcc q2n3906
+RREF ref 0 9.1k
+Q2 out ref vcc q2n3906
+RL out 0 4.7k
+Q3 vcc out f q2n3904
+RF f 0 1k
+.model q2n3906 PNP (IS=1.41f BF=180.7 BR=4.977 VAF=18.7)
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.op
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+run
+wrdata pnp_mirror.data v(ref) v(out) v(f) i(vcc)
+.endc
+.end

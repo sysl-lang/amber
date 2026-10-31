@@ -1,0 +1,16 @@
+Common-emitter amplifier biased by a divider, with an emitter resistor
+VCC vcc 0 12
+R1 vcc b 47k
+R2 b 0 10k
+RC vcc c 2.2k
+RE e 0 470
+VM c cq 0
+Q1 cq b e q2n3904
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.op
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+run
+wrdata ce_bias.data v(b) v(c) v(e) i(vm)
+.endc
+.end

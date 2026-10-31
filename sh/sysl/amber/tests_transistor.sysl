@@ -1,0 +1,267 @@
+module sh.sysl.amber
+@tests
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// A plain NPN transistor: no Early effect, so its collector current is exactly BF times its base
+// current in the forward-active region, less the junctions' leakage.
+val PLAIN = TransistorModel(false, 1e-14, 100.0, 2.0, 1.2, 1.0, 0.0, 0.0)
+
+// A collector resistor from a 10 V supply, the base fed `ib` amps, the emitter grounded.
+private common_emitter(m: TransistorModel, supply: real, ib: real) -> Sim
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(supply)), "vcc", "0")
+    c.connect("R1", Resistor(1000.0), "vcc", "col")
+    c.connect("I1", CurrentSource(Dc(ib)), "0", "base")
+    c.connect3("Q1", Transistor(m), "col", "base", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s
+
+// --- The model --------------------------------------------------------------------------------------
+
+@test("forward active: the collector carries BF times the base current, and the base drops nf·Vt·ln(Ic/IS)")
+forward_active()
+    val s = common_emitter(PLAIN, 10.0, 10e-6)
+    val ic = s.current(3)
+    val ib = s.terminal_current(3, 1)
+
+    assert(near(ib, 10e-6, 1e-15))
+    assert(near(ic / ib, 100.0, 1e-4))
+    assert(near(s.voltage_at("col"), 10.0 - 1000.0 * ic, 1e-9))
+    assert(near(s.voltage_at("base"), 1.2 * VT * (ic / 1e-14).ln(), 1e-6))
+    // A transistor's voltage is collector to emitter, and its power what each terminal takes.
+    assert(near(s.across(3), s.voltage_at("col"), 1e-12))
+    assert(near(s.power(3), s.voltage_at("col") * ic + s.voltage_at("base") * ib, 1e-12))
+
+@test("Kirchhoff's current law holds at every terminal, and the emitter carries the collector's and base's out")
+transistor_kcl()
+    val s = common_emitter(NPN_2N3904, 10.0, 5e-6)
+    val ic = s.terminal_current(3, 0)
+    val ib = s.terminal_current(3, 1)
+    val ie = s.terminal_current(3, 2)
+
+    assert(ic + ib + ie == 0.0)
+    // The resistor feeds the collector; the current source feeds the base.
+    assert(near(s.current(1), ic, 1e-12 * ic))
+    assert(near(s.current(2), ib, 1e-12 * ib))
+    // What the battery delivers leaves through the emitter.
+    assert(near(-s.current(0) + ib, -ie, 1e-12 * ic))
+
+@test("the Early effect: the gain grows with the voltage across the base–collector junction")
+early_effect()
+    var m = PLAIN
+
+    m.early_f = 50.0
+
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "col", "0")
+    c.connect("I1", CurrentSource(Dc(10e-6)), "0", "base")
+    c.connect3("Q1", Transistor(m), "col", "base", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+
+    val vcb = 5.0 - s.voltage_at("base")
+    val gain = s.current(2) / s.terminal_current(2, 1)
+
+    assert(near(gain, 100.0 * (1.0 + vcb / 50.0), 1e-3))
+
+    s.set_wave(0, Dc(10.0))
+    s.operating_point().unwrap()
+    assert(s.current(2) / s.terminal_current(2, 1) > gain + 9.0)
+
+@test("reverse active: collector and emitter swapped, the gain is BR")
+reverse_active()
+    var c = circuit()
+
+    // The emitter is the higher terminal now; the base–collector junction conducts.
+    c.connect("V1", VoltageSource(Dc(5.0)), "emit", "0")
+    c.connect("I1", CurrentSource(Dc(10e-6)), "0", "base")
+    c.connect3("Q1", Transistor(PLAIN), "0", "base", "emit")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+
+    // Current flows in at the emitter and out at the collector, BR times the base current.
+    assert(near(s.terminal_current(2, 2) / s.terminal_current(2, 1), 2.0, 1e-4))
+    assert(s.current(2) < 0.0)
+
+@test("a PNP transistor is its NPN twin with every voltage and current reversed")
+pnp_mirror()
+    var m = PLAIN
+
+    m.pnp = true
+
+    val n = common_emitter(PLAIN, 10.0, 10e-6)
+    val p = common_emitter(m, -10.0, -10e-6)
+
+    assert(near(p.voltage_at("col"), -n.voltage_at("col"), 1e-12))
+    assert(near(p.voltage_at("base"), -n.voltage_at("base"), 1e-12))
+
+    for k in 0..<3
+        assert(near(p.terminal_current(3, k), -n.terminal_current(3, k), 1e-15))
+
+    assert(near(p.power(3), n.power(3), 1e-12))
+
+@test("the 2N3904 and 2N3906 models: gains near 400 and 180, base drops near 0.65 V")
+named_models()
+    val n = common_emitter(NPN_2N3904, 10.0, 5e-6)
+    val p = common_emitter(PNP_2N3906, -10.0, -10e-6)
+
+    assert(n.current(3) / n.terminal_current(3, 1) > 400.0)
+    assert(p.current(3) / p.terminal_current(3, 1) > 180.0)
+    assert(n.voltage_at("base") > 0.6 && n.voltage_at("base") < 0.7)
+    assert(p.voltage_at("base") < -0.6 && p.voltage_at("base") > -0.75)
+
+// A transistor switching an LED from a 5 V supply, its base fed through a kilohm and a switch.
+private led_switch(closed: bool) -> Sim
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "vcc", "0")
+    c.connect("R1", Resistor(220.0), "vcc", "anode")
+    c.connect("D1", Diode(RED_LED), "anode", "col")
+    c.connect("S1", Switch(closed), "vcc", "feed")
+    c.connect("R2", Resistor(1000.0), "feed", "base")
+    c.connect3("Q1", Transistor(NPN_2N3904), "col", "base", "0")
+    // A pull-down, so an open switch leaves the base at ground rather than floating, where the
+    // junctions' own leakage would turn the transistor slightly on.
+    c.connect("R3", Resistor(10e3), "base", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s
+
+@test("saturation: driven hard, the transistor drops almost nothing and carries what the load lets through")
+saturation()
+    val s = led_switch(true)
+    val ic = s.current(5)
+    val ib = s.terminal_current(5, 1)
+
+    assert(s.across(5) < 0.1)
+    // Far less than the gain would allow: the LED and its resistor set the current.
+    assert(ic < 50.0 * ib)
+    assert(near(ic, (5.0 - s.across(2) - s.across(5)) / 220.0, 1e-9))
+    assert(ic > 12e-3 && ic < 16e-3)
+
+@test("cutoff: with no base current the transistor is open and the LED dark")
+cutoff()
+    val s = led_switch(false)
+
+    assert(s.current(5).abs() < 1e-9)
+    assert(s.current(2).abs() < 1e-9)
+    assert(s.across(5) > 2.5)
+    assert(s.voltage_at("base").abs() < 1e-6)
+
+@test("a switch flipped under a running clock turns the transistor on and off")
+switch_in_time()
+    var s = led_switch(false)
+
+    s.advance_to(1e-3).unwrap()
+    assert(s.current(5).abs() < 1e-9)
+
+    s.set_switch(3, true)
+    s.advance_to(2e-3).unwrap()
+    assert(s.current(5) > 12e-3)
+
+    s.set_switch(3, false)
+    s.advance_to(3e-3).unwrap()
+    assert(s.current(5).abs() < 1e-9)
+
+@test("in time: a transistor discharges a capacitor while its base is driven, and the resistor recharges it after")
+transistor_transient()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "vcc", "0")
+    c.connect("R1", Resistor(1000.0), "vcc", "col")
+    c.connect("C1", Capacitor(1e-6), "col", "0")
+    c.connect("V2", VoltageSource(Pulse(0.0, 5.0, 1e-3, 1e-6, 1e-6, 1e-3, 10e-3)), "drive", "0")
+    c.connect("R2", Resistor(10e3), "drive", "base")
+    c.connect3("Q1", Transistor(NPN_2N3904), "col", "base", "0")
+
+    var s = sim(c)
+
+    s.advance_to(1e-3).unwrap()
+    assert(near(s.voltage_at("col"), 5.0, 1e-6))
+
+    s.advance_to(2e-3).unwrap()
+
+    val low = s.voltage_at("col")
+
+    assert(low < 0.2)
+
+    // Off again, the capacitor charges through the resistor from where it was: one time constant on,
+    // 63% of the way back.
+    s.advance_to(3e-3 + 1e-6).unwrap()
+    assert(near(s.voltage_at("col"), 5.0 - (5.0 - low) * (-1.0).exp(), 0.02))
+
+// --- Netlists ---------------------------------------------------------------------------------------
+
+@test("a Q card reads its collector, base and emitter, and a .model NPN its parameters")
+netlist_q_card()
+    val net = parse_netlist("""
+        q
+        V1 vcc 0 10
+        R1 vcc c 1k
+        I1 0 b 10u
+        Q1 c b 0 qmod
+        .model qmod NPN (IS=1e-14 BF=100 BR=2 NF=1.2 VAF=0)
+        .op
+        """).unwrap()
+
+    val p = net.circuit.parts[3]
+
+    assert(p.kind == Transistor(PLAIN))
+    assert(net.circuit.nodes[usize(p.a)] == "c")
+    assert(net.circuit.nodes[usize(p.b)] == "b")
+    assert(p.c == 0)
+    assert(net.notes.len() == 0)
+
+    val t = run_analysis(net, net.analyses[0]).unwrap()
+
+    assert(near(t.rows[0][t.column("i(v1)").unwrap()], -1e-3, 1e-7))
+
+@test("a substrate node is read and left unconnected, and an area scales the saturation current")
+netlist_substrate_and_area()
+    val net = parse_netlist("t\nQ1 c b e sub qn 2\nQ2 c b e qn 4\nQ3 c b e sub qn\n.model qn npn is=1f\n")
+        .unwrap()
+
+    // SPICE's defaults for what the card leaves off: BF 100, BR 1, emission coefficients 1, no Early.
+    assert(net.circuit.parts[0].kind == Transistor(TransistorModel(false, 2e-15, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0)))
+    assert(net.circuit.parts[1].kind == Transistor(TransistorModel(false, 4e-15, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0)))
+    assert(net.circuit.parts[2].kind == Transistor(TransistorModel(false, 1e-15, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0)))
+    assert(net.circuit.find_node("sub").is_none())
+    assert(net.circuit.parts[0].c == net.circuit.find_node("e").unwrap())
+
+@test("a .model PNP reads, VA and VB are VAF and VAR, and what is not modelled leaves a note")
+netlist_pnp_model()
+    val net = parse_netlist("""
+        t
+        Q1 c b e qp
+        .model qp PNP (IS=1.41f BF=180.7 BR=4.977 NR=1.1 VA=18.7 VB=30 RB=10 CJE=8p)
+        """).unwrap()
+
+    assert(net.circuit.parts[0].kind == Transistor(TransistorModel(true, 1.41e-15, 180.7, 4.977, 1.0, 1.1, 18.7, 30.0)))
+    assert(net.notes.len() == 2)
+    assert(net.notes[0] == "model qp: rb is not modelled")
+    assert(net.notes[1] == "model qp: cje is not modelled")
+
+@test("a Q card is refused with too few nodes, no model, a diode's model, or too much after its model")
+netlist_q_refusals()
+    assert(parse_netlist("t\nQ1 c b qn\n.model qn npn\n").unwrap_err() == "line 2: 'q1' needs a collector, a base and an emitter node, and a model")
+    assert(parse_netlist("t\nQ1 c b e\n").unwrap_err() == "line 2: 'q1' needs a collector, a base and an emitter node, and a model")
+    assert(parse_netlist("t\nQ1 c b e qn\n").unwrap_err() == "line 2: 'q1' names model 'qn', which no .model defines")
+    assert(parse_netlist("t\nQ1 c b e s qn\n").unwrap_err() == "line 2: 'q1' names model 'qn', which no .model defines")
+    assert(parse_netlist("t\nQ1 c b e dm\n.model dm d\n").unwrap_err() == "line 2: 'q1' is a transistor, and model 'dm' is a diode's")
+    assert(parse_netlist("t\nD1 a 0 qn\n.model qn npn\n").unwrap_err() == "line 2: 'd1' is a diode, and model 'qn' is a transistor's")
+    assert(parse_netlist("t\nQ1 c b e s qn 2 off\n.model qn npn\n").unwrap_err() == "line 2: 'q1' takes its nodes, a model, and perhaps an area")
+    assert(parse_netlist("t\nQ1 c b e qn 0\n.model qn npn\n").unwrap_err() == "line 2: an area is more than zero")
+    assert(parse_netlist("t\n.model qn npn bf=0\n").unwrap_err() == "line 2: model 'qn' needs IS, BF, BR, NF and NR above zero")
+    assert(parse_netlist("t\n.model qn pnp vaf=-1\n").unwrap_err() == "line 2: model 'qn' needs VAF and VAR not below zero")

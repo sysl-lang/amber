@@ -1,0 +1,31 @@
+Astable multivibrator: two transistors cross-coupled through two capacitors
+VCC vcc 0 5
+RC1 vcc c1 1k
+RC2 vcc c2 1k
+RB1 vcc b1 47k
+RB2 vcc b2 47k
+C1 c1 b2 10n
+C2 c2 b1 15n
+Q1 c1 b1 0 q2n3904
+Q2 c2 b2 0 q2n3904
+* The model has no junction capacitance, so without these the switching would be instantaneous and
+* no step short enough to follow it.
+CB1 b1 0 220p
+CB2 b2 0 220p
+CC1 c1 0 220p
+CC2 c2 0 220p
+* Started from empty, which transistor wins the race to turn on is decided by rounding. A diode
+* holds Q2's base down for the first 10 us, so Q1 wins, and then lets go for good.
+VK k 0 PULSE(-1 0 10u 1u 1u 1 2)
+RK b2 kd 100
+DK kd k dk
+.model dk D (IS=1e-14)
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.tran 20u 3m UIC
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 20u 3m 0 1u uic
+linearize v(c1) v(c2) v(b1)
+wrdata astable.data v(c1) v(c2) v(b1)
+.endc
+.end

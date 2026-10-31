@@ -27,6 +27,35 @@ val GREEN_LED = DiodeModel(3.5e-20, 2.0, 2.0)
 val YELLOW_LED = DiodeModel(2e-19, 2.0, 2.0)
 val BLUE_LED = DiodeModel(1e-28, 2.0, 2.0)
 
+// The constants a bipolar transistor's equations are written in: SPICE's Gummel–Poon model with only
+// its transport and Early terms, which is Ebers–Moll with the base widened by the voltage across it.
+//
+// `is` is the transport saturation current, `bf` and `br` the forward and reverse current gains, `nf`
+// and `nr` the emission coefficients of the base–emitter and base–collector junctions, and `early_f`
+// and `early_r` the forward and reverse Early voltages, SPICE's VAF and VAR, 0 for none. With `vbe` and
+// `vbc` across the junctions, `if = is · (exp(vbe / (nf · Vt)) − 1)` and
+// `ir = is · (exp(vbc / (nr · Vt)) − 1)`, the base is `qb = 1 / (1 − vbc / VAF − vbe / VAR)` wide, and
+//
+//     collector current = (if − ir) / qb − ir / br
+//     base current      = if / bf + ir / br
+//
+// A PNP transistor is the same equations with every voltage and current reversed.
+struct TransistorModel derives Eq
+    pnp: bool
+    is: real
+    bf: real
+    br: real
+    nf: real
+    nr: real
+    early_f: real
+    early_r: real
+
+// A small-signal NPN transistor, the 2N3904's figures: a gain of about 400, an Early voltage of 74 V.
+val NPN_2N3904 = TransistorModel(false, 6.734e-15, 416.4, 0.7371, 1.0, 1.0, 74.03, 0.0)
+
+// Its PNP complement, the 2N3906: a gain of about 180, an Early voltage of 18.7 V.
+val PNP_2N3906 = TransistorModel(true, 1.41e-15, 180.7, 4.977, 1.0, 1.0, 18.7, 0.0)
+
 // What a part is, with the values that say how it behaves.
 enum Kind derives Eq
     // A resistor of `ohms`.
@@ -47,6 +76,11 @@ enum Kind derives Eq
     Diode(model: DiodeModel)
     // A switch: a hundredth of an ohm closed, and no connection open.
     Switch(closed: bool)
+    // A bipolar transistor, with three terminals: collector, base and emitter, in that order.
+    Transistor(model: TransistorModel)
+
+    // How many terminals a part of this kind has: 3 for a transistor, 2 for the rest.
+    terminals(self) -> int = if self is Transistor(_) then 3 else 2
 
     // A source's wave; `None` for a part that is not a source.
     wave(self) -> Option[Wave] = self match
@@ -54,12 +88,20 @@ enum Kind derives Eq
         CurrentSource(w) -> Some(w)
         _ -> None
 
-// One part: its name, what it is, and the nodes its two terminals are on.
+// One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and
+// `b` and has `c` at -1; a transistor's collector, base and emitter are `a`, `b` and `c`.
 struct Part
     name: string
     kind: Kind
     a: int
     b: int
+    c: int
+
+    // The node terminal `k` is on, counting from 0.
+    terminal(self, k: int) -> int = k match
+        0 -> self.a
+        1 -> self.b
+        _ -> self.c
 
 struct Circuit
     // Node names by number; `nodes[0]` is ground, `"0"`.
@@ -92,7 +134,11 @@ struct Circuit
 
         None
 
-    add(*self, name: string, kind: Kind, a: int, b: int) = self.parts.push(Part(name, kind, a, b))
+    // Add a two-terminal part between nodes `a` and `b`.
+    add(*self, name: string, kind: Kind, a: int, b: int) = self.parts.push(Part(name, kind, a, b, -1))
+
+    // Add a three-terminal part on nodes `a`, `b` and `c`.
+    add3(*self, name: string, kind: Kind, a: int, b: int, c: int) = self.parts.push(Part(name, kind, a, b, c))
 
     // Add a part between two nodes named rather than numbered.
     connect(*self, name: string, kind: Kind, a: string, b: string)
@@ -100,6 +146,15 @@ struct Circuit
         val nb = self.node(b)
 
         self.add(name, kind, na, nb)
+
+    // Add a three-terminal part on three nodes named rather than numbered: a transistor's collector,
+    // base and emitter.
+    connect3(*self, name: string, kind: Kind, a: string, b: string, c: string)
+        val na = self.node(a)
+        val nb = self.node(b)
+        val nc = self.node(c)
+
+        self.add3(name, kind, na, nb, nc)
 
     node_count(self) -> int = int(self.nodes.len())
 end Circuit

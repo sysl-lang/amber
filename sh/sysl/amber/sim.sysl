@@ -48,7 +48,8 @@ enum Method: u8
 //
 // **A diode is not linear**, so the system is solved by Newton–Raphson: the diode is replaced by the
 // straight line touching its curve at the voltage it has now, the linear system is solved, and the
-// voltage moves to the answer; repeated until nothing moves. The step a junction may take is limited,
+// voltage moves to the answer; repeated until nothing moves. A transistor is two junctions, base to
+// emitter and base to collector, and each terminal's current is linearised against both. The step a junction may take is limited,
 // since the exponential sends an unlimited step to infinity.
 //
 // **Time moves in steps.** Over a step of length h a capacitor's dv/dt is written as a difference, so
@@ -63,7 +64,8 @@ struct Sim
     // The unknown each part adds, by part: the current through a voltage source or an inductor, or a
     // diode's inner node. -1 where the part adds none.
     extra: Buf[int]
-    // The junction voltage each diode was last linearised at.
+    // The junction voltages each part was last linearised at, two by part: at `2i` a diode's junction or
+    // a transistor's base–emitter one, at `2i + 1` a transistor's base–collector one.
     junction: Buf[real]
     size: int
     x: Buf[real]
@@ -109,14 +111,18 @@ struct Sim
         Some(n) -> self.voltage(n)
         None -> 0.0
 
-    // The voltage across part `i`: its first terminal's less its second's.
+    // The voltage across part `i`: its first terminal's less its second's. A transistor's is from its
+    // collector to its emitter.
     across(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
+
+        if p.kind is Transistor(_) then return self.voltage(p.a) - self.voltage(p.c)
 
         self.voltage(p.a) - self.voltage(p.b)
 
     // The current through part `i`, from its first terminal to its second. A battery delivering power
-    // has current flowing out of its first terminal, `+`, so its current here is negative.
+    // has current flowing out of its first terminal, `+`, so its current here is negative. A
+    // transistor's is the current into its collector.
     current(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
 
@@ -127,13 +133,52 @@ struct Sim
             VoltageSource(_) -> self.x[usize(self.extra[usize(i)])]
             CurrentSource(w) -> w.at(self.time)
             Diode(m) ->
-                val v = self.junction[usize(i)]
+                val v = self.junction[usize(2 * i)]
 
                 diode_current(m, v) + GMIN * v + (diode_conductance(m, v) + GMIN) * (self.junction_now(i) - v)
             Switch(closed) -> if closed then self.across(i) / CLOSED_OHMS else 0.0
+            Transistor(_) -> self.terminal_current(i, 0)
 
-    // The power part `i` takes from the circuit, in watts; negative for a part delivering it.
-    power(self, i: int) -> real = self.across(i) * self.current(i)
+    // The current flowing into part `i` at terminal `k`, counting from 0. The currents into a part's
+    // terminals sum to zero: a two-terminal part's second is the first's negative, and a transistor's
+    // emitter carries what its collector and base do, back out.
+    //
+    // A transistor's currents, like a diode's, are read off the lines its junctions were linearised
+    // on, at the voltages the solution puts across them, so they are the currents the system balanced
+    // and every node's sum to zero exactly.
+    terminal_current(self, i: int, k: int) -> real
+        val p = self.circuit.parts[usize(i)]
+
+        if p.kind is Transistor(m)
+            val t = if m.pnp then -1.0 else 1.0
+            val vbe = self.junction[usize(2 * i)]
+            val vbc = self.junction[usize(2 * i + 1)]
+            val l = transistor_line(m, vbe, vbc)
+            val (now_be, now_bc) = self.transistor_now(i)
+            val ic = t * (l.ic + l.ic_be * (now_be - vbe) + l.ic_bc * (now_bc - vbc))
+            val ib = t * (l.ib + l.ib_be * (now_be - vbe) + l.ib_bc * (now_bc - vbc))
+
+            return k match
+                0 -> ic
+                1 -> ib
+                _ -> -ic - ib
+
+        if k == 0 then self.current(i) else -self.current(i)
+
+    // The power part `i` takes from the circuit, in watts; negative for a part delivering it. A
+    // transistor's is what flows into each terminal times the terminal's voltage, summed.
+    power(self, i: int) -> real
+        val p = self.circuit.parts[usize(i)]
+
+        if p.kind is Transistor(_)
+            var w = 0.0
+
+            for k in 0..<3
+                w += self.voltage(p.terminal(k)) * self.terminal_current(i, k)
+
+            return w
+
+        self.across(i) * self.current(i)
 
     // The voltage across diode `i`'s junction in the present solution.
     private junction_now(self, i: int) -> real
@@ -142,6 +187,15 @@ struct Sim
         val anode = if inner >= 0 then self.x[usize(inner)] else self.voltage(p.a)
 
         anode - self.voltage(p.b)
+
+    // The voltages across transistor `i`'s base–emitter and base–collector junctions in the present
+    // solution, each positive when it forward-biases the junction, whichever polarity the transistor is.
+    private transistor_now(self, i: int) -> (real, real)
+        val p = self.circuit.parts[usize(i)]
+        val t = if p.kind is Transistor(m) && m.pnp then -1.0 else 1.0
+        val vb = self.voltage(p.b)
+
+        (t * (vb - self.voltage(p.c)), t * (vb - self.voltage(p.a)))
 
     // Open or close switch `i`. The circuit changes abruptly, which is a corner: the next step is short
     // and taken by backward Euler.
@@ -442,11 +496,14 @@ struct Sim
             // at that voltage, so a diode's current is read off the same line the system obeyed and the
             // currents at every node sum to zero exactly.
             for i in 0..<self.circuit.parts.len()
-                if self.circuit.parts[i].kind is Diode(_)
-                    val was = self.junction[i]
-                    val now = self.junction_now(int(i))
+                self.circuit.parts[i].kind match
+                    Diode(_) ->
+                        if !close(self.junction[2 * i], self.junction_now(int(i))) then settled = false
+                    Transistor(_) ->
+                        val (be, bc) = self.transistor_now(int(i))
 
-                    if (now - was).abs() > 1e-6 * max(now.abs(), was.abs()) + 1e-9 then settled = false
+                        if !close(self.junction[2 * i], be) || !close(self.junction[2 * i + 1], bc) then settled = false
+                    _ -> ()
 
             if settled then return Ok(())
 
@@ -454,14 +511,22 @@ struct Sim
 
         Err("the solution did not settle")
 
-    // Move each diode's junction voltage toward the new solution, limiting the step.
+    // Move each junction's voltage toward the new solution, limiting the step.
     private limit_junctions(*self)
         for i in 0..<self.circuit.parts.len()
             self.circuit.parts[i].kind match
                 Diode(m) ->
-                    val want = self.junction_now(int(i))
+                    val nvt = m.n * VT
 
-                    self.junction[i] = limit(want, self.junction[i], m)
+                    self.junction[2 * i] = limit(self.junction_now(int(i)), self.junction[2 * i], nvt, critical(nvt, m.is))
+                Transistor(m) ->
+                    // SPICE limits a transistor's junctions on the bare thermal voltage, whatever their
+                    // emission coefficients.
+                    val (be, bc) = self.transistor_now(int(i))
+                    val vcrit = critical(VT, m.is)
+
+                    self.junction[2 * i] = limit(be, self.junction[2 * i], VT, vcrit)
+                    self.junction[2 * i + 1] = limit(bc, self.junction[2 * i + 1], VT, vcrit)
                 _ -> ()
 
     // Write the linearised system for the present solution at the present time.
@@ -533,13 +598,35 @@ struct Sim
 
                     if inner >= 0 then self.conductance(a, inner, 1.0 / m.rs)
 
-                    val v = self.junction[i]
+                    val v = self.junction[2 * i]
                     val g = diode_conductance(m, v) + GMIN
                     val owed = diode_current(m, v) + GMIN * v - g * v
 
                     self.conductance(anode, b, g)
                     self.sys.rhs(anode, -owed)
                     self.sys.rhs(b, owed)
+                Transistor(m) ->
+                    val vbe = self.junction[2 * i]
+                    val vbc = self.junction[2 * i + 1]
+                    val l = transistor_line(m, vbe, vbc)
+                    val t = if m.pnp then -1.0 else 1.0
+                    val e = p.c - 1
+
+                    // The collector's current, the base's, and the emitter's, which is both back out.
+                    self.flow(a, 1.0, t, p, l.ic, l.ic_be, l.ic_bc, vbe, vbc)
+                    self.flow(b, 1.0, t, p, l.ib, l.ib_be, l.ib_bc, vbe, vbc)
+                    self.flow(e, -1.0, t, p, l.ic, l.ic_be, l.ic_bc, vbe, vbc)
+                    self.flow(e, -1.0, t, p, l.ib, l.ib_be, l.ib_bc, vbe, vbc)
+
+    // Into the equation of unknown `row`, `s` times a current into transistor `p` of
+    // `t · (i0 + gbe · (vbe − vbe0) + gbc · (vbc − vbc0))`, where `vbe = t · (v(base) − v(emitter))` and
+    // `vbc = t · (v(base) − v(collector))`: one terminal's current on the line touching its curve at
+    // `vbe0` and `vbc0`. `t` is 1 for an NPN transistor and -1 for a PNP one.
+    private flow(*self, row: int, s: real, t: real, p: Part, i0: real, gbe: real, gbc: real, vbe0: real, vbc0: real)
+        self.sys.at(row, p.b - 1, s * (gbe + gbc))
+        self.sys.at(row, p.c - 1, -s * gbe)
+        self.sys.at(row, p.a - 1, -s * gbc)
+        self.sys.rhs(row, -s * t * (i0 - gbe * vbe0 - gbc * vbc0))
 
     // A conductance `g` between two unknowns' nodes.
     private conductance(*self, a: int, b: int, g: real)
@@ -580,8 +667,8 @@ sim(given: Circuit) -> Sim
 
     val parts = int(c.parts.len())
 
-    Sim(c, extra, zeros(parts), size, zeros(size), system(size), 0.0, 0.0, Steady, 0.0, FIRST_STEP, 1e300,
-        zeros(parts), zeros(parts), zeros(size), zeros(size), 0.0, 0.0, 0, false, zeros(size), zeros(parts), 0, 0, zeros(parts))
+    Sim(c, extra, zeros(2 * parts), size, zeros(size), system(size), 0.0, 0.0, Steady, 0.0, FIRST_STEP, 1e300,
+        zeros(parts), zeros(parts), zeros(size), zeros(size), 0.0, 0.0, 0, false, zeros(size), zeros(2 * parts), 0, 0, zeros(parts))
 
 private zeros(n: int) -> Buf[real]
     var b: Buf[real] = buf()
@@ -602,12 +689,55 @@ diode_current(m: DiodeModel, v: real) -> real = m.is * ((v / (m.n * VT)).exp() -
 // The slope of the junction's curve at `v`.
 private diode_conductance(m: DiodeModel, v: real) -> real = m.is / (m.n * VT) * (v / (m.n * VT)).exp()
 
+// Whether a junction voltage moved so little between linearising and solving that it is settled.
+private close(was: real, now: real) -> bool = (now - was).abs() <= 1e-6 * max(now.abs(), was.abs()) + 1e-9
+
+// A transistor's collector and base currents on the lines touching their curves at one pair of
+// junction voltages: the currents there, and their slopes against each junction's voltage. Both flow
+// into the transistor as an NPN has them; a PNP's are the same with the signs reversed.
+private struct TransistorLine
+    ic: real
+    ib: real
+    ic_be: real
+    ic_bc: real
+    ib_be: real
+    ib_bc: real
+
+// The lines for model `m` at `vbe` and `vbc`, with GMIN across each junction as SPICE puts it, in the
+// base current's share.
+private transistor_line(m: TransistorModel, vbe: real, vbc: real) -> TransistorLine
+    val vtf = m.nf * VT
+    val vtr = m.nr * VT
+    val ef = (vbe / vtf).exp()
+    val er = (vbc / vtr).exp()
+    // The forward and reverse transport currents and their slopes.
+    val cf = m.is * (ef - 1.0)
+    val gf = m.is * ef / vtf
+    val cr = m.is * (er - 1.0)
+    val gr = m.is * er / vtr
+    // The base's width, widened by the Early effect, and its slopes.
+    val inv_vaf = if m.early_f > 0.0 then 1.0 / m.early_f else 0.0
+    val inv_var = if m.early_r > 0.0 then 1.0 / m.early_r else 0.0
+    val qb = 1.0 / (1.0 - inv_vaf * vbc - inv_var * vbe)
+    val dqb_be = qb * qb * inv_var
+    val dqb_bc = qb * qb * inv_vaf
+    val ct = cf - cr
+
+    TransistorLine(
+        ct / qb - cr / m.br - GMIN * vbc,
+        cf / m.bf + cr / m.br + GMIN * (vbe + vbc),
+        (gf - ct * dqb_be / qb) / qb,
+        (-gr - ct * dqb_bc / qb) / qb - gr / m.br - GMIN,
+        gf / m.bf + GMIN,
+        gr / m.br + GMIN)
+
+// The voltage above which a junction of saturation current `is`, on thermal voltage `nvt`, has its
+// steps limited: where its curve bends hardest.
+private critical(nvt: real, is: real) -> real = nvt * (nvt / (1.4142135623730951 * is)).ln()
+
 // SPICE's junction limiting: a step above the knee is taken logarithmically, since the current it
 // would mean grows exponentially.
-private limit(want: real, was: real, m: DiodeModel) -> real
-    val nvt = m.n * VT
-    val critical = nvt * (nvt / (1.4142135623730951 * m.is)).ln()
-
+private limit(want: real, was: real, nvt: real, critical: real) -> real
     if want > critical && (want - was).abs() > 2.0 * nvt
         if was > 0.0
             val arg = 1.0 + (want - was) / nvt

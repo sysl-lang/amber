@@ -26,7 +26,9 @@ import sysl.text.{Search, fields, split, to_lower}
 // | `V<name> n+ n- [DC] value` or a wave | voltage source |
 // | `I<name> n+ n- [DC] value` or a wave | current source, flowing from n+ through it to n- |
 // | `D<name> anode cathode model [area]` | diode |
+// | `Q<name> collector base emitter [substrate] model [area]` | bipolar transistor |
 // | `.model <name> D (IS= N= RS= …)` | a diode's parameters |
+// | `.model <name> NPN (IS= BF= BR= NF= NR= VAF= VAR= …)`, or `PNP` | a transistor's parameters |
 // | `.op` | the operating point |
 // | `.tran tstep tstop [tstart [tmax]] [UIC]` | a run through time, printed every `tstep` |
 // | `.dc source start stop step` | the operating point at each value of a source |
@@ -37,9 +39,10 @@ import sysl.text.{Search, fields, split, to_lower}
 // read and set aside; a `.control` block is ngspice's own scripting and is skipped whole.
 //
 // **What is read but not modelled is said, not dropped.** A diode model's junction capacitance, a
-// `.options` line, a `.print`: each leaves a note on the netlist, and a program running it shows the
-// notes, so a reader knows where amber's answer may part from another simulator's. What would change
-// the circuit itself and cannot be read — a subcircuit, a transistor, a `.param` — is refused.
+// transistor model's base resistance, a `.options` line, a `.print`: each leaves a note on the
+// netlist, and a program running it shows the notes, so a reader knows where amber's answer may part
+// from another simulator's. What would change the circuit itself and cannot be read — a subcircuit, a
+// field-effect transistor, a `.param` — is refused.
 
 // One analysis a netlist asks for.
 enum Analysis derives Eq
@@ -59,10 +62,24 @@ struct Netlist
     // What was read and not modelled, one sentence each.
     notes: Buf[string]
 
-// A diode model as the netlist gives it.
+// What a `.model` line describes.
+private enum CardModel
+    DiodeCard(diode: DiodeModel)
+    TransistorCard(transistor: TransistorModel)
+
+// A model as the netlist gives it.
 private struct ModelCard
     name: string
-    model: DiodeModel
+    model: CardModel
+
+// An element line read: the part, the nodes its terminals are on (the third only for a transistor),
+// and what it holds when switched on.
+private struct Element
+    kind: Kind
+    a: string
+    b: string
+    c: Option[string]
+    ic: real
 
 // Read a netlist. An error names the line it is about.
 parse_netlist(text: string) -> Result[Netlist, string]
@@ -111,12 +128,15 @@ parse_netlist(text: string) -> Result[Netlist, string]
 
         if words[0].starts_with(".") then continue
 
-        val (kind, a, b, ic) = element_card(words, &models, tstep, tstop, &notes).map_err(why -> s"line ${line_no}: ${why}")?
+        val e = element_card(words, &models, tstep, tstop, &notes).map_err(why -> s"line ${line_no}: ${why}")?
 
         if c.find_part(words[0]).is_some() then return Err(s"line ${line_no}: '${words[0]}' is already the name of another element")
 
-        c.connect(words[0], kind, a, b)
-        initial.push(ic)
+        e.c match
+            Some(third) -> c.connect3(words[0], e.kind, e.a, e.b, third)
+            None -> c.connect(words[0], e.kind, e.a, e.b)
+
+        initial.push(e.ic)
 
     for k in 0..<analyses.len()
         if analyses[k] is Sweep(source, _, _, _)
@@ -213,33 +233,67 @@ private words_of(line: string) -> Buf[string]
 
     out
 
-// `.model name d (is=… n=… rs=…)`.
+// `.model name d (is=… n=… rs=…)`, or `npn` or `pnp` for a transistor, with SPICE's defaults for the
+// parameters left off.
 private model_card(words: Buf[string], notes: *Buf[string]) -> Result[ModelCard, string]
     if words.len() < 3 then return Err(".model needs a name and a type")
 
     val name = words[1]
+    val diode = words[2] == "d"
 
-    if words[2] != "d" then return Err(s"model type '${words[2]}' is not supported yet; amber has diodes")
+    if !diode && words[2] != "npn" && words[2] != "pnp"
+        return Err(s"model type '${words[2]}' is not supported yet; amber has diodes and bipolar transistors")
 
-    var m = DiodeModel(1e-14, 1.0, 0.0)
+    var d = DiodeModel(1e-14, 1.0, 0.0)
+    var t = TransistorModel(words[2] == "pnp", 1e-16, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0)
     var k: usize = 3
 
     while k < words.len()
         if k + 2 >= words.len() || words[k + 1] != "=" then return Err(s"'${words[k]}' in model '${name}' needs '= value'")
 
         val v = parse_value(words[k + 2])?
+        val known = if diode then diode_param(&d, words[k], v) else transistor_param(&t, words[k], v)
 
-        words[k] match
-            "is" -> m.is = v
-            "n" -> m.n = v
-            "rs" -> m.rs = v
-            _ -> notes.push(s"model ${name}: ${words[k]} is not modelled")
+        if !known then notes.push(s"model ${name}: ${words[k]} is not modelled")
 
         k += 3
 
-    if m.is <= 0.0 || m.n <= 0.0 || m.rs < 0.0 then return Err(s"model '${name}' needs IS and N above zero and RS not below")
+    if diode
+        if d.is <= 0.0 || d.n <= 0.0 || d.rs < 0.0 then return Err(s"model '${name}' needs IS and N above zero and RS not below")
 
-    Ok(ModelCard(name, m))
+        return Ok(ModelCard(name, DiodeCard(d)))
+
+    if t.is <= 0.0 || t.bf <= 0.0 || t.br <= 0.0 || t.nf <= 0.0 || t.nr <= 0.0
+        return Err(s"model '${name}' needs IS, BF, BR, NF and NR above zero")
+
+    if t.early_f < 0.0 || t.early_r < 0.0 then return Err(s"model '${name}' needs VAF and VAR not below zero")
+
+    Ok(ModelCard(name, TransistorCard(t)))
+
+// Set the diode parameter `key` to `v`; false for one amber does not model.
+private diode_param(m: *DiodeModel, key: string, v: real) -> bool
+    key match
+        "is" -> m.is = v
+        "n" -> m.n = v
+        "rs" -> m.rs = v
+        _ -> return false
+
+    true
+
+// Set the transistor parameter `key` to `v`; false for one amber does not model. `va` and `vb` are
+// SPICE's other names for VAF and VAR.
+private transistor_param(m: *TransistorModel, key: string, v: real) -> bool
+    key match
+        "is" -> m.is = v
+        "bf" -> m.bf = v
+        "br" -> m.br = v
+        "nf" -> m.nf = v
+        "nr" -> m.nr = v
+        "vaf" | "va" -> m.early_f = v
+        "var" | "vb" -> m.early_r = v
+        _ -> return false
+
+    true
 
 // `.tran tstep tstop [tstart [tmax]] [uic]`.
 private tran_card(words: Buf[string]) -> Result[Analysis, string]
@@ -276,10 +330,12 @@ private dc_card(words: Buf[string]) -> Result[Analysis, string]
 
 private min_of(a: real, b: real) -> real = if a < b then a else b
 
-// An element line: the part, its two nodes, and what it holds when switched on.
+// An element line: the part, its nodes, and what it holds when switched on.
 private element_card(words: Buf[string], models: *Buf[ModelCard], tstep: real, tstop: real,
-                     notes: *Buf[string]) -> Result[(Kind, string, string, real), string]
+                     notes: *Buf[string]) -> Result[Element, string]
     val name = words[0]
+
+    if name.bytes[0] == u8('q') then return transistor_card(words, models)
 
     if words.len() < 4 then return Err(s"'${name}' needs two nodes and a value")
 
@@ -291,39 +347,75 @@ private element_card(words: Buf[string], models: *Buf[ModelCard], tstep: real, t
         'r' ->
             if rest.len != 1 then return Err(s"'${name}' takes one value")
 
-            Ok((Resistor(positive(rest[0], "a resistance")?), a, b, 0.0))
+            Ok(Element(Resistor(positive(rest[0], "a resistance")?), a, b, None, 0.0))
         'c' ->
             val (v, ic) = value_and_ic(name, rest)?
 
             if v <= 0.0 then return Err("a capacitance is more than zero")
 
-            Ok((Capacitor(v), a, b, ic))
+            Ok(Element(Capacitor(v), a, b, None, ic))
         'l' ->
             val (v, ic) = value_and_ic(name, rest)?
 
             if v <= 0.0 then return Err("an inductance is more than zero")
 
-            Ok((Inductor(v), a, b, ic))
-        'v' -> Ok((VoltageSource(source_wave(name, rest, tstep, tstop)?), a, b, 0.0))
-        'i' -> Ok((CurrentSource(source_wave(name, rest, tstep, tstop)?), a, b, 0.0))
+            Ok(Element(Inductor(v), a, b, None, ic))
+        'v' -> Ok(Element(VoltageSource(source_wave(name, rest, tstep, tstop)?), a, b, None, 0.0))
+        'i' -> Ok(Element(CurrentSource(source_wave(name, rest, tstep, tstop)?), a, b, None, 0.0))
         'd' ->
             if rest.len < 1 || rest.len > 2 then return Err(s"'${name}' takes a model and perhaps an area")
 
-            var card: Option[DiodeModel] = None
-
-            for k in 0..<models.len()
-                if models[k].name == rest[0] then card = Some(models[k].model)
-
-            val m = card match
-                Some(m) -> m
-                None -> return Err(s"'${name}' names model '${rest[0]}', which no .model defines")
+            val m = find_model(name, rest[0], models)? match
+                DiodeCard(m) -> m
+                TransistorCard(_) -> return Err(s"'${name}' is a diode, and model '${rest[0]}' is a transistor's")
             val area = if rest.len == 2 then positive(rest[1], "an area")? else 1.0
 
             // An area scales the junction: more saturation current, less series resistance.
-            Ok((Diode(DiodeModel(m.is * area, m.n, m.rs / area)), a, b, 0.0))
-        'q' | 'm' | 'j' -> Err(s"'${name}' is a transistor, which amber does not have yet")
+            Ok(Element(Diode(DiodeModel(m.is * area, m.n, m.rs / area)), a, b, None, 0.0))
+        'm' | 'j' -> Err(s"'${name}' is a field-effect transistor, which amber does not have yet")
         'x' -> Err(s"'${name}' is a subcircuit, which amber does not read")
         _ -> Err(s"'${name}' is not an element amber reads")
+
+// `Q<name> collector base emitter [substrate] model [area]`. The substrate is read and left
+// unconnected: its junction has no capacitance and no current in the model amber has, as in SPICE's
+// with the substrate parameters left at their defaults.
+private transistor_card(words: Buf[string], models: *Buf[ModelCard]) -> Result[Element, string]
+    val name = words[0]
+
+    if words.len() < 5 then return Err(s"'${name}' needs a collector, a base and an emitter node, and a model")
+
+    // The word after the emitter is the model if a .model has that name, and the substrate otherwise.
+    var at: usize = 4
+
+    if !models_have(models, words[4]) && words.len() > 5 then at = 5
+
+    val rest = words.view()[at..<words.len()]
+
+    if rest.len > 2 then return Err(s"'${name}' takes its nodes, a model, and perhaps an area")
+
+    val m = find_model(name, rest[0], models)? match
+        TransistorCard(m) -> m
+        DiodeCard(_) -> return Err(s"'${name}' is a transistor, and model '${rest[0]}' is a diode's")
+    val area = if rest.len == 2 then positive(rest[1], "an area")? else 1.0
+
+    // An area is that many transistors side by side: each junction's saturation current is scaled.
+    var scaled = m
+
+    scaled.is = m.is * area
+    Ok(Element(Transistor(scaled), words[1], words[2], Some(words[3]), 0.0))
+
+private models_have(models: *Buf[ModelCard], name: string) -> bool
+    for k in 0..<models.len()
+        if models[k].name == name then return true
+
+    false
+
+// The model called `model` that element `element` names.
+private find_model(element: string, model: string, models: *Buf[ModelCard]) -> Result[CardModel, string]
+    for k in 0..<models.len()
+        if models[k].name == model then return Ok(models[k].model)
+
+    Err(s"'${element}' names model '${model}', which no .model defines")
 
 private positive(word: string, what: string) -> Result[real, string]
     val v = parse_value(word)?
