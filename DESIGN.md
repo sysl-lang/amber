@@ -65,10 +65,10 @@ Each is a piece of work of its own, in this order.
    as the oracle; `amber-cli` runs one.~~
 4. **Active devices**: ~~BJT (Gummel–Poon transport and Early terms) in the library and netlists
    (`Q` cards, `.model NPN|PNP`), held to ngspice on a biased amplifier, a mirror, a switch and an
-   astable multivibrator; MOSFET level 1 in the library and netlists (`M` cards, `.model NMOS|PMOS`),
+   astable multivibrator; the transistor in schematics and the viewer, with an astable multivibrator
+   blinking two LEDs; MOSFET level 1 in the library and netlists (`M` cards, `.model NMOS|PMOS`),
    held to ngspice on a common-source stage, a CMOS inverter's transfer curve and an LED switch;~~ the
-   transistor and the MOSFET in schematics and the viewer, with an astable multivibrator blinking two
-   LEDs.
+   MOSFET in schematics and the viewer.
 5. **DC sweep and AC analysis** (complex MNA, Bode plot in the viewer).
 6. **Sparse LU** with a symbolic factorisation reused across iterations and steps.
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save.

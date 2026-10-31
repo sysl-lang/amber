@@ -29,9 +29,15 @@ import sysl.text.{Search, fields, split}
 // | `switch` | two | `open` (the default) or `closed` |
 // | `diode` | two, anode first | — |
 // | `led` | two, anode first | `red` (the default), `yellow`, `green` or `blue` |
+// | `npn`, `pnp` | three: collector, base, emitter | a model: `2N3904` (an npn's, the default) or `2N3906` (a pnp's) |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
+//
+// A transistor's collector and emitter are its body's two ends, and its base stands off to one side,
+// a square or more from the line between them:
+//
+//     npn      Q1  3 9  5 11  3 13  2N3904
 //
 // A wave is one of
 //
@@ -61,12 +67,17 @@ enum Shape: u8
     Switch
     Diode
     Led
+    Npn
+    Pnp
     Ground
     Label
     Meter
 
     // The number of grid points it is placed by.
-    points(self) -> int = if self == Ground || self == Label then 1 else 2
+    points(self) -> int = self match
+        Ground | Label -> 1
+        Npn | Pnp -> 3
+        _ -> 2
 
     // Whether it is a part of the circuit, rather than a wire, a marker or an instrument.
     is_part(self) -> bool = self != Wire && self != Ground && self != Label && self != Meter
@@ -88,18 +99,36 @@ enum Colour: u8
 struct Element
     shape: Shape
     name: string
-    // The value as it was written, `470` or `sine 5 1k`, for showing beside the part.
+    // The value as it was written, `470` or `sine 5 1k`, for showing beside the part; a transistor's
+    // model, whether written or taken by default.
     value: string
     x1: int
     y1: int
     x2: int
     y2: int
-    // The node each end is on; -1 for a meter's lead on a point no part reaches.
+    // The third point, a transistor's emitter; the second again for anything else.
+    x3: int
+    y3: int
+    // The node each end is on; -1 for a meter's lead on a point no part reaches. `c` is a transistor's
+    // emitter, and `b` again for anything else.
     a: int
     b: int
+    c: int
     // Which of the circuit's parts it is; -1 for anything that is not a part.
     part: int
     colour: Colour
+
+    // Grid point `k` it is placed by, from 0.
+    point(self, k: int) -> (int, int) = k match
+        0 -> (self.x1, self.y1)
+        1 -> (self.x2, self.y2)
+        _ -> (self.x3, self.y3)
+
+    // The node its end `k` is on.
+    node(self, k: int) -> int = k match
+        0 -> self.a
+        1 -> self.b
+        _ -> self.c
 
 // A straight run of wire with no junction along it, between two grid points, and the element it is a
 // piece of. A wire with a junction partway along is two segments, since the two halves can carry
@@ -135,8 +164,10 @@ struct Schematic
 
             if e.x1 == x && e.y1 == y then return Some(e.a)
 
-            if e.shape.points() == 2
+            if e.shape.points() >= 2
                 if e.x2 == x && e.y2 == y then return Some(e.b)
+
+                if e.shape.points() == 3 && e.x3 == x && e.y3 == y then return Some(e.c)
 
                 if e.shape == Wire && on_segment(x, y, e) then return Some(e.a)
 
@@ -178,7 +209,14 @@ struct Schematic
                 edge_a.push(point_id(&px, &py, &inject, e.x1, e.y1))
                 edge_b.push(0)
 
-            if e.part >= 0
+            // A transistor takes in at each terminal the current that flows into it there.
+            if e.part >= 0 && e.shape.points() == 3
+                for t in 0..<3
+                    val (x, y) = e.point(t)
+                    val p = point_id(&px, &py, &inject, x, y)
+
+                    inject[usize(p)] -= s.terminal_current(e.part, t)
+            elif e.part >= 0
                 val amps = s.current(e.part)
                 val a = point_id(&px, &py, &inject, e.x1, e.y1)
                 val b = point_id(&px, &py, &inject, e.x2, e.y2)
@@ -310,17 +348,19 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     var at: usize = 1
     var name = ""
 
+    val one = a_word(words[0])
+
     if named
-        if words.len < 2 then return Err(s"a ${words[0]} needs a name")
+        if words.len < 2 then return Err(s"${one} needs a name")
 
         name = words[1]
         at = 2
 
     val count = usize(shape.points() * 2)
 
-    if words.len < at + count then return Err(s"a ${words[0]} is placed by ${shape.points()} point${if count == 2 then "" else "s"}")
+    if words.len < at + count then return Err(s"${one} is placed by ${shape.points()} point${if count == 2 then "" else "s"}")
 
-    var xy: [4]int = [0, 0, 0, 0]
+    var xy: [6]int = [0, 0, 0, 0, 0, 0]
 
     for k in 0..<count
         xy[k] = parse_coordinate(words[at + k])?
@@ -328,8 +368,14 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     if shape.points() == 1
         xy[2] = xy[0]
         xy[3] = xy[1]
+    elif shape.points() == 3
+        transistor_placed(one, xy)?
     elif xy[0] == xy[2] && xy[1] == xy[3]
-        return Err(s"a ${words[0]} needs two different points")
+        return Err(s"${one} needs two different points")
+
+    if shape.points() < 3
+        xy[4] = xy[2]
+        xy[5] = xy[3]
 
     at += count
 
@@ -344,9 +390,36 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
         Source | CurrentSource -> rest.len
         _ -> 1
 
-    if rest.len > usize(most) then return Err(s"'${rest[usize(most)]}' is more than a ${words[0]} takes")
+    if rest.len > usize(most) then return Err(s"'${rest[usize(most)]}' is more than ${one} takes")
 
-    Ok((Element(shape, name, rest.join(" "), xy[0], xy[1], xy[2], xy[3], -1, -1, -1, colour), kind))
+    val value = shape match
+        Npn | Pnp -> if rest.len == 0 then default_model(shape) else rest[0]
+        _ -> rest.join(" ")
+
+    Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], -1, -1, -1, -1, colour), kind))
+
+// "a resistor", "an inductor", "an npn": the kind with its article.
+private a_word(word: string) -> string
+    val b = word.bytes
+    val vowel = b.len > 0 && (b[0] == u8('a') || b[0] == u8('e') || b[0] == u8('i') || b[0] == u8('o') || b[0] == u8('u'))
+
+    if vowel || word == "npn" then s"an ${word}" else s"a ${word}"
+
+// A transistor's three points, collector, base and emitter, in `xy`: its collector and emitter apart,
+// and its base a square or more off the line between them, where its symbol has room.
+private transistor_placed(one: string, xy: [6]int) -> Result[unit, string]
+    val dx = xy[4] - xy[0]
+    val dy = xy[5] - xy[1]
+
+    if dx == 0 && dy == 0 then return Err(s"${one} needs its collector and emitter at different points")
+
+    // Twice the area of the triangle the three points make, which is the base's distance from the line
+    // times the line's length.
+    val cross = dx * (xy[3] - xy[1]) - dy * (xy[2] - xy[0])
+
+    if cross * cross < dx * dx + dy * dy then return Err(s"${one}'s base stands a square or more off the line from its collector to its emitter")
+
+    Ok(())
 
 private shape_named(word: string) -> Result[Shape, string] = word match
     "wire" -> Ok(Wire)
@@ -359,6 +432,8 @@ private shape_named(word: string) -> Result[Shape, string] = word match
     "switch" -> Ok(Switch)
     "diode" -> Ok(Diode)
     "led" -> Ok(Led)
+    "npn" -> Ok(Npn)
+    "pnp" -> Ok(Pnp)
     "ground" -> Ok(Ground)
     "label" -> Ok(Label)
     "meter" -> Ok(Meter)
@@ -373,7 +448,11 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 
 // The part an element is, from the words after its points.
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
-    if rest.len == 0 && shape != Diode && shape != Led && shape != Switch then return Err(s"a ${kind_word} needs a value")
+    val optional = shape match
+        Diode | Led | Switch | Npn | Pnp -> true
+        _ -> false
+
+    if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
 
     shape match
         Resistor -> Ok(Resistor(positive(rest[0], "a resistance")?))
@@ -391,7 +470,16 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
                 _ -> Err(s"'${rest[0]}' is not a switch's state: open or closed")
         Diode -> Ok(Diode(SILICON))
         Led -> Ok(Diode(colour.model()))
-        _ -> Err(s"a ${kind_word} is not a part")
+        Npn | Pnp -> Ok(Transistor(transistor_model(shape, if rest.len == 0 then default_model(shape) else rest[0])?))
+        _ -> Err(s"${a_word(kind_word)} is not a part")
+
+// The model a transistor is when its line names none.
+private default_model(shape: Shape) -> string = if shape == Pnp then "2N3906" else "2N3904"
+
+// A transistor's model by its name, which must be one of its own polarity's.
+private transistor_model(shape: Shape, word: string) -> Result[TransistorModel, string] = shape match
+    Npn -> if word == "2N3904" then Ok(NPN_2N3904) else Err(s"'${word}' is not an NPN model: 2N3904")
+    _ -> if word == "2N3906" then Ok(PNP_2N3906) else Err(s"'${word}' is not a PNP model: 2N3906")
 
 private positive(word: string, what: string) -> Result[real, string]
     val v = parse_value(word)?
@@ -487,38 +575,43 @@ private min_of(a: int, b: int) -> int = if a < b then a else b
 private max_of(a: int, b: int) -> int = if a < b then b else a
 
 // Number every end by the set of joined points it belongs to: `a` and `b` are set to a net number,
-// the same for ends that are joined. Nets are found by union–find over the ends, two per element. A
-// meter's leads take the net of whatever they touch and join nothing to anything.
+// `c` likewise, the same for ends that are joined. Nets are found by union–find over the ends, three
+// slots per element. A meter's leads take the net of whatever they touch and join nothing to anything.
 private join(elements: *Buf[Element])
     val n = elements.len()
     var parent: Buf[int] = buf()
 
-    for k in 0..<2 * n
+    for k in 0..<3 * n
         parent.push(int(k))
 
     for i in 0..<n
         val e = elements[i]
 
-        // A wire's two ends are one net; a part's are two.
-        if e.shape == Wire then unite(&parent, int(2 * i), int(2 * i + 1))
+        // A wire's two ends are one net; a part's are two, or three.
+        if e.shape == Wire then unite(&parent, int(3 * i), int(3 * i + 1))
 
         for j in 0..<n
             val f = elements[j]
 
-            if !(e.shape == Meter && f.shape == Meter)
-                for end in 0..<2
-                    val (x, y) = if end == 0 then (f.x1, f.y1) else (f.x2, f.y2)
-                    val k = int(2 * j) + end
+            if e.shape == Meter && f.shape == Meter then continue
 
-                    if e.x1 == x && e.y1 == y then unite(&parent, int(2 * i), k)
+            for end in 0..<f.shape.points()
+                val (x, y) = f.point(end)
+                val k = int(3 * j) + end
 
-                    if e.shape.points() == 2 && e.x2 == x && e.y2 == y then unite(&parent, int(2 * i + 1), k)
+                for mine in 0..<e.shape.points()
+                    val (ex, ey) = e.point(mine)
 
-                    if e.shape == Wire && on_segment(x, y, e) then unite(&parent, int(2 * i), k)
+                    if ex == x && ey == y then unite(&parent, int(3 * i) + mine, k)
+
+                if e.shape == Wire && on_segment(x, y, e) then unite(&parent, int(3 * i), k)
 
     for i in 0..<n
-        elements[i].a = root(&parent, int(2 * i))
-        elements[i].b = if elements[i].shape.points() == 2 then root(&parent, int(2 * i + 1)) else elements[i].a
+        val ends = elements[i].shape.points()
+
+        elements[i].a = root(&parent, int(3 * i))
+        elements[i].b = if ends >= 2 then root(&parent, int(3 * i + 1)) else elements[i].a
+        elements[i].c = if ends == 3 then root(&parent, int(3 * i + 2)) else elements[i].b
 
 private root(parent: *Buf[int], k: int) -> int
     var r = k
@@ -544,7 +637,7 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
     // Whether a part's end or a ground is on the net, which is what makes it a node.
     var live: Buf[bool] = buf()
 
-    for _ in 0..<2 * elements.len()
+    for _ in 0..<3 * elements.len()
         node_of.push(-1)
         live.push(false)
 
@@ -554,6 +647,7 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
         if e.shape.is_part() || e.shape == Ground
             live[usize(e.a)] = true
             live[usize(e.b)] = true
+            live[usize(e.c)] = true
 
     // Grounds first, then labels, so a node's name is the one it was given wherever the label is.
     for i in 0..<elements.len()
@@ -574,8 +668,8 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
     var unnamed = 0
 
     for i in 0..<elements.len()
-        for end in 0..<2
-            val net = if end == 0 then elements[i].a else elements[i].b
+        for end in 0..<3
+            val net = elements[i].node(end)
 
             if live[usize(net)] && node_of[usize(net)] < 0
                 unnamed += 1
@@ -591,10 +685,14 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
     for i in 0..<elements.len()
         elements[i].a = node_of[usize(elements[i].a)]
         elements[i].b = node_of[usize(elements[i].b)]
+        elements[i].c = node_of[usize(elements[i].c)]
 
         if kinds[i] is Some(kind)
+            val e = elements[i]
+
             elements[i].part = int(c.parts.len())
-            c.add(elements[i].name, kind, elements[i].a, elements[i].b)
+
+            if kind.terminals() == 3 then c.add3(e.name, kind, e.a, e.b, e.c) else c.add(e.name, kind, e.a, e.b)
 
     Ok(Schematic(elements, c, segments_of(elements), 0.0))
 
@@ -619,7 +717,7 @@ private segments_of(elements: Buf[Element]) -> Buf[Segment]
             if j == i || f.shape == Meter then continue
 
             for end in 0..<f.shape.points()
-                val (x, y) = if end == 0 then (f.x1, f.y1) else (f.x2, f.y2)
+                val (x, y) = f.point(end)
 
                 if on_segment(x, y, w)
                     val d = max_of((x - w.x1).abs(), (y - w.y1).abs())

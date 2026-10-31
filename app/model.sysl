@@ -100,9 +100,12 @@ struct Model
     // Which of `SPEEDS` the clock runs at.
     speed: int
     // How far along its length the current dots on each wire segment and each part have moved, in grid
-    // squares.
+    // squares. A transistor's `part_flow` is its collector's, and its base's and emitter's are beside
+    // it.
     segment_flow: Buf[real]
     part_flow: Buf[real]
+    base_flow: Buf[real]
+    emitter_flow: Buf[real]
     // The largest current any part has carried since the circuit was switched on: the dots move at a
     // speed in proportion to it, so a current dying away is seen to slow.
     most_amps: real
@@ -206,6 +209,10 @@ struct Model
 
             if e.part >= 0 then self.most_amps = max(self.most_amps, self.s.current(e.part).abs())
 
+            // A transistor's emitter carries the most: its collector's current and its base's.
+            if e.part >= 0 && e.shape.points() == 3
+                self.most_amps = max(self.most_amps, self.s.terminal_current(e.part, 2).abs())
+
     // Move the current dots on by `dt` seconds of the window's time.
     flow(*self, dt: real)
         if self.trouble != "" then return
@@ -219,6 +226,12 @@ struct Model
             val e = self.sch.elements[i]
 
             if e.part >= 0 then self.part_flow[i] += dt * dot_speed(self.s.current(e.part), self.most_amps)
+
+            // The base's current flows in toward the bar, and the emitter's out of it: the current into
+            // the emitter, turned round.
+            if e.part >= 0 && e.shape.points() == 3
+                self.base_flow[i] += dt * dot_speed(self.s.terminal_current(e.part, 1), self.most_amps)
+                self.emitter_flow[i] -= dt * dot_speed(self.s.terminal_current(e.part, 2), self.most_amps)
 end Model
 
 // How fast dots move for a current of `amps`, in grid squares a second: three at the largest current
@@ -231,15 +244,19 @@ dot_speed(amps: real, most: real) -> real
 model(file: string, sch: Schematic) -> &Model
     var flows: Buf[real] = buf()
     var parts: Buf[real] = buf()
+    var bases: Buf[real] = buf()
+    var emitters: Buf[real] = buf()
 
     for _ in 0..<sch.segments.len()
         flows.push(0.0)
 
     for _ in 0..<sch.elements.len()
         parts.push(0.0)
+        bases.push(0.0)
+        emitters.push(0.0)
 
     val m: &Model = Model(file, sch, sim(sch.circuit), "", buf(), false, 0, 0, -1, true, true, speed_index(sch.speed), flows,
-                  parts, 0.0, Picture(None, None), Picture(None, None))
+                  parts, bases, emitters, 0.0, Picture(None, None), Picture(None, None))
 
     // The meters the file places are the first ones.
     for i in 0..<sch.elements.len()
@@ -310,6 +327,13 @@ status(m: &Model) -> string
 
     if e.part < 0 then return s"${clock} · ${e.name}"
 
+    if e.shape.points() == 3
+        val vbe = m.s.voltage(e.b) - m.s.voltage(e.c)
+        val ic = m.s.terminal_current(e.part, 0)
+        val ib = m.s.terminal_current(e.part, 1)
+
+        return s"${clock} · ${e.name} ${described(m, e)}: ${volts(m.s.across(e.part))} collector to emitter, ${volts(vbe)} base to emitter, ${engineering(ic.abs())}A ${into(ic)} the collector, ${engineering(ib.abs())}A ${into(ib)} the base"
+
     val v = m.s.across(e.part)
     val i = m.s.current(e.part)
     val p = m.s.power(e.part)
@@ -326,7 +350,12 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Switch -> if m.s.circuit.parts[usize(e.part)].kind == Switch(true) then "closed switch" else "open switch"
     Diode -> "diode"
     Led -> s"${colour_name(e.colour)} LED"
+    Npn -> s"${e.value} NPN transistor"
+    Pnp -> s"${e.value} PNP transistor"
     _ -> ""
+
+// Which way a current into a terminal goes, by its sign.
+private into(amps: real) -> string = if amps < 0.0 then "out of" else "into"
 
 colour_name(c: Colour) -> string = c match
     Red -> "red"
