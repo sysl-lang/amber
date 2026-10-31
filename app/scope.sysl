@@ -1,5 +1,11 @@
 // The scope: what every meter has read over the last few seconds, each in its meter's colour, against
 // the circuit's own time.
+//
+// **Each channel has a vertical scale of its own**, as a bench oscilloscope's do: a trace is centred
+// on what it has read in the window and scaled so that it nearly fills the height, at a number of
+// volts a division from the 1-2-5 sequence. A 10 mV input beside a 2.5 V output is two waves of a size,
+// and the legend says what a division is worth for each. A mark at the left edge, in the trace's
+// colour, shows where its zero volts is when that is in view.
 
 import sh.sysl.amber.engineering
 import sh.sysl.ui.{View, Canvas, Size, Rect, Image}
@@ -10,6 +16,9 @@ const SCOPE_HEIGHT: int = 170
 const SCOPE_GROUND: u32 = 0x0B0D10
 const GRATICULE: u32 = 0x22262E
 const AXIS: u32 = 0x3A404C
+
+// How many divisions the plot is high.
+const DIVISIONS: int = 5
 
 private struct Scope
     m: &Model
@@ -30,19 +39,16 @@ impl View for Scope
             c.unink()
             return
 
-        // The plot leaves room on the left for the voltage scale and on the right for the legend.
-        val plot = Rect(r.x + 70, r.y + 12, r.w - 70 - 150, r.h - 34)
+        // The plot leaves room on the left for the channels' zero marks and on the right for the legend.
+        val plot = Rect(r.x + 24, r.y + 12, r.w - 24 - 250, r.h - 34)
         val now = m.s.time
         val from = now - m.window()
-        val (lo, hi) = span(m, from)
 
         if m.scope.fit(r, c.pixel_scale()) is Some(vg)
-            trace_all(m, vg, r, plot, c.pixel_scale(), from, lo, hi)
+            trace_all(m, vg, r, plot, c.pixel_scale(), from)
             c.draw_image(r, Image(m.scope.surface.unwrap()))
 
         c.ink(DIM)
-        c.text(Rect(r.x + 8, plot.y - 8, 60, 18), volts(hi))
-        c.text(Rect(r.x + 8, plot.bottom() - 10, 60, 18), volts(lo))
         c.text(Rect(plot.x, plot.bottom() + 4, 200, 18), s"${engineering(m.window())}s across")
         c.text(Rect(plot.right() - 120, plot.bottom() + 4, 120, 18), s"t = ${engineering(now)}s")
         c.unink()
@@ -50,38 +56,65 @@ impl View for Scope
         for k in 0..<m.meters.len()
             val mt = m.meters[k]
             val y = r.y + 14 + int(k) * 22
+            val (lo, hi) = reach(mt, from)
+            val (_, per_div) = channel_scale(lo, hi)
 
             if y + 18 > r.bottom() then break
 
             c.fill(Rect(plot.right() + 16, y + 6, 14, 4), mt.colour)
             c.ink(INK)
-            c.text(Rect(plot.right() + 36, y, 110, 18), s"${mt.name}  ${volts(m.reading(mt))}")
+            c.text(Rect(plot.right() + 36, y, 130, 18), s"${mt.name}  ${volts(per_div)}/div")
+            c.unink()
+            c.ink(DIM)
+            c.text(Rect(plot.right() + 170, y, 76, 18), volts(m.reading(mt)))
             c.unink()
 
-// The lowest and highest reading any meter has made since `from`, always taking in zero, and widened
-// a tenth each way so a trace does not run along the edge.
-private span(m: &Model, from: real) -> (real, real)
+// The lowest and highest reading meter `mt` has made since `from`, or zero for both if it has made none.
+reach(mt: Meter, from: real) -> (real, real)
     var lo = 0.0
     var hi = 0.0
+    var any = false
 
-    for k in 0..<m.meters.len()
-        val mt = m.meters[k]
+    for j in 0..<mt.times.len()
+        if mt.times[j] >= from
+            val v = mt.readings[j]
 
-        for j in 0..<mt.times.len()
-            if mt.times[j] >= from
-                lo = min(lo, mt.readings[j])
-                hi = max(hi, mt.readings[j])
+            lo = if any then min(lo, v) else v
+            hi = if any then max(hi, v) else v
+            any = true
 
-    if hi - lo < 1e-9
-        hi += 1.0
-        lo -= 1.0
+    (lo, hi)
 
-    val pad = (hi - lo) / 10.0
+// The scale of a channel whose readings run from `lo` to `hi`: the voltage at the plot's middle, and
+// the volts a division, the smallest step of the 1-2-5 sequence that fits the readings with a twentieth
+// to spare. A trace that hardly moves is drawn at a twentieth of its size, so a steady 9 V is a flat line
+// at 100 mV a division rather than its rounding errors blown up to fill the plot; and never finer than a
+// millivolt across the whole height. The middle is put on a fifth of a division, so the trace stays
+// still while what it reads does.
+channel_scale(lo: real, hi: real) -> (real, real)
+    val span = max(max(hi - lo, 0.05 * max(lo.abs(), hi.abs())), 1e-3)
+    val per_div = step_125(1.05 * span / real(DIVISIONS))
+    val notch = per_div / 5.0
 
-    (lo - pad, hi + pad)
+    (((lo + hi) / 2.0 / notch).round() * notch, per_div)
 
-// Draw the graticule and every meter's trace into the scope's picture.
-private trace_all(m: &Model, vg: &plutovg.Canvas, r: Rect, plot: Rect, scale: real, from: real, lo: real, hi: real)
+// The smallest of 1, 2 and 5 times a power of ten that is at least `x`, which is more than zero.
+step_125(x: real) -> real
+    var decade = 10.0.pow(x.log10().floor())
+
+    // The logarithm can land a hair either side of a power of ten.
+    if decade > x then decade /= 10.0
+
+    if x <= decade * (1.0 + 1e-9) then return decade
+
+    if x <= 2.0 * decade * (1.0 + 1e-9) then return 2.0 * decade
+
+    if x <= 5.0 * decade * (1.0 + 1e-9) then return 5.0 * decade
+
+    10.0 * decade
+
+// Draw the graticule, each channel's zero mark and every meter's trace into the scope's picture.
+private trace_all(m: &Model, vg: &plutovg.Canvas, r: Rect, plot: Rect, scale: real, from: real)
     val left = real(plot.x - r.x)
     val top = real(plot.y - r.y)
     val w = real(plot.w)
@@ -90,31 +123,35 @@ private trace_all(m: &Model, vg: &plutovg.Canvas, r: Rect, plot: Rect, scale: re
 
     vg.line_width(f32(scale))
 
-    for k in 0..5
-        tone(vg, if k == 0 || k == 5 then AXIS else GRATICULE)
+    for k in 0..DIVISIONS
+        tone(vg, if k == 0 || k == DIVISIONS then AXIS else GRATICULE)
         vg.begin()
-        vg.move_to(f32(left * scale), f32((top + h * real(k) / 5.0) * scale))
-        vg.line_to(f32((left + w) * scale), f32((top + h * real(k) / 5.0) * scale))
+        vg.move_to(f32(left * scale), f32((top + h * real(k) / real(DIVISIONS)) * scale))
+        vg.line_to(f32((left + w) * scale), f32((top + h * real(k) / real(DIVISIONS)) * scale))
         vg.stroke()
 
-    // Zero volts, a little brighter.
-    if lo < 0.0 && hi > 0.0
-        val y0 = top + h * hi / (hi - lo)
-
-        tone(vg, AXIS)
-        vg.begin()
-        vg.move_to(f32(left * scale), f32(y0 * scale))
-        vg.line_to(f32((left + w) * scale), f32(y0 * scale))
-        vg.stroke()
-
-    vg.line_width(f32(2.0 * scale))
     vg.line_join(plutovg.LineJoin.Round)
 
     for k in 0..<m.meters.len()
         val mt = m.meters[k]
+        val (lo, hi) = reach(mt, from)
+        val (centre, per_div) = channel_scale(lo, hi)
+        // Where a reading of `v` is drawn, in the picture's points from its top.
+        val y_of = (v: real) -> top + h * (0.5 - (v - centre) / (real(DIVISIONS) * per_div))
+        val y0 = y_of(0.0)
         var started = false
 
         tone(vg, mt.colour)
+
+        if y0 >= top && y0 <= top + h
+            vg.begin()
+            vg.move_to(f32((left - 10.0) * scale), f32((y0 - 4.0) * scale))
+            vg.line_to(f32((left - 3.0) * scale), f32(y0 * scale))
+            vg.line_to(f32((left - 10.0) * scale), f32((y0 + 4.0) * scale))
+            vg.close_path()
+            vg.fill()
+
+        vg.line_width(f32(2.0 * scale))
         vg.begin()
 
         for j in 0..<mt.times.len()
@@ -123,7 +160,7 @@ private trace_all(m: &Model, vg: &plutovg.Canvas, r: Rect, plot: Rect, scale: re
             if t < from then continue
 
             val x = (left + w * (t - from) / window) * scale
-            val y = (top + h * (hi - mt.readings[j]) / (hi - lo)) * scale
+            val y = y_of(mt.readings[j]) * scale
 
             if started then vg.line_to(f32(x), f32(y)) else vg.move_to(f32(x), f32(y))
 

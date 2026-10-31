@@ -16,11 +16,16 @@ app/amber-app examples/filter.amber
 The circuit is switched on when the window opens, every capacitor empty, and its clock runs at the
 speed the file asks for. Wires are grey at ground, warming to amber as their voltage rises (and cooling
 to blue below ground); yellow dots move along the wires and through the parts the way the current
-flows, faster for more current.
+flows, faster for more current. A current that alternates keeps its dots through each zero crossing:
+they slow, stop and come back the other way, moving against the most that branch has carried lately,
+so a small signal beside a large bias still rocks where it can be seen.
 
 - **Click two grid points to put a voltmeter across them** — the red lead first, the black lead
   second; it reads the first point's voltage less the second's. **The scope** under the circuit draws
-  what every meter has read over the last five seconds, each in its meter's colour.
+  what every meter has read over the last five seconds, each in its meter's colour and on a vertical
+  scale of its own, as a bench oscilloscope's channels are: each trace is centred on what it read and
+  fills most of the height, the legend gives its volts a division (1, 2 or 5 times a power of ten),
+  and a mark at the left edge in its colour shows where its zero is.
 - **Click a switch** to flip it; click any part for the voltage across it, the current through it and
   the power it takes or delivers.
 - **Click a signal generator** to open its panel beside the scope: a waveform (sine, square,
@@ -29,7 +34,9 @@ flows, faster for more current.
   reaches the circuit at once, while its clock runs: nothing restarts, and the wave carries on from
   where it was in its cycle, as a bench generator's does. `close`, or a click anywhere else, puts the
   panel away; a restart keeps its settings.
-- `space` pauses, `+` and `-` change the speed, `r` switches the circuit on again from empty, `v`
+- `space` pauses, `+` and `-` change the speed, `r` starts the circuit again the way its file
+  says (from empty, or settled where it says `start settled`), `s` starts it again settled at its DC
+  operating point with every capacitor already charged, `v`
   toggles the voltage beside every part, `c` clears the meters, Escape quits.
 
 `--shot out.png --time 10m` runs the circuit for ten milliseconds of its own time and draws that frame
@@ -51,6 +58,7 @@ end landing anywhere along a wire joins it:
 ```
 # A low-pass filter.
 speed 2m                                   # 2 ms of circuit time a second
+start settled                              # begin at the DC operating point, not empty
 
 source    V1  0 0  0 6  square 0 5 1k      # + end first
 resistor  R1  0 0  6 0  1k

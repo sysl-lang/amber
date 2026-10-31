@@ -120,6 +120,19 @@ generator_matched_load()
     assert(near(s.power(0), -5e-3, 1e-12))
     assert(near(s.current(1), 10e-3, 1e-12))
 
+@test("a generator's operating point is its wave at the start of time, behind its resistance")
+generator_operating_point()
+    for w in [Sine(1.5, 2.0, 1000.0, 0.0, 0.0, 0.0), square(-1.0, 4.0, 50.0), triangle(0.5, 3.0, 10.0), Dc(-2.0)]
+        var c = circuit()
+
+        c.connect("G1", Generator(w, 50.0), "out", "0")
+        c.connect("RL", Resistor(150.0), "out", "0")
+
+        var s = sim(c)
+
+        s.operating_point().unwrap()
+        assert(near(s.across(0), 0.75 * w.at(0.0), 1e-9))
+
 @test("a generator's output resistance divides with its load, and an open one shows its whole wave")
 generator_output_resistance()
     for (ohms, load) in [(600.0, 1200.0), (50.0, 1e9), (50.0, 450.0)]
@@ -301,3 +314,42 @@ amplifier_clips()
     assert(hi - lo < 10.0)
     assert(hi < 5.0 && lo > -8.0)
     assert((hi + lo).abs() > 0.3)
+
+// The lowest and highest the amplifier's output reaches over its first cycle from now.
+private first_cycle(s: *Sim) -> (real, real)
+    var lo = 1e9
+    var hi = -1e9
+
+    for k in 1..1000
+        s.advance_to(real(k) * 1e-6).unwrap()
+
+        val v = s.voltage_at("out")
+
+        lo = min(lo, v)
+        hi = max(hi, v)
+
+    (lo, hi)
+
+@test("the amplifier started at its operating point swings about zero from its first cycle; switched on from empty, it does not")
+amplifier_starts_settled()
+    val sch = parse_schematic(str_cast(embed("../../../examples/amplifier.amber"))).unwrap()
+    var settled = sim(sch.circuit)
+    var cold = sim(sch.circuit)
+
+    assert(sch.settled)
+    settled.operating_point().unwrap()
+
+    val (lo, hi) = first_cycle(&settled)
+    val swing = (hi - lo) / 2.0
+
+    // About 23 times the generator's 10 mV, and centred to within the little the capacitors lean while
+    // the sine's first half-cycle has nothing before it to balance: about a seventh of the swing,
+    // mostly CE's, whose time constant is barely a cycle.
+    assert(swing > 0.18 && swing < 0.28)
+    assert((hi + lo).abs() / 2.0 < 0.2 * swing)
+
+    cold.power_on().unwrap()
+
+    val (clo, chi) = first_cycle(&cold)
+
+    assert((chi + clo).abs() / 2.0 > swing)
