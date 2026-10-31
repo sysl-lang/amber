@@ -1,0 +1,13 @@
+A zener's curve, swept through a resistor both ways: forward conduction and reverse breakdown
+* The zener a schematic's `zener` line places at 5.1 V.
+V1 a 0 0
+R1 a k 470
+D1 k 0 dz
+.model dz D (IS=1e-14 N=1 RS=2 BV=5.1 IBV=5m)
+.dc V1 -15 3 0.25
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+run
+wrdata zener_dc.data v(k)
+.endc
+.end

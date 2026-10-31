@@ -250,7 +250,7 @@ private model_card(words: Buf[string], notes: *Buf[string]) -> Result[ModelCard,
     if !diode && !mos && words[2] != "npn" && words[2] != "pnp"
         return Err(s"model type '${words[2]}' is not supported yet; amber has diodes, bipolar transistors and MOSFETs")
 
-    var d = DiodeModel(1e-14, 1.0, 0.0)
+    var d = DiodeModel(1e-14, 1.0, 0.0, 0.0, 1e-3)
     var t = TransistorModel(words[2] == "pnp", 1e-16, 100.0, 1.0, 1.0, 1.0, 0.0, 0.0)
     var f = MosfetModel(words[2] == "pmos", 0.0, 2e-5, 0.0)
     var k: usize = 3
@@ -272,6 +272,8 @@ private model_card(words: Buf[string], notes: *Buf[string]) -> Result[ModelCard,
     if diode
         if d.is <= 0.0 || d.n <= 0.0 || d.rs < 0.0 then return Err(s"model '${name}' needs IS and N above zero and RS not below")
 
+        if d.bv < 0.0 || d.ibv <= 0.0 then return Err(s"model '${name}' needs BV not below zero and IBV above it")
+
         return Ok(ModelCard(name, DiodeCard(d)))
 
     if mos
@@ -292,6 +294,8 @@ private diode_param(m: *DiodeModel, key: string, v: real) -> bool
         "is" -> m.is = v
         "n" -> m.n = v
         "rs" -> m.rs = v
+        "bv" -> m.bv = v
+        "ibv" -> m.ibv = v
         _ -> return false
 
     true
@@ -400,8 +404,9 @@ private element_card(words: Buf[string], models: *Buf[ModelCard], tstep: real, t
                 other -> return Err(s"'${name}' is a diode, and model '${rest[0]}' is ${owner(other)}")
             val area = if rest.len == 2 then positive(rest[1], "an area")? else 1.0
 
-            // An area scales the junction: more saturation current, less series resistance.
-            Ok(Element(Diode(DiodeModel(m.is * area, m.n, m.rs / area)), a, b, None, 0.0))
+            // An area scales the junction: more saturation current and breakdown current, less series
+            // resistance.
+            Ok(Element(Diode(DiodeModel(m.is * area, m.n, m.rs / area, m.bv, m.ibv * area)), a, b, None, 0.0))
         'j' -> Err(s"'${name}' is a junction field-effect transistor, which amber does not have yet")
         'x' -> Err(s"'${name}' is a subcircuit, which amber does not read")
         _ -> Err(s"'${name}' is not an element amber reads")

@@ -12,20 +12,32 @@ import sysl.buf.{Buf, buf}
 // `is` is the saturation current, `n` the emission coefficient and `rs` the series resistance. The
 // current through the junction at a voltage `v` across it is `is · (exp(v / (n · Vt)) − 1)`, where
 // `Vt` is the thermal voltage, about 25.85 mV at room temperature.
+//
+// **A zener is a diode that breaks down at `bv` volts reversed**, SPICE's BV, conducting `ibv` there,
+// SPICE's IBV; `bv` is 0 for a diode that does not break down. Reversed past its knee the junction
+// carries a second exponential, `−is · exp(−(v + knee) / (n · Vt))`, where the knee is just short of
+// `bv`, placed so the current at `−bv` is `ibv`, as SPICE places it.
 struct DiodeModel derives Eq
     is: real
     n: real
     rs: real
+    bv: real
+    ibv: real
 
 // A silicon signal diode, the 1N4148's figures: about 0.6 V forward at a milliamp.
-val SILICON = DiodeModel(2.52e-9, 1.752, 0.568)
+val SILICON = DiodeModel(2.52e-9, 1.752, 0.568, 0.0, 1e-3)
 
 // A red LED: about 1.8 V forward at 10 mA. The other colours are the same equation with a higher
 // knee, since a shorter wavelength is a wider band gap.
-val RED_LED = DiodeModel(1e-17, 2.0, 2.0)
-val GREEN_LED = DiodeModel(3.5e-20, 2.0, 2.0)
-val YELLOW_LED = DiodeModel(2e-19, 2.0, 2.0)
-val BLUE_LED = DiodeModel(1e-28, 2.0, 2.0)
+val RED_LED = DiodeModel(1e-17, 2.0, 2.0, 0.0, 1e-3)
+val GREEN_LED = DiodeModel(3.5e-20, 2.0, 2.0, 0.0, 1e-3)
+val YELLOW_LED = DiodeModel(2e-19, 2.0, 2.0, 0.0, 1e-3)
+val BLUE_LED = DiodeModel(1e-28, 2.0, 2.0, 0.0, 1e-3)
+
+// A zener diode breaking down at `volts`: a small regulator zener, the 1N47xx series at a level its
+// equations can carry: a sharp forward knee near 0.7 V, a few ohms in series, and 5 mA at its rated
+// voltage reversed.
+zener_model(volts: real) -> DiodeModel = DiodeModel(1e-14, 1.0, 2.0, volts, 5e-3)
 
 // The constants a bipolar transistor's equations are written in: SPICE's Gummel–Poon model with only
 // its transport and Early terms, which is Ebers–Moll with the base widened by the voltage across it.
@@ -89,6 +101,52 @@ val PMOS_BS250 = MosfetModel(true, -2.0, 0.01, 0.02)
 const DEFAULT_W: real = 100e-6
 const DEFAULT_L: real = 100e-6
 
+// A bench power supply's settings.
+//
+// **Regulated, it is a constant-voltage, constant-current supply.** It holds `volts` across its
+// terminals, behind a milliohm, until the load would draw more than `amps`; then it holds `amps` and
+// lets the voltage fall to whatever the load makes of that current, as a bench supply's CC lamp says.
+//
+// **Raw, it is what a transformer, a rectifier and a smoothing capacitor give**: `volts` on average with
+// `ripple` volts peak to peak riding on it at twice the `mains` frequency, behind `ohms` of internal
+// resistance, so the voltage sags as the load draws more. The ripple is the capacitor's sawtooth: a
+// quick charge over the fifth of each half cycle when the rectifier conducts, then a straight
+// discharge over the rest. The current limit holds in raw mode too, as a fuse-less bench unit's would.
+struct PowerSupply derives Eq
+    volts: real
+    amps: real
+    raw: bool
+    ripple: real
+    mains: real
+    ohms: real
+
+    // What it would put across its terminals with nothing connected.
+    wave(self) -> Wave
+        if !self.raw || self.ripple == 0.0 then return Dc(self.volts)
+
+        val period = 0.5 / self.mains
+        val charge = CHARGING * period
+
+        Pulse(self.volts - self.ripple / 2.0, self.volts + self.ripple / 2.0, 0.0, charge, period - charge, 0.0, period)
+
+    // The resistance behind the voltage it would put out.
+    resistance(self) -> real = if self.raw then self.ohms else REGULATED_OHMS
+
+// A regulated supply's output resistance.
+const REGULATED_OHMS: real = 1e-3
+
+// The part of each half cycle of the mains a raw supply's rectifier conducts for, charging its
+// capacitor.
+const CHARGING: real = 0.2
+
+// A regulated supply at `volts` limited to `amps`.
+regulated(volts: real, amps: real) -> PowerSupply = PowerSupply(volts, amps, false, 0.0, 50.0, 1.0)
+
+// A raw supply averaging `volts` with `ripple` volts peak to peak at twice `mains`, behind `ohms`, limited
+// to `amps`.
+raw_supply(volts: real, amps: real, ripple: real, mains: real = 50.0, ohms: real = 1.0) -> PowerSupply =
+    PowerSupply(volts, amps, true, ripple, mains, ohms)
+
 // What a part is, with the values that say how it behaves.
 enum Kind derives Eq
     // A resistor of `ohms`.
@@ -110,6 +168,11 @@ enum Kind derives Eq
     // reaches the circuit, the wave less what the resistance drops. It is solved as its Norton
     // equivalent, `wave / ohms` in parallel with `ohms`, and needs no node of its own.
     Generator(wave: Wave, ohms: real)
+    // A bench power supply, its terminals `+` and `−`: a constant voltage until the load would draw
+    // more than its current limit, then that current. It needs no node of its own: it is solved as the
+    // current it delivers against the voltage across it, a curve that bends smoothly from one to the
+    // other.
+    Supply(supply: PowerSupply)
     // A junction diode, conducting from its first terminal (the anode) to its second (the cathode).
     Diode(model: DiodeModel)
     // A switch: a hundredth of an ohm closed, and no connection open.
@@ -130,6 +193,7 @@ enum Kind derives Eq
         VoltageSource(w) -> Some(w)
         CurrentSource(w) -> Some(w)
         Generator(w, _) -> Some(w)
+        Supply(s) -> Some(s.wave())
         _ -> None
 
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and

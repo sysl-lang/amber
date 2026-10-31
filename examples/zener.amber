@@ -1,0 +1,26 @@
+# A zener shunt regulator: a raw supply's rippling 12 V turned into a steady 5.1 V.
+#
+# P1 is an unregulated supply, what a transformer, a rectifier and a capacitor give: 12 V on average
+# with 2 V of ripple at 100 Hz riding on it. RS feeds the zener DZ, which breaks down at 5.1 V and
+# holds there whatever current it takes, so RS drops the rest: about 31 mA through it, 5 mA of which
+# the load RL takes and the zener the remainder. The ripple's swing changes only how much the zener
+# takes, and the zener's few ohms against RS's 220 leave about a seventieth of the ripple on the
+# output.
+#
+# Click the supply to change its voltage or its ripple: the output barely moves until the supply falls
+# too low to keep the zener in breakdown.
+
+speed 20m
+
+supply   P1   0 0   0 8   12 1 raw 2
+resistor RS   0 0   10 0  220
+zener    DZ   10 8  10 0  5.1
+wire          10 0  16 0
+resistor RL   16 0  16 8  1k
+wire          0 8   16 8
+ground        0 8
+
+label    raw  0 0
+label    out  16 0
+meter    IN   0 0   0 8
+meter    OUT  16 0  16 8

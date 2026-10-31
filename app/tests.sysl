@@ -1,6 +1,6 @@
 @tests
 
-import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc}
+import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator}
 import sysl.math.max
 import sysl.text.Search
 
@@ -333,6 +333,7 @@ private close(got: real, want: real) -> bool = (got - want).abs() <= 1e-9 * max(
 // The generator's oscillator as its panel last handed it to the circuit.
 private osc(m: &Model) -> Oscillator = m.panels[0].instrument match
     SignalGenerator(o) -> o
+    else oscillator(Waveform.Dc, 1.0, 0.0)
 
 @test("clicking a generator opens its panel, set as its line says; clicking anything else closes it")
 panel_opens_and_closes()
@@ -486,3 +487,65 @@ generator_status()
     m.panels[0].choices[0].chosen.set(3)
     m.sync()
     assert(m.panels[0].summary() == "dc -500mV offset")
+
+val SUPPLY = """
+    supply   P1  0 0  0 6  12 1
+    resistor RL  0 0  6 0  100
+    wire         6 0  6 6
+    wire         6 6  0 6
+    ground       0 6
+    """
+
+private supply_bench() -> &Model = model("supply.amber", parse_schematic(SUPPLY).unwrap())
+
+@test("a supply has a panel set as its line says, and its status line shows its mode")
+supply_panel_as_its_line_says()
+    val m = supply_bench()
+
+    assert(m.panels.len() == 1)
+    assert(m.panels[0].title == "P1 power supply")
+    assert(m.panels[0].summary() == "12V 1A")
+    assert(m.panels[0].choices[0].chosen.read() == 0)
+    assert(close(m.panels[0].knobs[0].value(), 12.0))
+    assert(close(m.panels[0].knobs[1].value(), 1.0))
+
+    m.select(0)
+    assert(m.open_panel() == Some(0))
+    assert(status(m).contains("P1 12V 1A power supply in CV: 12V across"))
+
+@test("turning a supply's limit below what the load draws puts it in CC while the clock runs")
+supply_limit_turned_down()
+    val m = supply_bench()
+    val part = m.panels[0].part
+
+    m.run(1e-3, 5)
+    assert(!m.s.current_limited(part))
+
+    // 12 V into 100 Ω would be 120 mA; limited to 50 mA it gives 5 V.
+    m.panels[0].knobs[1].set(50e-3)
+    assert(m.sync())
+    m.run(1e-3, 5)
+    assert(m.s.current_limited(part))
+    assert((m.s.across(part) - 5.0).abs() < 1e-3)
+    m.select(0)
+    assert(status(m).contains("power supply in CC"))
+
+@test("a supply switched to raw on its panel ripples at twice the mains it is set to")
+supply_switched_to_raw()
+    val m = supply_bench()
+    val part = m.panels[0].part
+
+    m.panels[0].choices[0].chosen.set(1)
+    m.panels[0].choices[1].chosen.set(1)
+    m.panels[0].knobs[2].set(2.0)
+    assert(m.sync())
+    assert(m.panels[0].summary() == "12V 1A raw 2V 120Hz")
+
+    val w = m.s.circuit.parts[usize(part)].kind.wave().unwrap()
+
+    assert(close(w.at(0.2 / 120.0), 13.0) && close(w.at(1.0 / 120.0), 11.0))
+
+    // A ripple deeper than twice the voltage is held to it.
+    m.panels[0].knobs[0].set(0.5)
+    m.sync()
+    assert(m.panels[0].summary() == "500mV 1A raw 1V 120Hz")

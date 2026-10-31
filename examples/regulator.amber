@@ -1,0 +1,31 @@
+# A linear regulator: a zener sets a reference and a transistor follows it with the load's current.
+#
+# P1 is a raw supply, 15 V on average with 2 V of ripple at 100 Hz behind an ohm. RF feeds the 5.6 V
+# zener DZ, which holds the base of Q1 steady; Q1's emitter follows its base, a junction's 0.65 to
+# 0.75 V lower, so the output sits near 4.9 V. The load's 50 mA flows through Q1 from the raw supply,
+# and the zener only has to supply Q1's base, a four-hundredth of that, so a small zener holds a large
+# load. CO smooths what is left.
+#
+# The ripple reaches the output only through the zener's few ohms against RF's thousand, and the
+# meter on the output shows ten millivolts of it where the input swings two volts.
+
+speed 20m
+
+supply   P1   0 0   0 10   15 1 raw 2
+wire          0 0   14 0
+resistor RF   8 0   8 5    1k
+zener    DZ   8 10  8 5    5.6
+wire          8 5   12 5
+wire          14 0  14 3
+npn      Q1   14 3  12 5  14 7   2N3904
+wire          14 7  22 7
+capacitor CO  18 7  18 10  100u
+resistor RL   22 7  22 10  100
+wire          0 10  22 10
+ground        0 10
+
+label    raw  0 0
+label    b    12 5
+label    out  22 7
+meter    IN   0 0   0 10
+meter    OUT  22 7  22 10

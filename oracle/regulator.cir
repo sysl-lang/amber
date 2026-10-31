@@ -1,0 +1,21 @@
+Zener-referenced emitter-follower regulator fed from a raw supply with mains ripple
+* examples/regulator.amber as a netlist. The raw supply is its open-circuit voltage, 15 V on average
+* with a 2 V sawtooth at 100 Hz (a fifth of each half cycle charging, the rest discharging), behind its
+* 1 ohm internal resistance.
+VR open 0 PULSE(14 16 0 2m 8m 0 10m)
+RINT open raw 1
+RF raw b 1k
+DZ 0 b dz
+Q1 raw b out q2n3904
+CO out 0 100u
+RL out 0 100
+.model dz D (IS=1e-14 N=1 RS=2 BV=5.6 IBV=5m)
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.tran 0.2m 100m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 0.2m 100m 0 5u
+linearize v(raw) v(b) v(out)
+wrdata regulator.data v(raw) v(b) v(out)
+.endc
+.end

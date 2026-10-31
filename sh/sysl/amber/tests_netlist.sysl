@@ -70,7 +70,7 @@ netlist_diode_sweep()
         .end
         """).unwrap()
 
-    assert(net.circuit.parts[2].kind == Diode(DiodeModel(2e-14, 1.5, 1.0)))
+    assert(net.circuit.parts[2].kind == Diode(DiodeModel(2e-14, 1.5, 1.0, 0.0, 2e-3)))
     assert(net.notes.len() == 1)
     assert(net.notes[0] == "model dmod: cjo is not modelled")
 

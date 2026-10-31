@@ -4,12 +4,12 @@
 // setting in a signal its control writes, draws them beside the board, and says when one has moved.
 // What the settings do is the instrument's: an `Instrument` is told the settings and the time, and puts
 // its part in the circuit right from that moment, without the circuit being switched on again. A
-// signal generator is one instrument; a bench supply would be another variant of `Instrument`, whose
-// knobs are a voltage and a current limit and whose `apply` gives its part those.
+// signal generator is one instrument and a bench power supply another.
 
-import sh.sysl.amber.{Sim, Waveform, Oscillator, WAVEFORMS, oscillator, engineering}
+import sh.sysl.amber.{Sim, Waveform, Oscillator, WAVEFORMS, oscillator, engineering, PowerSupply}
 import sh.sysl.ui.{View, Signal, signal, column, row, text, spacer, slider, radio, button}
 import sysl.buf.{Buf, buf}
+import sysl.math.min
 
 const SLIDER_WIDTH: int = 200
 const LABEL_WIDTH: int = 80
@@ -56,6 +56,8 @@ enum Instrument
     // A signal generator, whose oscillator remembers where it is in its cycle, so a change carries on
     // from there.
     SignalGenerator(osc: Oscillator)
+    // A bench power supply, which remembers its internal resistance, a setting no knob turns.
+    BenchSupply(supply: PowerSupply)
 
 // The controls of one instrument on the bench: element `element` of the schematic, part `part` of the
 // circuit.
@@ -112,6 +114,17 @@ struct Panel
                 o.offset = self.knobs[2].value()
                 s.set_wave(self.part, o.wave())
                 SignalGenerator(o)
+            BenchSupply(p) ->
+                var q = p
+
+                q.raw = self.choices[0].chosen.read() == 1
+                q.mains = if self.choices[1].chosen.read() == 1 then 60.0 else 50.0
+                q.volts = self.knobs[0].value()
+                q.amps = self.knobs[1].value()
+                // A ripple deeper than the voltage would swing below nothing.
+                q.ripple = min(self.knobs[2].value(), 2.0 * q.volts)
+                s.set_supply(self.part, q)
+                BenchSupply(q)
 
         self.applied = self.settings()
 
@@ -122,7 +135,37 @@ struct Panel
             val offset = if o.offset != 0.0 then s" ${engineering(o.offset)}V offset" else ""
 
             if o.form == Waveform.Dc then s"dc${offset}" else s"${form} ${engineering(o.frequency)}Hz ${engineering(o.amplitude)}V${offset}"
+        BenchSupply(p) ->
+            val limit = s"${engineering(p.volts)}V ${engineering(p.amps)}A"
+
+            if p.raw then s"${limit} raw ${engineering(p.ripple)}V ${engineering(2.0 * p.mains)}Hz" else limit
 end Panel
+
+// A bench power supply's panel, starting from `p`: regulated or raw, the mains frequency a raw supply's
+// ripple runs at twice, its voltage on a straight knob up to 30 V, its current limit on a logarithmic
+// one from a milliamp to five amps, and a raw supply's ripple, up to 5 V peak to peak.
+supply_panel(name: string, element: int, part: int, p: PowerSupply) -> Panel
+    var choices: Buf[Choice] = buf()
+    var knobs: Buf[Knob] = buf()
+
+    choices.push(Choice("mode", options(["regulated", "raw"]), signal(if p.raw then 1 else 0)))
+    choices.push(Choice("mains", options(["50Hz", "60Hz"]), signal(if p.mains == 60.0 then 1 else 0)))
+    knobs.push(knob("voltage", "V", 0.0, 30.0, p.volts))
+    knobs.push(knob("limit", "A", 1e-3, 5.0, p.amps, log = true))
+    knobs.push(knob("ripple", "V", 0.0, 5.0, p.ripple))
+
+    var panel = Panel(s"${name} power supply", element, part, BenchSupply(p), choices, knobs, buf())
+
+    panel.applied = panel.settings()
+    panel
+
+private options(words: []string) -> Buf[string]
+    var out: Buf[string] = buf()
+
+    for k in 0..<words.len
+        out.push(words[k])
+
+    out
 
 // A signal generator's panel, starting from `osc`: its waveform, and its frequency and amplitude on
 // logarithmic knobs, from a tenth of a hertz to a megahertz and from a millivolt to ten volts, and its

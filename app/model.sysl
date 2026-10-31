@@ -1,6 +1,6 @@
 // What the viewer knows: the circuit and its simulation, the clock, the meters and what they have read.
 
-import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, Waveform, sim, engineering, parse_generator}
+import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, Supply, Waveform, sim, engineering, parse_generator}
 import sh.sysl.ui_sdl.stop
 import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_C, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
@@ -149,6 +149,7 @@ struct Model
             if self.panels[k].part == part
                 return self.panels[k].instrument match
                     SignalGenerator(o) -> Some(o.form)
+                    BenchSupply(_) -> None
 
         None
 
@@ -311,7 +312,8 @@ model(file: string, sch: Schematic) -> &Model
     m.restart()
     m
 
-// A panel for every part of `sch` with settings to turn: each signal generator, set as its line says.
+// A panel for every part of `sch` with settings to turn: each signal generator and each power supply,
+// set as its line says.
 private panels(sch: Schematic) -> Buf[Panel]
     var out: Buf[Panel] = buf()
 
@@ -323,6 +325,9 @@ private panels(sch: Schematic) -> Buf[Panel]
             val (osc, _) = parse_generator(fields(e.value)).unwrap()
 
             out.push(generator_panel(e.name, int(i), e.part, osc))
+
+        if e.shape == Shape.Supply && sch.circuit.parts[usize(e.part)].kind is Supply(p)
+            out.push(supply_panel(e.name, int(i), e.part, p))
 
     out
 
@@ -417,6 +422,11 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Generator -> m.panel_of(m.selected) match
         Some(k) -> s"${m.panels[k].summary()} signal generator"
         None -> "signal generator"
+    // A bench supply's mode lamp: holding its voltage, or holding its current limit.
+    Supply -> m.panel_of(m.selected) match
+        Some(k) -> s"${m.panels[k].summary()} power supply in ${if m.s.current_limited(e.part) then "CC" else "CV"}"
+        None -> "power supply"
+    Zener -> s"${e.value}V zener"
     Switch -> if m.s.circuit.parts[usize(e.part)].kind == Switch(true) then "closed switch" else "open switch"
     Diode -> "diode"
     Led -> s"${colour_name(e.colour)} LED"

@@ -136,6 +136,11 @@ struct Sim
             VoltageSource(_) -> self.x[usize(self.extra[usize(i)])]
             CurrentSource(w) -> w.at(self.time)
             Generator(w, ohms) -> (self.across(i) - w.at(self.time)) / ohms
+            Supply(s) ->
+                val v = self.junction[usize(2 * i)]
+                val (amps, slope) = supply_line(s, s.wave().at(self.time), v)
+
+                GMIN * self.across(i) - amps - slope * (self.across(i) - v)
             Diode(m) ->
                 val v = self.junction[usize(2 * i)]
 
@@ -239,6 +244,20 @@ struct Sim
             _ -> return
 
         self.corner()
+
+    // Give supply `i` new settings from now on; a corner, as `set_switch` is. A raw supply's ripple
+    // keeps its timing, which runs from the start of time as the mains does.
+    set_supply(*self, i: int, s: PowerSupply)
+        if !(self.circuit.parts[usize(i)].kind is Supply(_)) then return
+
+        self.circuit.parts[usize(i)].kind = Supply(s)
+        self.corner()
+
+    // Whether supply `i` is holding its current limit, its voltage given up to the load: a bench
+    // supply's CC lamp. False for a supply holding its voltage, and for any other part.
+    current_limited(self, i: int) -> bool = self.circuit.parts[usize(i)].kind match
+        Supply(s) -> (s.wave().at(self.time) - self.across(i)) / s.resistance() > s.amps
+        _ -> false
 
     // Find the DC operating point at the present time: every voltage and current with the circuit
     // settled, capacitors charged and inductors' currents steady. Time starts from here.
@@ -527,6 +546,8 @@ struct Sim
                 self.circuit.parts[i].kind match
                     Diode(_) ->
                         if !close(self.junction[2 * i], self.junction_now(int(i))) then settled = false
+                    Supply(_) ->
+                        if !close(self.junction[2 * i], self.across(int(i))) then settled = false
                     Transistor(_) ->
                         val (be, bc) = self.transistor_now(int(i))
 
@@ -549,8 +570,21 @@ struct Sim
             self.circuit.parts[i].kind match
                 Diode(m) ->
                     val nvt = m.n * VT
+                    val now = self.junction_now(int(i))
+                    val was = self.junction[2 * i]
+                    val vcrit = critical(nvt, m.is)
 
-                    self.junction[2 * i] = limit(self.junction_now(int(i)), self.junction[2 * i], nvt, critical(nvt, m.is))
+                    // Reversed near its breakdown, a zener's step is limited on the breakdown's own
+                    // exponential, measured back from its knee, as SPICE limits it.
+                    if m.bv > 0.0
+                        val k = knee(m)
+
+                        if now < min(0.0, -k + 10.0 * nvt)
+                            self.junction[2 * i] = -limit(-(now + k), -(was + k), nvt, vcrit) - k
+                            continue
+
+                    self.junction[2 * i] = limit(now, was, nvt, vcrit)
+                Supply(_) -> self.junction[2 * i] = self.across(int(i))
                 Transistor(m) ->
                     // SPICE limits a transistor's junctions on the bare thermal voltage, whatever their
                     // emission coefficients.
@@ -652,6 +686,16 @@ struct Sim
                     self.conductance(a, b, 1.0 / ohms)
                     self.sys.rhs(a, amps)
                     self.sys.rhs(b, -amps)
+                Supply(s) ->
+                    // The current it delivers on the line touching its curve at `v`: a conductance
+                    // of the line's slope, and the current that line drives into a short circuit.
+                    val v = self.junction[i * 2]
+                    val (amps, slope) = supply_line(s, s.wave().at(self.time), v)
+                    val drive = amps - slope * v
+
+                    self.conductance(a, b, GMIN - slope)
+                    self.sys.rhs(a, drive)
+                    self.sys.rhs(b, -drive)
                 Diode(m) ->
                     val inner = self.extra[i]
                     val anode = if inner >= 0 then inner else a
@@ -760,11 +804,71 @@ private copy(from: *Buf[real], to: *Buf[real])
     for k in 0..<from.len()
         to[k] = from[k]
 
-// The current through a junction at `v`.
-diode_current(m: DiodeModel, v: real) -> real = m.is * ((v / (m.n * VT)).exp() - 1.0)
+// The current through a junction at `v`: forward conduction, and for a zener its breakdown reversed,
+// which is nothing at zero volts.
+diode_current(m: DiodeModel, v: real) -> real
+    val nvt = m.n * VT
+    val forward = m.is * ((v / nvt).exp() - 1.0)
+
+    if m.bv <= 0.0 then return forward
+
+    val k = knee(m)
+
+    forward - m.is * ((-(v + k) / nvt).exp() - (-k / nvt).exp())
 
 // The slope of the junction's curve at `v`.
-private diode_conductance(m: DiodeModel, v: real) -> real = m.is / (m.n * VT) * (v / (m.n * VT)).exp()
+private diode_conductance(m: DiodeModel, v: real) -> real
+    val nvt = m.n * VT
+    val forward = m.is / nvt * (v / nvt).exp()
+
+    if m.bv <= 0.0 then return forward
+
+    forward + m.is / nvt * (-(v + knee(m)) / nvt).exp()
+
+// Where a zener's breakdown exponential is centred: the reversed voltage at which it would carry the
+// saturation current, found as SPICE finds it, so that at `bv` reversed it carries `ibv`. Where `ibv`
+// is too small to reach, the knee is `bv` itself.
+private[amber] knee(m: DiodeModel) -> real
+    val nvt = m.n * VT
+
+    if m.ibv < m.is * m.bv / VT then return m.bv
+
+    var k = m.bv - nvt * (1.0 + m.ibv / m.is).ln()
+
+    for _ in 0..<4
+        k = m.bv - nvt * (m.ibv / m.is + 1.0 - k / VT).ln()
+
+    k
+
+// The current a supply delivers out of its `+` terminal with `v` across it, when it would put out
+// `open` with nothing connected, and the slope of that current against `v`.
+//
+// **It is the smaller of what its voltage would drive through its resistance and its current limit,
+// with the corner between them rounded** over a thousandth of the limit, so the curve and its slope are
+// continuous. Delivered current against voltage is then falling and bent only one way, and Newton's
+// method on such a curve cannot circle: from its second step on it closes on the answer from one side.
+// A hard corner would leave the slope jumping between the two modes, and the solution could swap
+// between them for ever without settling.
+private[amber] supply_line(s: PowerSupply, open: real, v: real) -> (real, real)
+    val r = s.resistance()
+    val drive = (open - v) / r
+    val round = SUPPLY_ROUNDING * s.amps
+    val z = (s.amps - drive) / round
+
+    // The smaller of `drive` and the limit, less `round · ln(1 + e^−|z|)`, and the slope through
+    // the logistic function, each written so the exponential cannot overflow.
+    if z >= 0.0
+        val e = (-z).exp()
+
+        return (drive - round * (1.0 + e).ln(), -1.0 / (r * (1.0 + e)))
+
+    val e = z.exp()
+
+    (s.amps - round * (1.0 + e).ln(), -e / (r * (1.0 + e)))
+
+// How far round a supply's corner between holding its voltage and holding its current is, as a part of
+// its current limit.
+const SUPPLY_ROUNDING: real = 1e-3
 
 // Whether a junction voltage moved so little between linearising and solving that it is settled.
 private close(was: real, now: real) -> bool = (now - was).abs() <= 1e-6 * max(now.abs(), was.abs()) + 1e-9

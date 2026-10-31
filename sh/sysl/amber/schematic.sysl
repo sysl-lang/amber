@@ -27,9 +27,11 @@ import sysl.text.{Search, fields, split}
 // | `source` | two, `+` first | a wave, below |
 // | `current` | two; the current flows out of the second | amps, or a wave |
 // | `gen` | two: output, then return | a signal generator's settings, below |
+// | `supply` | two, `+` first | a bench power supply's settings, below |
 // | `switch` | two | `open` (the default) or `closed` |
 // | `diode` | two, anode first | — |
 // | `led` | two, anode first | `red` (the default), `yellow`, `green` or `blue` |
+// | `zener` | two, anode first | the voltage it breaks down at, reversed |
 // | `npn`, `pnp` | three: collector, base, emitter | a model: `2N3904` (an npn's, the default) or `2N3906` (a pnp's) |
 // | `nmos`, `pmos` | three: drain, gate, source | a model: `2N7000` (an nmos's, the default) or `BS250` (a pmos's) |
 // | `ground` | one | — |
@@ -63,6 +65,14 @@ import sysl.text.{Search, fields, split}
 //     gen      G1  0 4  0 8  sine 1k 10m
 //     gen      G2  0 4  0 8  square 50 2.5 2.5 600
 //
+// A bench power supply is a voltage and a current limit, regulated: it holds the voltage until the load
+// would draw more than the limit, then holds the limit. `raw` makes it unregulated, a transformer,
+// rectifier and capacitor: the voltage on average, a ripple peak to peak at twice the mains frequency
+// (50 Hz, or 60), and an internal resistance (1 Ω if not given) it sags behind:
+//
+//     supply   P1  0 4  0 8  12 1
+//     supply   P2  0 4  0 8  15 500m raw 2 60 1.5
+//
 // and a line `speed <seconds>` says how many seconds of the circuit's time a viewer should show in each
 // second of its own. `#` starts a comment, and a blank line is nothing.
 //
@@ -81,9 +91,11 @@ enum Shape: u8
     Source
     CurrentSource
     Generator
+    Supply
     Switch
     Diode
     Led
+    Zener
     Npn
     Pnp
     Nmos
@@ -406,7 +418,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     val kind = if shape.is_part() then Some(part_kind(shape, words[0], rest, colour)?) else None
     val most = shape match
         Wire | Ground | Label | Meter | Diode -> 0
-        Source | CurrentSource | Generator -> rest.len
+        Source | CurrentSource | Generator | Supply -> rest.len
         _ -> 1
 
     if rest.len > usize(most) then return Err(s"'${rest[usize(most)]}' is more than ${one} takes")
@@ -452,9 +464,11 @@ private shape_named(word: string) -> Result[Shape, string] = word match
     "source" -> Ok(Source)
     "current" -> Ok(CurrentSource)
     "gen" -> Ok(Generator)
+    "supply" -> Ok(Supply)
     "switch" -> Ok(Switch)
     "diode" -> Ok(Diode)
     "led" -> Ok(Led)
+    "zener" -> Ok(Zener)
     "npn" -> Ok(Npn)
     "pnp" -> Ok(Pnp)
     "nmos" -> Ok(Nmos)
@@ -474,8 +488,8 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 // The part an element is, from the words after its points.
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
     val optional = shape match
-        // A generator says for itself what it is missing.
-        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator -> true
+        // A generator and a supply say for themselves what they are missing.
+        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply -> true
         _ -> false
 
     if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
@@ -491,6 +505,7 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
             val (osc, ohms) = parse_generator(rest)?
 
             Ok(Generator(osc.wave(), ohms))
+        Supply -> Ok(Supply(parse_supply(rest)?))
         Switch ->
             if rest.len == 0 then return Ok(Switch(false))
 
@@ -500,6 +515,7 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
                 _ -> Err(s"'${rest[0]}' is not a switch's state: open or closed")
         Diode -> Ok(Diode(SILICON))
         Led -> Ok(Diode(colour.model()))
+        Zener -> Ok(Diode(zener_model(positive(rest[0], "a breakdown voltage")?)))
         Npn | Pnp -> Ok(Transistor(transistor_model(shape, if rest.len == 0 then default_model(shape) else rest[0])?))
         Nmos | Pmos -> Ok(Mosfet(mosfet_model(shape, if rest.len == 0 then default_model(shape) else rest[0])?, DEFAULT_W, DEFAULT_L))
         _ -> Err(s"${a_word(kind_word)} is not a part")
@@ -607,6 +623,38 @@ parse_generator(words: []string) -> Result[(Oscillator, real), string]
     val ohms = if words.len > 4 then positive(words[4], "an output resistance")? else 50.0
 
     Ok((oscillator(form, frequency, amplitude, offset), ohms))
+
+// A bench supply's settings from the words after its points: `12 1` for 12 V regulated, limited to an
+// amp, or `15 500m raw 2` for a raw supply averaging 15 V with 2 V of ripple, then perhaps the mains
+// frequency, 50 or 60 Hz (50 if not given), and perhaps an internal resistance (1 Ω if not given).
+parse_supply(words: []string) -> Result[PowerSupply, string]
+    if words.len < 2 then return Err("a supply takes a voltage, a current limit, and perhaps raw with a ripple, a mains frequency and an internal resistance")
+
+    val volts = parse_value(words[0])?
+
+    if volts < 0.0 then return Err("a supply's voltage is not below zero")
+
+    val amps = positive(words[1], "a current limit")?
+
+    if words.len == 2 then return Ok(regulated(volts, amps))
+
+    if words[2] != "raw" then return Err(s"'${words[2]}' is not a supply's mode: raw, or nothing for regulated")
+
+    if words.len < 4 then return Err("a raw supply takes a ripple, and perhaps a mains frequency and an internal resistance")
+
+    if words.len > 6 then return Err(s"'${words[6]}' is more than a supply takes")
+
+    val ripple = parse_value(words[3])?
+
+    if ripple < 0.0 || ripple > 2.0 * volts then return Err("a ripple is between zero and twice the voltage")
+
+    val mains = if words.len > 4 then parse_value(words[4])? else 50.0
+
+    if mains != 50.0 && mains != 60.0 then return Err("a mains frequency is 50 or 60")
+
+    val ohms = if words.len > 5 then positive(words[5], "an internal resistance")? else 1.0
+
+    Ok(raw_supply(volts, amps, ripple, mains, ohms))
 
 private parse_coordinate(word: string) -> Result[int, string]
     val b = word.bytes

@@ -76,9 +76,32 @@ the state it was in.
 `Choice`s (a row of options over a `Signal[int]`) and `Knob`s (a slider over a `Signal[real]`,
 logarithmic or straight), drawn beside the scope while its part is selected. Every frame asks each
 panel whether a setting moved since it was last applied, and if one did the panel's `Instrument` puts
-its part in the circuit from the present time. A bench supply is another `Instrument` variant with
-its own knobs (voltage, current limit) and its own arm of `apply`; the panel, its drawing and the
-frame's sync take it as they are.
+its part in the circuit from the present time. The bench supply is the second `Instrument` variant,
+with its own choices (regulated or raw, 50 or 60 Hz), knobs (voltage, current limit, ripple) and arm
+of `apply`; the panel, its drawing and the frame's sync took it as they were.
+
+**A bench supply is a part of its own, `Supply(PowerSupply)`, stamped as the current it delivers
+against the voltage across it** — no node or unknown of its own, its operating voltage kept in the
+part's junction slot as a diode's is, so its current is read off the line the system balanced. The
+current is the smaller of what its open-circuit voltage drives through its resistance and its limit,
+`min((e − v) / r, I)`, with the corner rounded by a softplus over a thousandth of `I`: the curve and
+its slope (a logistic between `−1/r` and 0) are continuous, falling and concave, so Newton's method
+on it cannot circle between the two modes, as it can on a hard corner whose slope jumps; `r` is a
+milliohm regulated, so CV holds to microvolts and the rounding moves the corner by microvolts.
+`current_limited` is the CC lamp: the CV characteristic would exceed the limit.
+
+**Raw mode is the same curve with a different `e` and `r`**: `e` is a `Pulse` sawtooth at twice the
+mains (a fifth of each half cycle charging, the rest discharging — a capacitor-input filter's shape),
+averaging the set voltage with the set ripple peak to peak, and `r` the internal resistance, so the
+output sags under load. Being a `Pulse`, the solver lands a step on each corner, and a netlist writes
+it exactly as `PULSE` and a resistor, which is how the regulator example is held to ngspice. The
+ripple does not grow with the load, as a real filter capacitor's would; it is the ripple at the load
+the supply is set for.
+
+**A zener is a diode with SPICE's breakdown**: `BV` and `IBV` on `DiodeModel`, a second exponential
+`−is · exp(−(v + knee) / (n · Vt))` whose knee SPICE's iteration places so the current at `−BV` is
+`IBV`, summed smoothly with the forward one, and junction limiting on that exponential measured back
+from the knee when the junction is reversed past it, as ngspice limits it.
 
 ## Roadmap
 
@@ -100,8 +123,9 @@ Each is a piece of work of its own, in this order.
    MOSFET in schematics and the viewer, with a CMOS inverter lighting an LED.~~
    ~~**Bench instruments**: a signal generator (sine, square, triangle, dc; frequency, amplitude,
    offset, output resistance) in schematics, with a panel in the viewer that retunes it while the
-   clock runs, and a common-emitter amplifier held to ngspice;~~ next, a bench supply with an
-   adjustable voltage and a current limit on the same panel.
+   clock runs, and a common-emitter amplifier held to ngspice; a bench power supply (CV/CC, and raw
+   with mains ripple and sag) on the same panel, a zener (BV, IBV) held to ngspice, and a zener shunt
+   regulator and an emitter-follower regulator, the latter held to ngspice.~~
 5. **DC sweep and AC analysis** (complex MNA, Bode plot in the viewer).
 6. **Sparse LU** with a symbolic factorisation reused across iterations and steps.
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save.

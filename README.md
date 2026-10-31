@@ -29,6 +29,10 @@ flows, faster for more current.
   reaches the circuit at once, while its clock runs: nothing restarts, and the wave carries on from
   where it was in its cycle, as a bench generator's does. `close`, or a click anywhere else, puts the
   panel away; a restart keeps its settings.
+- **Click a power supply** for its panel: regulated or raw, 50 or 60 Hz mains, and sliders for its
+  voltage (to 30 V), its current limit (a milliamp to five amps) and a raw supply's ripple. Beside
+  the supply its reading — volts, amps, and `CV` in green or `CC` in red — shows which it is holding,
+  as does the lamp between its posts.
 - `space` pauses, `+` and `-` change the speed, `r` switches the circuit on again from empty, `v`
   toggles the voltage beside every part, `c` clears the meters, Escape quits.
 
@@ -41,7 +45,9 @@ switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 230 mV, upside down;
-turn the generator up past about 150 mV and the output clips).
+turn the generator up past about 150 mV and the output clips), `zener` (a raw supply's 2 V of ripple
+cut to about 27 mV by a 5.1 V zener) and `regulator` (a zener-referenced emitter follower: 4.87 V out
+of a rippling 15 V, the ripple cut two-hundredfold).
 
 ## Schematics
 
@@ -61,8 +67,8 @@ meter     OUT 6 0  6 6                     # red lead first
 ```
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
-`gen` (a signal generator, below), `switch` (`open` or `closed`), `diode`, `led` (`red`, `yellow`,
-`green`, `blue`), and the
+`gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
+`closed`), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default). Also `wire`,
 `ground`, `label` (names a node) and `meter`. Waves: `dc 5`, `sine 5 1k [offset]`,
@@ -79,6 +85,18 @@ puts out its offset, keeping its frequency and amplitude for when it is switched
 ```
 gen       G1  2 5  2 10  sine 1k 10m             # output, return; 10 mV at 1 kHz from 50 Ω
 gen       G2  0 0  0 4   square 50 2.5 2.5 600   # 0 to 5 V at 50 Hz from 600 Ω
+```
+
+A bench power supply is `supply <name> <+> <−> <volts> <amps> [raw <ripple> [50|60 [<ohms>]]]`.
+Regulated, it holds its voltage until the load would draw more than its current limit, then holds the
+limit and lets the voltage fall (CV and CC). `raw` makes it what a transformer, rectifier and
+capacitor give: the voltage on average, a sawtooth ripple peak to peak at twice the mains frequency
+(50 Hz unless it says 60), behind an internal resistance (1 Ω unless it says) it sags across.
+
+```
+supply    P1  0 0  0 8   12 1                    # 12 V, limited to 1 A
+supply    P2  0 0  0 8   15 500m raw 2 60 1.5    # 15 V raw, 2 V of 120 Hz ripple, 1.5 Ω
+zener     DZ  6 8  6 0   5.1                     # anode, cathode; breaks down at 5.1 V
 ```
 
 A transistor is placed by three points — collector, base, emitter — with its base a square or more
@@ -106,7 +124,7 @@ reads a SPICE netlist — the format published circuits and every other simulato
 analyses and prints their tables. The subset: `R`, `C` and `L` (with `IC=`), `V` and `I` sources
 (DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; an `AC` part is set aside; a triangle is a
 `PULSE` with no top, `PULSE(low high 0 T/2 T/2 0 T)`), `D` with `.model … D`
-(`IS`, `N`, `RS`, and an area), `Q` bipolar transistors (collector, base, emitter, an optional
+(`IS`, `N`, `RS`, `BV` and `IBV` for a zener's breakdown, and an area), `Q` bipolar transistors (collector, base, emitter, an optional
 substrate, a model and an area) with `.model … NPN` or `PNP` (`IS`, `BF`, `BR`, `NF`, `NR`, `VAF`,
 `VAR`), `M` MOSFETs (drain, gate, source, bulk, a model, and `L=`, `W=` and `M=`, SPICE's 100 µm when
 left off) with `.model … NMOS` or `PMOS` at level 1 (`VTO`, `KP`, `LAMBDA`), `.op`, `.tran` (with
@@ -160,7 +178,9 @@ runs it to a time, landing on it exactly; `set_switch` and `set_wave` change it 
 incremental shape is what lets a program — an emulated microcontroller, say — drive it as it runs.
 `Generator(wave, ohms)` is a bench signal generator, its wave behind an output resistance, and an
 `Oscillator` (`oscillator(Waveform.Sine, 1000.0, 10e-3)`) makes its wave and, `retuned` at the moment
-of a change, carries its phase across it. It
+of a change, carries its phase across it. `Supply(regulated(12.0, 1.0))` or
+`Supply(raw_supply(15.0, 1.0, 2.0))` is a bench power supply, changed with `set_supply` and read with
+`current_limited`; `zener_model(5.1)` is a zener. It
 needs nothing but an allocator. What is planned is in [DESIGN.md](DESIGN.md).
 
 ```

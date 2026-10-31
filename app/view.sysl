@@ -6,7 +6,7 @@
 // board, draws the lines into it, hands it to the canvas as an image, and writes the labels over it
 // through the canvas, in the window's own font.
 
-import sh.sysl.amber.{Element, Shape, Colour, Wave, Waveform, Pulse, Sine, Switch}
+import sh.sysl.amber.{Element, Shape, Colour, Wave, Waveform, Pulse, Sine, Switch, engineering}
 import sh.sysl.ui.{View, Canvas, Size, Rect, Image, column, row, text, spacer}
 import sh.sysl.plutovg
 import sysl.buf.{Buf, buf}
@@ -21,6 +21,13 @@ const RED_LEAD: u32 = 0xE0483E
 const BLACK_LEAD: u32 = 0x9AA0AA
 const SELECTED: u32 = 0x6CB4FF
 const CURRENT: u32 = 0xFFE680
+// A bench supply's display, and its mode lamp holding its voltage and holding its current.
+const DISPLAY: u32 = 0x1E2128
+const CV_LAMP: u32 = 0x5DDB6B
+const CC_LAMP: u32 = 0xFF5040
+// How far a bench supply's case reaches either side of its middle, and above and below it.
+const SUPPLY_W: real = 0.8
+const SUPPLY_H: real = 0.6
 
 // A transistor's symbol, in squares: the base's bar stands BAR off the line from collector to emitter,
 // the slants leave it SLANT either side of its middle, and they meet the line BEND either side of the
@@ -47,11 +54,24 @@ screen(m: &Model) -> &View =
         m.open_panel() match
             Some(k) -> row([scope(m).flex(), panel_view(m.panels[k], () -> m.select(-1))])
             None -> scope(m),
-        row([text(status(m)), spacer(), text(if m.panels.len() > 0 then INSTRUMENT_HINT else HINT)], 10).padding(8),
+        row([text(status(m)), spacer(), text(hint(m))], 10).padding(8),
     ])
 
 const HINT: string = "click two points: a meter · click a switch to flip it · space pause · +/- speed · r restart · v values · c clear"
 const INSTRUMENT_HINT: string = "click two points: a meter · click a generator to tune it · space pause · +/- speed · r restart · v values · c clear"
+const SUPPLY_HINT: string = "click two points: a meter · click a supply to set it · space pause · +/- speed · r restart · v values · c clear"
+
+// The line of hints under the board, naming the instrument there is to click.
+private hint(m: &Model) -> string
+    var generator = false
+    var supply = false
+
+    for k in 0..<m.panels.len()
+        m.panels[k].instrument match
+            SignalGenerator(_) -> generator = true
+            BenchSupply(_) -> supply = true
+
+    if generator then INSTRUMENT_HINT elif supply then SUPPLY_HINT else HINT
 
 // --- The board --------------------------------------------------------------------------------------
 
@@ -463,6 +483,7 @@ private struct Pen
                 f.line(mid - radius - 0.3, 0.32, mid - radius - 0.1, 0.32)
                 f.line(mid - radius - 0.2, 0.22, mid - radius - 0.2, 0.42)
             Generator -> self.generator(f, (s0 + s1) / 2.0, s0, s1, m.waveform_of(e.part), hot)
+            Supply -> self.supply(f, (s0 + s1) / 2.0, s0, s1, m.s.current_limited(e.part), hot)
             Battery ->
                 val mid = (s0 + s1) / 2.0
 
@@ -492,7 +513,7 @@ private struct Pen
                 f.to(mid + radius * 0.2, -0.18)
                 self.vg.close_path()
                 self.vg.fill()
-            Diode | Led ->
+            Diode | Led | Zener ->
                 val mid = (s0 + s1) / 2.0
 
                 if e.shape == Led then self.glow(f, mid, e)
@@ -508,6 +529,11 @@ private struct Pen
                 self.vg.close_path()
                 self.vg.stroke()
                 f.line(mid + 0.3, -0.32, mid + 0.3, 0.32)
+
+                // A zener's bar has its ends bent, one each way.
+                if e.shape == Zener
+                    f.line(mid + 0.3, -0.32, mid + 0.18, -0.4)
+                    f.line(mid + 0.3, 0.32, mid + 0.42, 0.4)
 
                 if e.shape == Led
                     // Two arrows leaving it: light.
@@ -597,6 +623,41 @@ private struct Pen
         self.width(2.0)
         f.line(s0 - 0.05, 0.32, s0 + 0.15, 0.32)
         f.line(s0 + 0.05, 0.22, s0 + 0.05, 0.42)
+
+    // A bench power supply: a wider case than a generator's, standing upright on its lead, with a dark
+    // display across its top (its reading is written beside it, with its name), its `+`
+    // and `−` posts, red and black, and between them its mode lamp: green holding its voltage (CV),
+    // red holding its current limit (CC).
+    supply(self, f: Frame, mid: real, s0: real, s1: real, limited: bool, hot: bool)
+        f.line(s0, 0.0, s1, 0.0)
+
+        set(self.vg, BOARD)
+        self.outline(f, mid, SUPPLY_W, SUPPLY_H)
+        self.vg.fill()
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+        self.outline(f, mid, SUPPLY_W, SUPPLY_H)
+        self.vg.stroke()
+
+        // The display.
+        set(self.vg, DISPLAY)
+        self.vg.begin()
+        f.move_across(mid, -SUPPLY_W + 0.1, -SUPPLY_H + 0.1)
+        f.to_across(mid, SUPPLY_W - 0.1, -SUPPLY_H + 0.1)
+        f.to_across(mid, SUPPLY_W - 0.1, 0.12)
+        f.to_across(mid, -SUPPLY_W + 0.1, 0.12)
+        self.vg.close_path()
+        self.vg.fill()
+
+        val x = f.gx(mid, 0.0)
+        val y = f.gy(mid, 0.0) + 0.38
+
+        set(self.vg, RED_LEAD)
+        self.dot(x - 0.5, y, 4.0)
+        set(self.vg, BLACK_LEAD)
+        self.dot(x + 0.5, y, 4.0)
+        set(self.vg, if limited then CC_LAMP else CV_LAMP)
+        self.dot(x, y, 3.5)
 
     // The outline of an instrument's case, `w` either side of the middle of a part and `h` above and
     // below it, upright on the screen.
@@ -922,7 +983,10 @@ private labels(m: &Model, c: *Canvas, at: Place)
         val my = at.y((real(e.y1) + real(e.y2)) / 2.0)
         val across = e.y1 == e.y2
         // Beside a vertical part, under a horizontal one.
-        val (lx, ly) = if across then (mx, my + 0.5 * at.unit) else (mx + 0.75 * at.unit, my - 18.0)
+        // Clear of a supply's case, which is wider and taller than a symbol.
+        val clear = if e.shape == Supply then SUPPLY_W + 0.15 else 0.75
+        val (lx, ly) = if across then (mx, my + (if e.shape == Supply then SUPPLY_H + 0.15 else 0.5) * at.unit) else (mx + clear * at.unit, my - 18.0)
+
         val value = e.shape match
             Resistor -> s"${e.value}Ω"
             Capacitor -> s"${e.value}F"
@@ -930,12 +994,17 @@ private labels(m: &Model, c: *Canvas, at: Place)
             Led -> colour_name(e.colour)
             Switch -> ""
             // What it is set to now, which its panel may have changed.
-            Generator -> m.panel_of(int(i)) match
+            Generator | Supply -> m.panel_of(int(i)) match
                 Some(k) -> m.panels[k].summary()
                 None -> e.value
+            Zener -> s"${e.value}V"
             _ -> e.value
 
         put(c, lx, ly, s"${e.name} ${value}", INK, across)
+
+        if e.shape == Supply
+            readout(m, c, lx, ly + 18.0, e.part, across)
+            continue
 
         if m.values && m.trouble == "" && e.shape != Battery
             put(c, lx, ly + 18.0, volts(m.s.across(e.part)), 0xFFB030, across)
@@ -959,6 +1028,17 @@ private transistor_label(m: &Model, c: *Canvas, at: Place, e: Element)
 
     if m.values && m.trouble == ""
         put(c, left, top + 18.0, volts(m.s.across(e.part)), 0xFFB030, !upright)
+
+// A bench supply's readout under its name, whether or not values are on, as its front panel always
+// shows it: the voltage across its posts, the current it is delivering, and the mode it is in, in its
+// lamp's colour.
+private readout(m: &Model, c: *Canvas, x: real, y: real, part: int, centred: bool)
+    if m.trouble != "" then return
+
+    val limited = m.s.current_limited(part)
+    val text = s"${volts(m.s.across(part))} ${engineering(-m.s.current(part))}A ${if limited then "CC" else "CV"}"
+
+    put(c, x, y, text, if limited then CC_LAMP else CV_LAMP, centred)
 
 private dial(m: &Model, c: *Canvas, at: Place, mt: Meter)
     val (cx, cy) = meter_centre(m, mt.x1, mt.y1, mt.x2, mt.y2)

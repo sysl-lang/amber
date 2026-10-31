@@ -1,0 +1,403 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, min}
+import sysl.raw.str_cast
+
+// The bench power supply, regulated and raw; the zener's breakdown; and the two regulator examples
+// they make.
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// The lowest and highest voltage at `node`, and its average, sampled every 20 µs over `span` seconds
+// from where `s` is.
+private swing(s: *Sim, node: string, span: real) -> (real, real, real)
+    val from = s.time
+    var lo = 1e300
+    var hi = -1e300
+    var sum = 0.0
+    var n = 0
+
+    for k in 1..int(span / 20e-6)
+        s.advance_to(from + real(k) * 20e-6).unwrap()
+
+        val v = s.voltage_at(node)
+
+        lo = min(lo, v)
+        hi = max(hi, v)
+        sum += v
+        n += 1
+
+    (lo, hi, sum / real(n))
+
+// A supply of settings `p` across a resistor of `load`.
+private loaded(p: PowerSupply, load: real) -> Sim
+    var c = circuit()
+
+    c.connect("P1", Supply(p), "out", "0")
+    c.connect("RL", Resistor(load), "out", "0")
+
+    sim(c)
+
+// --- Regulated: constant voltage, constant current ---------------------------------------------------
+
+@test("a regulated supply holds its voltage while the load draws less than its limit")
+supply_constant_voltage()
+    var s = loaded(regulated(12.0, 1.0), 1000.0)
+
+    s.operating_point().unwrap()
+    // Behind its milliohm, 12 mA costs it 12 µV.
+    assert(near(s.across(0), 12.0, 20e-6))
+    // Delivering, as a battery does: the current leaves by `+`.
+    assert(near(s.current(0), -12e-3, 1e-7))
+    assert(near(s.current(1), 12e-3, 1e-7))
+    assert(!s.current_limited(0))
+
+@test("a regulated supply holds its current limit when the load would draw more, and its voltage falls")
+supply_constant_current()
+    var s = loaded(regulated(12.0, 0.1), 50.0)
+
+    s.operating_point().unwrap()
+    // 100 mA through 50 Ω is 5 V, not 12.
+    assert(near(s.current(0), -0.1, 1e-9))
+    assert(near(s.across(0), 5.0, 1e-6))
+    assert(near(s.power(0), -0.5, 1e-6))
+    assert(s.current_limited(0))
+
+@test("a supply's voltage follows the lower of its setting and its limit through the load, across the corner")
+supply_corner()
+    // 10 V and 100 mA meet at 100 Ω: below it the supply is limiting, above it holding its voltage.
+    for load in [10.0, 50.0, 90.0, 99.0, 99.9, 100.0, 100.1, 101.0, 110.0, 200.0, 1e6]
+        var s = loaded(regulated(10.0, 0.1), load)
+
+        s.operating_point().unwrap()
+
+        val want = min(10.0, 0.1 * load)
+        // The corner is rounded over a thousandth of the limit, so right at it the supply gives up about
+        // a tenth of a millivolt, and is on the edge of either mode.
+        assert(near(s.across(0), want, 1e-3))
+
+        if load != 100.0 then assert(s.current_limited(0) == (load < 100.0))
+
+@test("a current limit drives an LED with no resistor: the supply goes to CC and its voltage drops to the LED's")
+supply_drives_led_at_its_limit()
+    var c = circuit()
+
+    // 9 V straight across a red LED would burn it; limited to 20 mA it lights.
+    c.connect("P1", Supply(regulated(9.0, 20e-3)), "a", "0")
+    c.connect("D1", Diode(RED_LED), "a", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(s.current_limited(0))
+    assert(near(s.current(1), 20e-3, 1e-7))
+    assert(near(s.current(0), -20e-3, 1e-7))
+    // The LED's own voltage at 20 mA, nowhere near 9 V.
+    assert(s.across(0) > 1.8 && s.across(0) < 2.2)
+    assert(near(s.across(0), s.across(1), 1e-12))
+
+    // Turned up to 50 mA, the LED takes all of it and a little more voltage.
+    val before = s.across(0)
+
+    s.set_supply(0, regulated(9.0, 50e-3))
+    s.operating_point().unwrap()
+    assert(near(s.current(1), 50e-3, 1e-7))
+    assert(s.across(0) > before)
+
+@test("a supply changed while the clock runs is followed from that moment, and a lower limit puts it in CC")
+supply_changed_mid_run()
+    var c = circuit()
+
+    c.connect("P1", Supply(regulated(5.0, 1.0)), "a", "0")
+    c.connect("R1", Resistor(100.0), "a", "b")
+    c.connect("C1", Capacitor(10e-6), "b", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s.advance_to(1e-3).unwrap()
+    assert(near(s.voltage_at("b"), 5.0, 1e-3))
+
+    // Up to 10 V: charging again through 100 Ω, at first 50 mA.
+    s.set_supply(0, regulated(10.0, 1.0))
+    assert(s.circuit.parts[0].kind == Supply(regulated(10.0, 1.0)))
+    s.advance_to(1e-3 + 1e-6).unwrap()
+    assert(near(s.current(1), 50e-3, 1e-3))
+    assert(!s.current_limited(0))
+
+    // Limited to 10 mA, it charges the capacitor at a steady 10 mA, 1 V a millisecond, a ramp
+    // rather than an RC curve.
+    s.set_supply(0, regulated(10.0, 10e-3))
+    s.advance_to(1.1e-3).unwrap()
+    assert(s.current_limited(0))
+
+    val v0 = s.voltage_at("b")
+
+    s.advance_to(2.1e-3).unwrap()
+    assert(near(s.voltage_at("b") - v0, 1.0, 1e-3))
+    assert(near(s.current(1), 10e-3, 1e-7))
+
+    // A supply's settings go only to a supply.
+    s.set_supply(1, regulated(1.0, 1.0))
+    assert(s.circuit.parts[1].kind == Resistor(100.0))
+
+@test("a supply short-circuited delivers its limit into nothing at all")
+supply_short_circuit()
+    var s = loaded(regulated(12.0, 2.0), 1e-3)
+
+    s.operating_point().unwrap()
+    assert(near(s.current(0), -2.0, 1e-6))
+    assert(near(s.across(0), 2e-3, 1e-8))
+    assert(s.current_limited(0))
+
+// --- Raw: ripple and sag ---------------------------------------------------------------------------
+
+@test("a raw supply's ripple is a sawtooth at twice the mains: a fifth of each half cycle charging")
+raw_supply_wave()
+    for mains in [50.0, 60.0]
+        val p = raw_supply(12.0, 1.0, 2.0, mains)
+        val w = p.wave()
+        val half = 0.5 / mains
+
+        assert(w == Pulse(11.0, 13.0, 0.0, 0.2 * half, half - 0.2 * half, 0.0, half))
+        // The trough at the start of each half cycle, the peak a fifth of the way in, and halfway down
+        // the long discharge from it.
+        assert(near(w.at(3.0 * half), 11.0, 1e-9))
+        assert(near(w.at(3.2 * half), 13.0, 1e-9))
+        assert(near(w.at(3.6 * half), 12.0, 1e-9))
+
+    // No ripple, or regulated, is a steady level.
+    assert(raw_supply(12.0, 1.0, 0.0).wave() == Dc(12.0))
+    assert(regulated(12.0, 1.0).wave() == Dc(12.0))
+    assert(regulated(12.0, 1.0).resistance() == 1e-3)
+    assert(raw_supply(12.0, 1.0, 2.0, ohms = 3.0).resistance() == 3.0)
+
+@test("a raw supply's ripple runs at twice the mains frequency, through a circuit")
+raw_supply_ripple_frequency()
+    for mains in [50.0, 60.0]
+        var s = loaded(raw_supply(12.0, 1.0, 2.0, mains), 1e6)
+        var peaks: Buf[real] = buf()
+        var last = 0.0
+        var rising = false
+
+        s.operating_point().unwrap()
+
+        // A peak is where the voltage stops rising: one each ripple period.
+        for k in 1..2000
+            s.advance_to(real(k) * 20e-6).unwrap()
+
+            val v = s.across(0)
+
+            if rising && v < last then peaks.push(s.time)
+
+            rising = v > last
+            last = v
+
+        assert(peaks.len() >= 3)
+
+        for k in 1..<peaks.len()
+            assert(near(peaks[k] - peaks[k - 1], 0.5 / mains, 40e-6))
+
+@test("a raw supply sags behind its internal resistance as the load draws more")
+raw_supply_sags()
+    for (ohms, load) in [(1.0, 10.0), (1.0, 1e6), (3.0, 10.0)]
+        var s = loaded(raw_supply(12.0, 5.0, 0.0, ohms = ohms), load)
+
+        s.operating_point().unwrap()
+        assert(near(s.across(0), 12.0 * load / (load + ohms), 1e-6))
+        assert(!s.current_limited(0))
+
+    // Its current limit holds in raw mode too.
+    var s = loaded(raw_supply(12.0, 0.5, 0.0), 10.0)
+
+    s.operating_point().unwrap()
+    assert(near(s.current(0), -0.5, 1e-6))
+    assert(s.current_limited(0))
+
+@test("a raw supply is its sawtooth behind its internal resistance: the same circuit as a pulse source and a resistor")
+raw_supply_is_a_pulse_behind_a_resistor()
+    val p = raw_supply(15.0, 1.0, 2.0, 60.0, 1.5)
+    var a = circuit()
+    var b = circuit()
+
+    a.connect("P1", Supply(p), "raw", "0")
+    a.connect("RL", Resistor(47.0), "raw", "x")
+    a.connect("C1", Capacitor(470e-6), "x", "0")
+    b.connect("V1", VoltageSource(p.wave()), "open", "0")
+    b.connect("RI", Resistor(1.5), "open", "raw")
+    b.connect("RL", Resistor(47.0), "raw", "x")
+    b.connect("C1", Capacitor(470e-6), "x", "0")
+
+    var sa = sim(a)
+    var sb = sim(b)
+
+    sa.operating_point().unwrap()
+    sb.operating_point().unwrap()
+
+    for k in 1..60
+        sa.advance_to(real(k) * 0.5e-3).unwrap()
+        sb.advance_to(real(k) * 0.5e-3).unwrap()
+        assert(near(sa.voltage_at("raw"), sb.voltage_at("raw"), 1e-3))
+        assert(near(sa.voltage_at("x"), sb.voltage_at("x"), 1e-3))
+
+// --- Schematic lines -------------------------------------------------------------------------------
+
+@test("a supply line reads its voltage and limit, and raw with its ripple, mains and internal resistance")
+schematic_supply()
+    val sch = parse_schematic("""
+        supply   P1  0 0  0 4  12 1
+        supply   P2  2 0  2 4  15 500m raw 2
+        supply   P3  4 0  4 4  15 500m raw 2 60 1.5
+        wire         0 4  4 4
+        ground       0 4
+        """).unwrap()
+
+    assert(sch.elements[0].shape == Shape.Supply)
+    assert(sch.elements[1].value == "15 500m raw 2")
+    assert(sch.circuit.parts[0].kind == Supply(regulated(12.0, 1.0)))
+    assert(sch.circuit.parts[1].kind == Supply(raw_supply(15.0, 0.5, 2.0, 50.0, 1.0)))
+    assert(sch.circuit.parts[2].kind == Supply(raw_supply(15.0, 0.5, 2.0, 60.0, 1.5)))
+    assert(parse_supply(["0", "1m"]).unwrap() == regulated(0.0, 1e-3))
+
+@test("a supply line's mistakes are refused with their line")
+supply_refusals()
+    val takes = "line 1: a supply takes a voltage, a current limit, and perhaps raw with a ripple, a mains frequency and an internal resistance"
+
+    assert(parse_schematic("supply P1 0 0 0 4").unwrap_err() == takes)
+    assert(parse_schematic("supply P1 0 0 0 4 12").unwrap_err() == takes)
+    assert(parse_schematic("supply P1 0 0 0 4 -1 1").unwrap_err() == "line 1: a supply's voltage is not below zero")
+    assert(parse_schematic("supply P1 0 0 0 4 12 0").unwrap_err() == "line 1: a current limit is more than zero")
+    assert(parse_schematic("supply P1 0 0 0 4 twelve 1").unwrap_err() == "line 1: 'twelve' is not a number")
+    assert(parse_schematic("supply P1 0 0 0 4 12 lots").unwrap_err() == "line 1: 'lots' is not a number")
+    assert(parse_schematic("supply P1 0 0 0 4 12 1 fast").unwrap_err() == "line 1: 'fast' is not a supply's mode: raw, or nothing for regulated")
+    assert(parse_schematic("supply P1 0 0 0 4 12 1 raw").unwrap_err() == "line 1: a raw supply takes a ripple, and perhaps a mains frequency and an internal resistance")
+    assert(parse_schematic("supply P1 0 0 0 4 12 1 raw -1").unwrap_err() == "line 1: a ripple is between zero and twice the voltage")
+    assert(parse_schematic("supply P1 0 0 0 4 12 1 raw 25").unwrap_err() == "line 1: a ripple is between zero and twice the voltage")
+    assert(parse_schematic("supply P1 0 0 0 4 12 1 raw lots").unwrap_err() == "line 1: 'lots' is not a number")
+    assert(parse_schematic("supply P1 0 0 0 4 12 1 raw 2 55").unwrap_err() == "line 1: a mains frequency is 50 or 60")
+    assert(parse_schematic("supply P1 0 0 0 4 12 1 raw 2 50 0").unwrap_err() == "line 1: an internal resistance is more than zero")
+    assert(parse_schematic("supply P1 0 0 0 4 12 1 raw 2 50 1 9").unwrap_err() == "line 1: '9' is more than a supply takes")
+    assert(parse_schematic("supply P1 0 0 0 0 12 1").unwrap_err() == "line 1: a supply needs two different points")
+    assert(parse_schematic("supply P1 0 0 0").unwrap_err() == "line 1: a supply is placed by 2 points")
+    assert(parse_schematic("supply").unwrap_err() == "line 1: a supply needs a name")
+
+// --- The zener -------------------------------------------------------------------------------------
+
+@test("a zener reversed at its breakdown current stands at its breakdown voltage, and its knee is sharp")
+zener_breakdown()
+    for volts in [3.3, 5.1, 12.0]
+        val m = zener_model(volts)
+
+        // The junction alone carries IBV at BV reversed, as SPICE places its knee.
+        assert(near(diode_current(m, -volts), -m.ibv, 1e-9 * m.ibv))
+
+        for (amps, low, high) in [(m.ibv, volts + m.rs * m.ibv - 1e-6, volts + m.rs * m.ibv + 1e-6), (1e-6, volts - 0.25, volts - 0.15), (50e-3, volts + 0.15, volts + 0.2)]
+            var c = circuit()
+
+            // The current pushed into the cathode, out through the anode to ground.
+            c.connect("I1", CurrentSource(Dc(amps)), "0", "k")
+            c.connect("D1", Diode(m), "0", "k")
+
+            var s = sim(c)
+
+            s.operating_point().unwrap()
+
+            val v = s.voltage_at("k")
+
+            if !(v > low && v < high) then print(s"${volts} V zener at ${amps} A: ${v}")
+
+            assert(v > low && v < high)
+
+    // Forward it is an ordinary junction.
+    assert(diode_current(zener_model(5.1), 0.7) > 1e-3)
+    assert(diode_current(zener_model(5.1), 0.0) == 0.0)
+
+@test("a diode with no BV does not break down, and an IBV too small to reach puts the knee at BV")
+diode_without_breakdown()
+    assert(diode_current(SILICON, -50.0) > -3e-9)
+    assert(knee(DiodeModel(1e-14, 1.0, 0.0, 5.0, 1e-20)) == 5.0)
+    assert(knee(zener_model(5.1)) < 5.1 && knee(zener_model(5.1)) > 4.0)
+
+@test("a zener line places a zener breaking down at its voltage")
+schematic_zener()
+    val sch = parse_schematic("zener DZ 0 0 0 4 5.1\nground 0 0\n").unwrap()
+
+    assert(sch.elements[0].shape == Shape.Zener)
+    assert(sch.elements[0].value == "5.1")
+    assert(sch.circuit.parts[0].kind == Diode(zener_model(5.1)))
+
+    assert(parse_schematic("zener DZ 0 0 0 4").unwrap_err() == "line 1: a zener needs a value")
+    assert(parse_schematic("zener DZ 0 0 0 4 0").unwrap_err() == "line 1: a breakdown voltage is more than zero")
+    assert(parse_schematic("zener DZ 0 0 0 4 low").unwrap_err() == "line 1: 'low' is not a number")
+    assert(parse_schematic("zener DZ 0 0 0 4 5.1 6").unwrap_err() == "line 1: '6' is more than a zener takes")
+
+@test("a netlist's diode model reads BV and IBV, and refuses them out of range")
+netlist_zener()
+    val net = parse_netlist("z\nI1 0 k 5m\nD1 0 k dz 2\n.model dz D (IS=1e-14 BV=6.2 IBV=2m)\n.op\n").unwrap()
+
+    // An area scales the breakdown current with the saturation current.
+    assert(net.circuit.parts[1].kind == Diode(DiodeModel(2e-14, 1.0, 0.0, 6.2, 4e-3)))
+    assert(parse_netlist("z\n.model dz D (BV=-1)\n").unwrap_err() == "line 2: model 'dz' needs BV not below zero and IBV above it")
+    assert(parse_netlist("z\n.model dz D (BV=5 IBV=0)\n").unwrap_err() == "line 2: model 'dz' needs BV not below zero and IBV above it")
+
+// --- The examples ----------------------------------------------------------------------------------
+
+@test("the zener example takes most of the ripple out and holds its output near the zener's voltage")
+zener_example()
+    val sch = parse_schematic(str_cast(embed("../../../examples/zener.amber"))).unwrap()
+    var a = sim(sch.circuit)
+    var b = sim(sch.circuit)
+
+    assert(sch.elements[sch.find("P1").unwrap()].shape == Shape.Supply)
+
+    a.operating_point().unwrap()
+    a.advance_to(20e-3).unwrap()
+    b.operating_point().unwrap()
+    b.advance_to(20e-3).unwrap()
+
+    // Two whole ripple periods.
+    val (in_lo, in_hi, _) = swing(&a, "raw", 20e-3)
+    val (out_lo, out_hi, out_mean) = swing(&b, "out", 20e-3)
+    val ratio = (out_hi - out_lo) / (in_hi - in_lo)
+
+    // The supply's 2 V, less what its ohm drops of the changing current.
+    assert(in_hi - in_lo > 1.9 && in_hi - in_lo < 2.0)
+    // The zener's few ohms against RS's 220: about a seventieth of the ripple is left.
+    assert(ratio < 0.03 && ratio > 0.005)
+    assert(out_mean > 5.1 && out_mean < 5.3)
+
+@test("the regulator example sits a junction below its zener with the ripple all but gone")
+regulator_example()
+    val sch = parse_schematic(str_cast(embed("../../../examples/regulator.amber"))).unwrap()
+    var a = sim(sch.circuit)
+    var b = sim(sch.circuit)
+
+    a.operating_point().unwrap()
+    a.advance_to(40e-3).unwrap()
+    b.operating_point().unwrap()
+    b.advance_to(40e-3).unwrap()
+
+    val (in_lo, in_hi, _) = swing(&a, "raw", 20e-3)
+    val (out_lo, out_hi, out_mean) = swing(&b, "out", 20e-3)
+    val ratio = (out_hi - out_lo) / (in_hi - in_lo)
+
+    assert(in_hi - in_lo > 1.5)
+    assert(near(out_mean, 5.6 - 0.65, 0.15))
+    // A two-volt ripple in, a few millivolts out.
+    assert(ratio < 0.01 && ratio > 0.001)
+
+@test("the regulator example is the netlist ngspice was held to, and follows it")
+regulator_example_against_its_netlist()
+    val sch = parse_schematic(str_cast(embed("../../../examples/regulator.amber"))).unwrap()
+    val net = parse_netlist(str_cast(embed("../../../oracle/regulator.cir"))).unwrap()
+    val table = run_analysis(net, net.analyses[0]).unwrap()
+    val col = usize(table.column("v(out)").unwrap())
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+
+    for r in 1..<table.rows.len()
+        s.advance_to(table.rows[r][0]).unwrap()
+        assert(near(s.voltage_at("out"), table.rows[r][col], 2e-3 * 5.0))
