@@ -1,0 +1,132 @@
+module sh.sysl.amber
+@tests
+
+private close(got: real, want: real, rel: real) -> bool = (got - want).abs() <= rel * want.abs() + 1e-12
+
+val RC_NETLIST = """
+    RC charge
+    * a resistor charging a capacitor
+    V1 in 0 PULSE(0 5 0 1n 1n 10m 20m) ; the step
+    R1 in out 1k
+    C1 out 0
+    + 1u
+    .tran 0.5m 5m
+    .control
+    run
+    wrdata rc.out v(out)
+    .endc
+    .end
+    this is after the end
+    """
+
+@test("a netlist's title, elements, continuations and analyses read")
+netlist_reads()
+    val net = parse_netlist(RC_NETLIST).unwrap()
+
+    assert(net.title == "RC charge")
+    assert(net.circuit.parts.len() == 3)
+    assert(net.circuit.parts[2].kind == Capacitor(1e-6))
+    assert(net.circuit.parts[0].kind.wave() == Some(Pulse(0.0, 5.0, 0.0, 1e-9, 1e-9, 10e-3, 20e-3)))
+    assert(net.analyses.len() == 1)
+    assert(net.analyses[0] == Tran(0.5e-3, 5e-3, 0.0, 0.1e-3, false))
+    assert(net.notes.len() == 0)
+
+@test("a run through time prints every step, from the operating point")
+netlist_tran()
+    val net = parse_netlist(RC_NETLIST).unwrap()
+    val t = run_analysis(net, net.analyses[0]).unwrap()
+
+    assert(t.columns.len() == 4)
+    assert(t.columns[0] == "time")
+    assert(t.column("v(out)") == Some(2))
+    assert(t.column("i(v1)") == Some(3))
+    assert(t.rows.len() == 11)
+
+    val last = t.rows[10]
+
+    assert(last[0] == 5e-3)
+    assert(close(last[2], 5.0 * (1.0 - (-5.0).exp()), 1e-3))
+
+@test("case does not matter, and SPICE's suffixes and units read")
+netlist_case()
+    val net = parse_netlist("t\nVBAT TOP 0 DC 9V\nRLOAD Top 0 4.7K\n.OP\n.END\n").unwrap()
+    val t = run_analysis(net, net.analyses[0]).unwrap()
+
+    assert(net.circuit.nodes[1] == "top")
+    assert(close(t.rows[0][t.column("i(vbat)").unwrap()], -9.0 / 4700.0, 1e-9))
+
+@test("a diode model, an area and a sweep read, and the sweep walks the diode's curve")
+netlist_diode_sweep()
+    val net = parse_netlist("""
+        diode
+        V1 a 0 0
+        R1 a k 100
+        D1 k 0 dmod 2
+        .model dmod D (IS=1e-14 N=1.5 RS=2 CJO=2p)
+        .dc v1 0 2 0.5
+        .end
+        """).unwrap()
+
+    assert(net.circuit.parts[2].kind == Diode(DiodeModel(2e-14, 1.5, 1.0)))
+    assert(net.notes.len() == 1)
+    assert(net.notes[0] == "model dmod: cjo is not modelled")
+
+    val t = run_analysis(net, net.analyses[0]).unwrap()
+
+    assert(t.columns[0] == "v1")
+    assert(t.rows.len() == 5)
+    assert(t.rows[4][0] == 2.0)
+    // Below the knee nothing flows; above it the diode, N = 1.5, holds near 1.05 V at 10 mA and the
+    // resistor takes the rest.
+    assert(t.rows[1][t.column("v(k)").unwrap()] > 0.45)
+    assert(t.rows[4][t.column("v(k)").unwrap()] > 0.95 && t.rows[4][t.column("v(k)").unwrap()] < 1.15)
+
+@test("SPICE's defaults fill in a wave's missing parameters from .tran")
+wave_defaults()
+    val net = parse_netlist("w\nV1 a 0 PULSE(0 1)\nV2 b 0 SIN(1 2)\nR1 a b 1\n.tran 1u 1m\n").unwrap()
+
+    assert(net.circuit.parts[0].kind.wave() == Some(Pulse(0.0, 1.0, 0.0, 1e-6, 1e-6, 1e-3, 1e-6 + 1e-3 + 1e-6 + 1e-3)))
+    assert(net.circuit.parts[1].kind.wave() == Some(Sine(1.0, 2.0, 1000.0, 0.0, 0.0, 0.0)))
+
+@test("UIC starts from empty, and IC= starts a capacitor charged")
+netlist_uic()
+    val net = parse_netlist("u\nR1 a 0 1k\nC1 a 0 1u IC=3\n.tran 1m 1m UIC\n").unwrap()
+
+    assert(net.initial[1] == 3.0)
+
+    val t = run_analysis(net, net.analyses[0]).unwrap()
+
+    assert(close(t.rows[0][1], 3.0, 1e-6))
+    assert(close(t.rows[1][1], 3.0 * (-1.0).exp(), 1e-3))
+
+@test("an AC part of a source is set aside, and a $ comment is a comment")
+netlist_ac_and_comments()
+    val net = parse_netlist("a\nV1 a 0 DC 2 AC 1 0 $ the input\nR1 a 0 1k\n.op\n").unwrap()
+
+    assert(net.circuit.parts[0].kind == VoltageSource(Dc(2.0)))
+
+@test("what is read but not acted on leaves a note")
+netlist_notes()
+    val net = parse_netlist("n\nR1 a 0 1\nV1 a 0 1\n.options reltol=1e-4\n.print tran v(a)\n.ic v(a)=1\n.op\n").unwrap()
+
+    assert(net.notes.len() == 3)
+    assert(net.notes[0] == "line 4: .options is not acted on")
+    assert(net.notes[2] == "line 6: .ic is not read; give capacitors and inductors IC= instead")
+
+@test("what would change the circuit and cannot be read is refused, with its line")
+netlist_refusals()
+    assert(parse_netlist("").unwrap_err() == "a netlist starts with a title line")
+    assert(parse_netlist("t\nQ1 c b e npn\n").unwrap_err() == "line 2: 'q1' is a transistor, which amber does not have yet")
+    assert(parse_netlist("t\nX1 a b sub\n").unwrap_err() == "line 2: 'x1' is a subcircuit, which amber does not read")
+    assert(parse_netlist("t\n.param r=1k\n").unwrap_err() == "line 2: .param is not read by amber")
+    assert(parse_netlist("t\nD1 a 0 nomodel\n").unwrap_err() == "line 2: 'd1' names model 'nomodel', which no .model defines")
+    assert(parse_netlist("t\n.model q1 npn\n").unwrap_err() == "line 2: model type 'npn' is not supported yet; amber has diodes")
+    assert(parse_netlist("t\nR1 a 0 1k\nR1 a 0 2k\n").unwrap_err() == "line 3: 'r1' is already the name of another element")
+    assert(parse_netlist("t\nR1 a 0\n").unwrap_err() == "line 2: 'r1' needs two nodes and a value")
+    assert(parse_netlist("t\nR1 a 0 -1\n").unwrap_err() == "line 2: a resistance is more than zero")
+    assert(parse_netlist("t\n+ R1 a 0 1\n").unwrap_err() == "line 2: a '+' line continues nothing")
+    assert(parse_netlist("t\nR1 a 0 1\n.dc v9 0 1 0.1\n").unwrap_err() == ".dc sweeps 'v9', which is not a source in the netlist")
+    assert(parse_netlist("t\nV1 a 0 EXP(0 1)\n").unwrap_err() == "line 2: 'v1': exp sources are not supported yet")
+    assert(parse_netlist("t\n.tran 1m\n").unwrap_err() == "line 2: .tran takes a step, a stop, and perhaps a start and a longest step")
+    assert(parse_netlist("t\nV1 a 0 PWL(1 0 0 1)\n").unwrap_err() == "line 2: 'v1': PWL's times run forward")
+    assert(parse_netlist("t\nC1 a 0 1u IC 3\n").unwrap_err() == "line 2: 'c1' takes a value and perhaps IC=")

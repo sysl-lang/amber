@@ -18,9 +18,11 @@ const MOST_ITERATIONS: int = 150
 // nothing leaks across it.
 const CLOSED_OHMS: real = 0.01
 
-// How closely a step must follow the circuit: a node's error may be a thousandth of its voltage, or a
-// microvolt, whichever is larger.
-const REL_TOL: real = 1e-3
+// How closely a step must follow the circuit: a node's error may be a ten-thousandth of its voltage, or
+// a microvolt, whichever is larger. The errors of a run's steps add up, so this keeps a decay a few
+// hundred steps long within a few parts in ten thousand of the formula, below the third figure a meter
+// shows.
+const REL_TOL: real = 1e-4
 const ABS_TOL: real = 1e-6
 
 // The first step after the start and after a corner, a nanosecond, and the shortest step the solver
@@ -94,6 +96,9 @@ struct Sim
     // Steps taken and steps thrown away, for anyone curious how hard the circuit was.
     accepted: int
     rejected: int
+    // What each capacitor holds (volts) and each inductor carries (amps) when the circuit is switched
+    // on; zero unless `set_initial` says otherwise.
+    initial: Buf[real]
 
     // The voltage at node `node` against ground.
     voltage(self, node: int) -> real = if node <= 0 then 0.0 else self.x[usize(node - 1)]
@@ -189,8 +194,13 @@ struct Sim
         self.corner()
         Ok(())
 
+    // Have capacitor `i` hold `value` volts, or inductor `i` carry `value` amps, when the circuit is
+    // switched on, rather than nothing.
+    set_initial(*self, i: int, value: real) = self.initial[usize(i)] = value
+
     // Switch the circuit on at the present time with every capacitor empty and no current in any
-    // inductor, rather than settled as `operating_point` finds it. This is a circuit just built and
+    // inductor (or holding what `set_initial` gave it), rather than settled as `operating_point` finds
+    // it. This is a circuit just built and
     // connected to its battery: it starts where it is and moves from there.
     //
     // The solution at the instant of switching on is found with each capacitor a short circuit holding
@@ -200,6 +210,11 @@ struct Sim
         for i in 0..<self.circuit.parts.len()
             self.held_v[i] = 0.0
             self.held_i[i] = 0.0
+
+            self.circuit.parts[i].kind match
+                Capacitor(_) -> self.held_v[i] = self.initial[i]
+                Inductor(_) -> self.held_i[i] = self.initial[i]
+                _ -> ()
 
         self.method = Euler
         self.step = 1e-15
@@ -212,7 +227,7 @@ struct Sim
                     val (g, owed) = self.capacitor_companion(farads, int(i))
 
                     self.held_i[i] = g * self.across(int(i)) - owed
-                    self.held_v[i] = 0.0
+                    self.held_v[i] = self.initial[i]
                 _ -> ()
 
         self.started = true
@@ -244,6 +259,10 @@ struct Sim
         for i in 0..<self.circuit.parts.len()
             if self.circuit.parts[i].kind.wave() is Some(w)
                 if w.next_corner(self.time) is Some(c) then end = min(end, c)
+
+        // A step ending a rounding error short of `until` would leave a remainder too short to take:
+        // 2.5 ms + 0.5 ms is 2.9999999999999996 ms. It ends on `until` instead.
+        if end < until && until - end <= 1e-6 * (end - self.time) then end = until
 
         end
 
@@ -548,7 +567,7 @@ sim(given: Circuit) -> Sim
     val parts = int(c.parts.len())
 
     Sim(c, extra, zeros(parts), size, zeros(size), system(size), 0.0, 0.0, Steady, 0.0, FIRST_STEP, 1e300,
-        zeros(parts), zeros(parts), zeros(size), zeros(size), 0.0, 0.0, 0, false, zeros(size), zeros(parts), 0, 0)
+        zeros(parts), zeros(parts), zeros(size), zeros(size), 0.0, 0.0, 0, false, zeros(size), zeros(parts), 0, 0, zeros(parts))
 
 private zeros(n: int) -> Buf[real]
     var b: Buf[real] = buf()

@@ -1,0 +1,99 @@
+module sh.sysl.amber
+
+import sysl.buf.{Buf, buf}
+
+// What an analysis answers with: named columns, and a row for each moment or each value swept.
+struct Table
+    columns: Buf[string]
+    rows: Buf[Buf[real]]
+
+    // The column called `name`, if there is one.
+    column(self, name: string) -> Option[int]
+        for k in 0..<self.columns.len()
+            if self.columns[k] == name then return Some(int(k))
+
+        None
+
+// Run analysis `a` of netlist `net`.
+//
+// **The columns are SPICE's vectors**: `v(node)` for every node but ground, then `i(name)` for every
+// voltage source and inductor, the current through it from its first node to its second. A run through
+// time puts `time` first, a sweep the swept source's name; the operating point is one row.
+run_analysis(net: Netlist, a: Analysis) -> Result[Table, string]
+    var s = sim(net.circuit)
+
+    for i in 0..<net.initial.len()
+        s.set_initial(int(i), net.initial[i])
+
+    a match
+        Op ->
+            s.operating_point()?
+
+            var t = table(net, "")
+
+            t.rows.push(row(net, &s, None))
+            Ok(t)
+        Tran(step, stop, start, longest, from_empty) ->
+            s.longest_step = longest
+
+            if from_empty then s.power_on()? else s.operating_point()?
+
+            var t = table(net, "time")
+            // Printed every `step` from the first multiple of it at or after `start`; the last row may
+            // land a hair past `stop` by rounding, and is put on it.
+            val count = int((stop / step + 1e-9).floor())
+            var k = int((start / step - 1e-9).ceil())
+
+            while k <= count
+                val at = if k == count then stop else real(k) * step
+
+                s.advance_to(at)?
+                t.rows.push(row(net, &s, Some(at)))
+                k += 1
+
+            Ok(t)
+        Sweep(source, from, to, step) ->
+            val i = net.circuit.find_part(source).unwrap()
+            var t = table(net, source)
+            val count = int(((to - from) / step + 1e-9).floor())
+
+            for k in 0..count
+                val value = from + real(k) * step
+
+                s.set_wave(i, Dc(value))
+                s.operating_point()?
+                t.rows.push(row(net, &s, Some(value)))
+
+            Ok(t)
+
+private table(net: Netlist, first: string) -> Table
+    var columns: Buf[string] = buf()
+
+    if first != "" then columns.push(first)
+
+    for n in 1..<net.circuit.nodes.len()
+        columns.push(s"v(${net.circuit.nodes[n]})")
+
+    for i in 0..<net.circuit.parts.len()
+        val p = net.circuit.parts[i]
+
+        p.kind match
+            VoltageSource(_) | Inductor(_) -> columns.push(s"i(${p.name})")
+            _ -> ()
+
+    Table(columns, buf())
+
+private row(net: Netlist, s: *Sim, first: Option[real]) -> Buf[real]
+    var r: Buf[real] = buf()
+
+    if first is Some(v) then r.push(v)
+
+    for n in 1..<net.circuit.nodes.len()
+        r.push(s.voltage(int(n)))
+
+    for i in 0..<net.circuit.parts.len()
+        net.circuit.parts[i].kind match
+            VoltageSource(_) | Inductor(_) -> r.push(s.current(int(i)))
+            _ -> ()
+
+    r

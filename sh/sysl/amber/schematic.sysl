@@ -421,7 +421,7 @@ parse_wave(words: []string) -> Result[Wave, string]
 
             if v[1] <= 0.0 then return Err("a frequency is more than zero")
 
-            Ok(Sine(if n == 3 then v[2] else 0.0, v[0], v[1], 0.0))
+            Ok(Sine(if n == 3 then v[2] else 0.0, v[0], v[1], 0.0, 0.0, 0.0))
         "square" ->
             if n < 3 || n > 4 then return Err("square takes a low, a high, a frequency and perhaps a duty")
 

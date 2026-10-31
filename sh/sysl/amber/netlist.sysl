@@ -1,0 +1,430 @@
+module sh.sysl.amber
+
+import sysl.buf.{Buf, buf}
+import sysl.text.{Search, fields, split, to_lower}
+
+// A SPICE netlist: the format every circuit simulator reads, and the one published circuits come in.
+//
+//     RC charge
+//     V1 in 0 PULSE(0 5 0 1n 1n 10m 20m)
+//     R1 in out 1k
+//     C1 out 0 1u
+//     .tran 0.5m 5m
+//     .end
+//
+// **The first line is a title**, whatever it says. Then one element or command a line; a line starting
+// with `+` continues the one before, `*` starts a comment line, and `;` or `$` starts a comment
+// partway along one. Case does not matter: everything is read in lower case, names included.
+//
+// The subset read here:
+//
+// | line | what it is |
+// |---|---|
+// | `R<name> n1 n2 value` | resistor |
+// | `C<name> n1 n2 value [IC=v]` | capacitor, holding `v` volts when switched on with `uic` |
+// | `L<name> n1 n2 value [IC=i]` | inductor, carrying `i` amps likewise |
+// | `V<name> n+ n- [DC] value` or a wave | voltage source |
+// | `I<name> n+ n- [DC] value` or a wave | current source, flowing from n+ through it to n- |
+// | `D<name> anode cathode model [area]` | diode |
+// | `.model <name> D (IS= N= RS= …)` | a diode's parameters |
+// | `.op` | the operating point |
+// | `.tran tstep tstop [tstart [tmax]] [UIC]` | a run through time, printed every `tstep` |
+// | `.dc source start stop step` | the operating point at each value of a source |
+// | `.end` | the end; anything after it is not read |
+//
+// Waves are SPICE's `PULSE(v1 v2 td tr tf pw per)`, `SIN(vo va freq td theta phase)` and
+// `PWL(t1 v1 t2 v2 …)`, with SPICE's defaults for the parameters left off. An `AC` part of a source is
+// read and set aside; a `.control` block is ngspice's own scripting and is skipped whole.
+//
+// **What is read but not modelled is said, not dropped.** A diode model's junction capacitance, a
+// `.options` line, a `.print`: each leaves a note on the netlist, and a program running it shows the
+// notes, so a reader knows where amber's answer may part from another simulator's. What would change
+// the circuit itself and cannot be read — a subcircuit, a transistor, a `.param` — is refused.
+
+// One analysis a netlist asks for.
+enum Analysis derives Eq
+    Op
+    // Every `step` seconds from `start` to `stop`; steps no longer than `longest`; from empty when
+    // `from_empty`, SPICE's `UIC`, and from the operating point otherwise.
+    Tran(step: real, stop: real, start: real, longest: real, from_empty: bool)
+    // Source `source` set to each value from `from` to `to` by `step`.
+    Sweep(source: string, from: real, to: real, step: real)
+
+struct Netlist
+    title: string
+    circuit: Circuit
+    analyses: Buf[Analysis]
+    // What each capacitor and inductor holds when switched on, by part; 0 for the rest.
+    initial: Buf[real]
+    // What was read and not modelled, one sentence each.
+    notes: Buf[string]
+
+// A diode model as the netlist gives it.
+private struct ModelCard
+    name: string
+    model: DiodeModel
+
+// Read a netlist. An error names the line it is about.
+parse_netlist(text: string) -> Result[Netlist, string]
+    if text.trim() == "" then return Err("a netlist starts with a title line")
+
+    val lines = logical_lines(text)?
+
+    var notes: Buf[string] = buf()
+    var models: Buf[ModelCard] = buf()
+    var analyses: Buf[Analysis] = buf()
+    // `.tran`'s step and stop, which a wave's missing parameters default to.
+    var tstep = 0.0
+    var tstop = 0.0
+
+    // Models and analyses first, since an element may name a model defined after it and a wave's
+    // defaults come from `.tran`.
+    for k in 1..<lines.len()
+        val (line_no, words) = lines[k]
+
+        if words[0].starts_with(".")
+            val at = s"line ${line_no}"
+
+            words[0] match
+                ".model" -> models.push(model_card(words, &notes).map_err(why -> s"${at}: ${why}")?)
+                ".op" -> analyses.push(Op)
+                ".tran" ->
+                    val a = tran_card(words).map_err(why -> s"${at}: ${why}")?
+
+                    if a is Tran(step, stop, _, _, _)
+                        tstep = step
+                        tstop = stop
+
+                    analyses.push(a)
+                ".dc" -> analyses.push(dc_card(words).map_err(why -> s"${at}: ${why}")?)
+                ".options" | ".option" | ".print" | ".plot" | ".probe" | ".save" | ".width" | ".temp" ->
+                    notes.push(s"${at}: ${words[0]} is not acted on")
+                ".ic" | ".nodeset" -> notes.push(s"${at}: ${words[0]} is not read; give capacitors and inductors IC= instead")
+                ".end" -> ()
+                _ -> return Err(s"${at}: ${words[0]} is not read by amber")
+
+    var c = circuit()
+    var initial: Buf[real] = buf()
+
+    for k in 1..<lines.len()
+        val (line_no, words) = lines[k]
+
+        if words[0].starts_with(".") then continue
+
+        val (kind, a, b, ic) = element_card(words, &models, tstep, tstop, &notes).map_err(why -> s"line ${line_no}: ${why}")?
+
+        if c.find_part(words[0]).is_some() then return Err(s"line ${line_no}: '${words[0]}' is already the name of another element")
+
+        c.connect(words[0], kind, a, b)
+        initial.push(ic)
+
+    for k in 0..<analyses.len()
+        if analyses[k] is Sweep(source, _, _, _)
+            val found = c.find_part(source) match
+                Some(i) -> c.parts[usize(i)].kind.wave().is_some()
+                None -> false
+
+            if !found then return Err(s".dc sweeps '${source}', which is not a source in the netlist")
+
+    Ok(Netlist(lines[0].1.join(" "), c, analyses, initial, notes))
+
+// The netlist's lines with comments taken out and continuations joined, each with the number of the
+// line it began on, split into words. The title keeps its case; everything else is lower case, with
+// brackets, commas and `=` as separators (an `=` kept as a word of its own).
+private logical_lines(text: string) -> Result[Buf[(int, Buf[string])], string]
+    var out: Buf[(int, Buf[string])] = buf()
+    var line_no = 0
+    var skipping = false
+    var ended = false
+
+    for raw in split(text, "\n")
+        line_no += 1
+
+        if ended then continue
+
+        if line_no == 1
+            out.push((1, words_of(raw.trim())))
+            continue
+
+        val cut = strip_comment(raw)
+        val line = to_lower(cut.trim())
+
+        if line == "" || line.starts_with("*") then continue
+
+        if skipping
+            if line.starts_with(".endc") then skipping = false
+
+            continue
+
+        if line.starts_with(".control")
+            skipping = true
+            continue
+
+        if line.starts_with("+")
+            if out.len() <= 1 then return Err(s"line ${line_no}: a '+' line continues nothing")
+
+            val more = words_of(line[1..<line.len])
+
+            for k in 0..<more.len()
+                out[out.len() - 1].1.push(more[k])
+
+            continue
+
+        val words = words_of(line)
+
+        if words.len() == 0 then continue
+
+        if words[0] == ".end" then ended = true
+
+        out.push((line_no, words))
+
+    Ok(out)
+
+// The line before a `;`, or a `$` that starts a word.
+private strip_comment(line: string) -> string
+    val b = line.bytes
+
+    for i in 0..<b.len
+        if b[i] == u8(';') then return line[0..<i]
+
+        if b[i] == u8('$') && (i == 0 || b[i - 1] == u8(' ') || b[i - 1] == u8('\t')) then return line[0..<i]
+
+    line
+
+private words_of(line: string) -> Buf[string]
+    var spaced = ""
+    val b = line.bytes
+    var start: usize = 0
+
+    for i in 0..<b.len
+        val c = b[i]
+
+        if c == u8('(') || c == u8(')') || c == u8(',') || c == u8('=')
+            spaced = spaced + line[start..<i] + (if c == u8('=') then " = " else " ")
+            start = i + 1
+
+    spaced = spaced + line[start..<line.len]
+
+    val parts = fields(spaced)
+    var out: Buf[string] = buf()
+
+    for k in 0..<parts.len
+        out.push(parts[k])
+
+    out
+
+// `.model name d (is=… n=… rs=…)`.
+private model_card(words: Buf[string], notes: *Buf[string]) -> Result[ModelCard, string]
+    if words.len() < 3 then return Err(".model needs a name and a type")
+
+    val name = words[1]
+
+    if words[2] != "d" then return Err(s"model type '${words[2]}' is not supported yet; amber has diodes")
+
+    var m = DiodeModel(1e-14, 1.0, 0.0)
+    var k: usize = 3
+
+    while k < words.len()
+        if k + 2 >= words.len() || words[k + 1] != "=" then return Err(s"'${words[k]}' in model '${name}' needs '= value'")
+
+        val v = parse_value(words[k + 2])?
+
+        words[k] match
+            "is" -> m.is = v
+            "n" -> m.n = v
+            "rs" -> m.rs = v
+            _ -> notes.push(s"model ${name}: ${words[k]} is not modelled")
+
+        k += 3
+
+    if m.is <= 0.0 || m.n <= 0.0 || m.rs < 0.0 then return Err(s"model '${name}' needs IS and N above zero and RS not below")
+
+    Ok(ModelCard(name, m))
+
+// `.tran tstep tstop [tstart [tmax]] [uic]`.
+private tran_card(words: Buf[string]) -> Result[Analysis, string]
+    var n = words.len()
+    var from_empty = false
+
+    if words[n - 1] == "uic"
+        from_empty = true
+        n -= 1
+
+    if n < 3 || n > 5 then return Err(".tran takes a step, a stop, and perhaps a start and a longest step")
+
+    val step = parse_value(words[1])?
+    val stop = parse_value(words[2])?
+    val start = if n > 3 then parse_value(words[3])? else 0.0
+    // ngspice's default longest step: the print step, or a fiftieth of the run, whichever is shorter.
+    val longest = if n > 4 then parse_value(words[4])? else min_of(step, (stop - start) / 50.0)
+
+    if step <= 0.0 || stop <= start || start < 0.0 || longest <= 0.0 then return Err(".tran needs a step above zero and a stop after its start")
+
+    Ok(Tran(step, stop, start, longest, from_empty))
+
+// `.dc source start stop step`.
+private dc_card(words: Buf[string]) -> Result[Analysis, string]
+    if words.len() != 5 then return Err(".dc takes one source, a start, a stop and a step")
+
+    val from = parse_value(words[2])?
+    val to = parse_value(words[3])?
+    val step = parse_value(words[4])?
+
+    if step == 0.0 || (to - from) / step < 0.0 then return Err(".dc's step must lead from its start to its stop")
+
+    Ok(Sweep(words[1], from, to, step))
+
+private min_of(a: real, b: real) -> real = if a < b then a else b
+
+// An element line: the part, its two nodes, and what it holds when switched on.
+private element_card(words: Buf[string], models: *Buf[ModelCard], tstep: real, tstop: real,
+                     notes: *Buf[string]) -> Result[(Kind, string, string, real), string]
+    val name = words[0]
+
+    if words.len() < 4 then return Err(s"'${name}' needs two nodes and a value")
+
+    val a = words[1]
+    val b = words[2]
+    val rest = words.view()[3..<words.len()]
+
+    name.bytes[0] match
+        'r' ->
+            if rest.len != 1 then return Err(s"'${name}' takes one value")
+
+            Ok((Resistor(positive(rest[0], "a resistance")?), a, b, 0.0))
+        'c' ->
+            val (v, ic) = value_and_ic(name, rest)?
+
+            if v <= 0.0 then return Err("a capacitance is more than zero")
+
+            Ok((Capacitor(v), a, b, ic))
+        'l' ->
+            val (v, ic) = value_and_ic(name, rest)?
+
+            if v <= 0.0 then return Err("an inductance is more than zero")
+
+            Ok((Inductor(v), a, b, ic))
+        'v' -> Ok((VoltageSource(source_wave(name, rest, tstep, tstop)?), a, b, 0.0))
+        'i' -> Ok((CurrentSource(source_wave(name, rest, tstep, tstop)?), a, b, 0.0))
+        'd' ->
+            if rest.len < 1 || rest.len > 2 then return Err(s"'${name}' takes a model and perhaps an area")
+
+            var card: Option[DiodeModel] = None
+
+            for k in 0..<models.len()
+                if models[k].name == rest[0] then card = Some(models[k].model)
+
+            val m = card match
+                Some(m) -> m
+                None -> return Err(s"'${name}' names model '${rest[0]}', which no .model defines")
+            val area = if rest.len == 2 then positive(rest[1], "an area")? else 1.0
+
+            // An area scales the junction: more saturation current, less series resistance.
+            Ok((Diode(DiodeModel(m.is * area, m.n, m.rs / area)), a, b, 0.0))
+        'q' | 'm' | 'j' -> Err(s"'${name}' is a transistor, which amber does not have yet")
+        'x' -> Err(s"'${name}' is a subcircuit, which amber does not read")
+        _ -> Err(s"'${name}' is not an element amber reads")
+
+private positive(word: string, what: string) -> Result[real, string]
+    val v = parse_value(word)?
+
+    if v <= 0.0 then return Err(s"${what} is more than zero")
+
+    Ok(v)
+
+// A value, then perhaps `ic = v`.
+private value_and_ic(name: string, rest: []string) -> Result[(real, real), string]
+    val v = parse_value(rest[0])?
+
+    if rest.len == 1 then return Ok((v, 0.0))
+
+    if rest.len == 4 && rest[1] == "ic" && rest[2] == "="
+        return Ok((v, parse_value(rest[3])?))
+
+    Err(s"'${name}' takes a value and perhaps IC=")
+
+// A source's value or wave: `[dc] v`, `pulse(…)`, `sin(…)` or `pwl(…)`, each perhaps with an `ac`
+// part, which is set aside.
+private source_wave(name: string, words: []string, tstep: real, tstop: real) -> Result[Wave, string]
+    var dc: Option[real] = None
+    var wave: Option[Wave] = None
+    var k: usize = 0
+
+    while k < words.len
+        val w = words[k]
+
+        if w == "dc"
+            if k + 1 >= words.len then return Err(s"'${name}': dc needs a value")
+
+            dc = Some(parse_value(words[k + 1])?)
+            k += 2
+        elif w == "ac"
+            // A magnitude and perhaps a phase, both numbers.
+            k += 1
+
+            var taken = 0
+
+            while k < words.len && taken < 2 && parse_value(words[k]).is_ok()
+                k += 1
+                taken += 1
+        elif w == "pulse" || w == "sin" || w == "pwl"
+            var args: Buf[real] = buf()
+
+            k += 1
+
+            while k < words.len && parse_value(words[k]).is_ok()
+                args.push(parse_value(words[k]).unwrap())
+                k += 1
+
+            wave = Some(spice_wave(name, w, args, tstep, tstop)?)
+        elif w == "exp" || w == "sffm" || w == "am"
+            return Err(s"'${name}': ${w} sources are not supported yet")
+        else
+            if dc.is_some() || k != 0 then return Err(s"'${name}': '${w}' is not part of a source")
+
+            dc = Some(parse_value(w)?)
+            k += 1
+
+    wave match
+        Some(w) -> Ok(w)
+        None -> dc match
+            Some(v) -> Ok(Dc(v))
+            None -> Err(s"'${name}' needs a value")
+
+// SPICE's waves from their arguments, with SPICE's defaults for those left off.
+private spice_wave(name: string, kind: string, v: Buf[real], tstep: real, tstop: real) -> Result[Wave, string]
+    val n = v.len()
+    // Where `.tran` has not said, an edge is a nanosecond and a period is for ever.
+    val step = if tstep > 0.0 then tstep else 1e-9
+    val stop = if tstop > 0.0 then tstop else 1e300
+
+    kind match
+        "pulse" ->
+            if n < 2 || n > 7 then return Err(s"'${name}': PULSE takes from two to seven values")
+
+            val td = if n > 2 then v[2] else 0.0
+            val tr = if n > 3 && v[3] > 0.0 then v[3] else step
+            val tf = if n > 4 && v[4] > 0.0 then v[4] else step
+            val pw = if n > 5 then v[5] else stop
+            val per = if n > 6 && v[6] > 0.0 then v[6] else stop
+
+            if per < tr + pw + tf then return Ok(Pulse(v[0], v[1], td, tr, tf, pw, tr + pw + tf + stop))
+
+            Ok(Pulse(v[0], v[1], td, tr, tf, pw, per))
+        "sin" ->
+            if n < 2 || n > 6 then return Err(s"'${name}': SIN takes from two to six values")
+
+            val freq = if n > 2 && v[2] > 0.0 then v[2] else 1.0 / stop
+
+            Ok(Sine(v[0], v[1], freq, if n > 3 then v[3] else 0.0, if n > 4 then v[4] else 0.0, if n > 5 then v[5] else 0.0))
+        _ ->
+            if n == 0 || n % 2 != 0 then return Err(s"'${name}': PWL takes pairs of a time and a value")
+
+            var points: Buf[(real, real)] = buf()
+
+            for k in 0..<n / 2
+                if k > 0 && v[2 * k] < v[2 * k - 2] then return Err(s"'${name}': PWL's times run forward")
+
+                points.push((v[2 * k], v[2 * k + 1]))
+
+            Ok(Pwl(points))

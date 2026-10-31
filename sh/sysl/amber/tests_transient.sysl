@@ -48,7 +48,7 @@ pwl_shape()
 
 @test("a sine holds its offset until its delay, and asks for twenty steps a period")
 sine_shape()
-    val w = Sine(1.0, 2.0, 50.0, 0.01)
+    val w = Sine(1.0, 2.0, 50.0, 0.01, 0.0, 0.0)
 
     assert(w.at(0.005) == 1.0)
     assert(close(w.at(0.01 + 0.005), 3.0, 1e-12))
@@ -204,7 +204,7 @@ lc_ring()
 sine_source()
     var c = circuit()
 
-    c.connect("V1", VoltageSource(Sine(0.0, 2.0, 1000.0, 0.0)), "a", "0")
+    c.connect("V1", VoltageSource(Sine(0.0, 2.0, 1000.0, 0.0, 0.0, 0.0)), "a", "0")
     c.connect("R1", Resistor(1000.0), "a", "0")
 
     var s = sim(c)
@@ -262,7 +262,7 @@ current_wave()
 rectifier()
     var c = circuit()
 
-    c.connect("V1", VoltageSource(Sine(0.0, 10.0, 50.0, 0.0)), "in", "0")
+    c.connect("V1", VoltageSource(Sine(0.0, 10.0, 50.0, 0.0, 0.0, 0.0)), "in", "0")
     c.connect("D1", Diode(SILICON), "in", "out")
     c.connect("C1", Capacitor(100e-6), "out", "0")
     c.connect("R1", Resistor(10e3), "out", "0")
@@ -376,3 +376,65 @@ readme_example()
     s.set_switch(1, true)
     s.advance_to(1e-3).unwrap()
     assert(close(s.voltage_at("top"), 5.0 * (1.0 - (-1.0).exp()), 2e-3))
+
+@test("a sine's damping shrinks it and its phase shifts it, as SPICE's SIN has them")
+sine_damping_and_phase()
+    val damped = Sine(0.0, 1.0, 1.0, 0.0, 2.0, 0.0)
+
+    assert(close(damped.at(0.25), (-0.5).exp(), 1e-12))
+
+    val shifted = Sine(1.0, 1.0, 1.0, 0.5, 0.0, 90.0)
+
+    // Before its delay, a sine holds the value its phase starts it at.
+    assert(close(shifted.at(0.1), 2.0, 1e-12))
+    assert(close(shifted.at(0.75), 1.0 + (tau * 0.5).sin(), 1e-9))
+
+@test("a capacitor given an initial voltage starts with it, and drains through its resistor")
+initial_charge()
+    var c = circuit()
+
+    c.connect("C1", Capacitor(1e-6), "top", "0")
+    c.connect("R1", Resistor(1000.0), "top", "0")
+
+    var s = sim(c)
+
+    s.set_initial(0, 4.0)
+    s.power_on().unwrap()
+    assert(close(s.voltage_at("top"), 4.0, 1e-6))
+    s.advance_to(1e-3).unwrap()
+    assert(close(s.voltage_at("top"), 4.0 * (-1.0).exp(), 2e-3))
+
+@test("an inductor given an initial current starts with it, and it dies away through its resistor")
+initial_current()
+    var c = circuit()
+
+    c.connect("L1", Inductor(1e-3), "a", "0")
+    c.connect("R1", Resistor(1.0), "a", "0")
+
+    var s = sim(c)
+
+    s.set_initial(0, 2.0)
+    s.power_on().unwrap()
+    assert(close(s.current(0), 2.0, 1e-6))
+    s.advance_to(1e-3).unwrap()
+    assert(close(s.current(0), 2.0 * (-1.0).exp(), 2e-3))
+
+@test("advancing by steps that do not add up exactly in floating point still lands on each time")
+rounding_remainder()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "in", "0")
+    c.connect("R1", Resistor(1000.0), "in", "out")
+    c.connect("C1", Capacitor(1e-6), "out", "0")
+
+    var s = sim(c)
+
+    s.longest_step = 0.1e-3
+    s.power_on().unwrap()
+
+    // 0.1 and 0.5 are not exact in binary, so their sums fall either side of the times asked for.
+    for k in 1..60
+        val t = real(k) * 0.1e-3
+
+        s.advance_to(t).unwrap()
+        assert(s.time == t)

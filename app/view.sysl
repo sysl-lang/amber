@@ -404,7 +404,7 @@ private struct Pen
 
                 val w = radius * 0.55
 
-                if m.s.circuit.parts[usize(e.part)].kind.wave() is Some(Sine(_, _, _, _))
+                if m.s.circuit.parts[usize(e.part)].kind.wave() is Some(Sine(_, _, _, _, _, _))
                     for j in 0..24
                         val u = real(j) / 24.0
 

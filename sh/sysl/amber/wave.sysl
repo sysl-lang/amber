@@ -12,8 +12,9 @@ import sysl.math.tau
 enum Wave derives Eq
     // A constant.
     Dc(value: real)
-    // `offset + amplitude · sin(2π · frequency · (t − delay))`, holding `offset` until `delay`.
-    Sine(offset: real, amplitude: real, frequency: real, delay: real)
+    // SPICE's SIN: `offset + amplitude · e^(−damping · (t − delay)) · sin(2π · (frequency · (t − delay) +
+    // phase / 360))`, holding its value at `delay` until then. `phase` is in degrees.
+    Sine(offset: real, amplitude: real, frequency: real, delay: real, damping: real, phase: real)
     // SPICE's PULSE: `low` until `delay`, rising to `high` over `rise`, holding for `width`, falling
     // over `fall`, and back at `low` until the next `period` begins.
     Pulse(low: real, high: real, delay: real, rise: real, fall: real, width: real, period: real)
@@ -24,8 +25,10 @@ enum Wave derives Eq
     // The value at time `t`.
     at(self, t: real) -> real = self match
         Dc(v) -> v
-        Sine(offset, amplitude, frequency, delay) ->
-            if t <= delay then offset else offset + amplitude * (tau * frequency * (t - delay)).sin()
+        Sine(offset, amplitude, frequency, delay, damping, phase) ->
+            val u = if t <= delay then 0.0 else t - delay
+
+            offset + amplitude * (-damping * u).exp() * (tau * (frequency * u + phase / 360.0)).sin()
         Pulse(low, high, delay, rise, fall, width, period) ->
             if t <= delay then return low
 
@@ -53,7 +56,7 @@ enum Wave derives Eq
     // The first corner strictly after `t`, if the wave has one.
     next_corner(self, t: real) -> Option[real] = self match
         Dc(_) -> None
-        Sine(_, _, _, delay) -> if t < delay then Some(delay) else None
+        Sine(_, _, _, delay, _, _) -> if t < delay then Some(delay) else None
         Pulse(_, _, delay, rise, fall, width, period) ->
             if t < delay then return Some(delay)
 
@@ -74,7 +77,7 @@ enum Wave derives Eq
     // The longest step the wave can be followed with between corners; infinite for one that is straight
     // there.
     longest_step(self) -> real = self match
-        Sine(_, _, frequency, _) -> if frequency > 0.0 then 1.0 / (20.0 * frequency) else 1e300
+        Sine(_, _, frequency, _, _, _) -> if frequency > 0.0 then 1.0 / (20.0 * frequency) else 1e300
         _ -> 1e300
 
     // Whether the wave never changes.

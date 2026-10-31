@@ -245,7 +245,7 @@ schematic_waves()
     assert(sch.circuit.parts[0].kind.wave() == Some(square(0.0, 5.0, 1000.0)))
     assert(sch.circuit.parts[1].kind == Switch(true))
     assert(sch.circuit.parts[3].kind == Capacitor(1e-6))
-    assert(sch.circuit.parts[5].kind.wave() == Some(Sine(0.0, 1e-3, 50.0, 0.0)))
+    assert(sch.circuit.parts[5].kind.wave() == Some(Sine(0.0, 1e-3, 50.0, 0.0, 0.0, 0.0)))
     assert(sch.elements[0].value == "square 0 5 1k")
 
 @test("a wave's mistakes are refused with their line")
