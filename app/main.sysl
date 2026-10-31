@@ -1,2 +1,87 @@
+// amber's viewer: a schematic in a window, its wires coloured by their voltage, and voltmeters that
+// can be put across anything.
+//
+//     amber <file.amber>
+//     amber <file.amber> --shot <out.png> [--meter <x1>,<y1>,<x2>,<y2>]...
+//
+// Click a grid point to put a meter's red lead there, and a second one for its black lead; the meter
+// reads the first point's voltage less the second's. Click a part to see the voltage across it and
+// the current through it.
+//
+// `--shot` draws one frame with no window and writes it to a PNG, with any meters `--meter` places, so
+// the picture a person would see is one a machine can check.
+
+import sh.sysl.amber.{parse_schematic}
+import sh.sysl.ui.{Rect, render, pluto_canvas, fraction}
+import sh.sysl.ui_sdl.{app, run, system_font}
+import sh.sysl.plutovg
+import sysl.buf.{Buf, buf}
+import sysl.fs.read_text
+import sysl.text.{parse_int, split}
+
+const WIDTH: int = 1000
+const HEIGHT: int = 720
+
 main(args: []string) -> Result[unit, string]
+    var file = ""
+    var shot = ""
+    var placed: Buf[Meter] = buf()
+    var i: usize = 1
+
+    while i < args.len
+        val a = args[i]
+
+        if a == "--shot" && i + 1 < args.len
+            shot = args[i + 1]
+            i += 2
+        elif a == "--meter" && i + 1 < args.len
+            placed.push(meter_option(args[i + 1])?)
+            i += 2
+        elif file == "" && !a.starts_with("--")
+            file = a
+            i += 1
+        else
+            return Err(s"usage: amber <file.amber> [--shot <out.png>] [--meter x1,y1,x2,y2]... ('${a}' is not one of these)")
+
+    if file == "" then return Err("usage: amber <file.amber> [--shot <out.png>] [--meter x1,y1,x2,y2]...")
+
+    val text = read_text(file).map_err(e -> s"${file}: ${e}")?
+    val sch = parse_schematic(text).map_err(e -> s"${file}: ${e}")?
+    val m = model(file, sch)
+
+    for k in 0..<placed.len()
+        m.meters.push(placed[k])
+
+    if shot == "" then return run(app(s"amber — ${file}", () -> screen(m), () -> GROUND, WIDTH, HEIGHT,
+                                      on_event = e -> shortcut(m, e)))
+
+    val font = system_font()
+
+    if font == "" then return Err("no font this program knows about is on this machine")
+
+    val surf = plutovg.surface(WIDTH, HEIGHT).expect("a drawing surface")
+    val vg = plutovg.canvas(surf).expect("a drawing canvas")
+    val face = plutovg.font(font).expect(s"the font at ${font} opened")
+    var c = pluto_canvas(vg, face, 15.0)
+
+    surf.clear(fraction(GROUND, 16), fraction(GROUND, 8), fraction(GROUND, 0))
+    render(screen(m), &c, Rect(0, 0, WIDTH, HEIGHT))
+
+    if !surf.write_png(shot) then return Err(s"${shot} could not be written")
+
+    print(s"wrote ${shot}: ${status(m)}")
     Ok(())
+end main
+
+// A meter from `--meter x1,y1,x2,y2`.
+private meter_option(arg: string) -> Result[Meter, string]
+    val parts = split(arg, ",")
+
+    if parts.len != 4 then return Err(s"--meter takes x1,y1,x2,y2, not '${arg}'")
+
+    var xy: [4]int = [0, 0, 0, 0]
+
+    for k in 0..<4
+        xy[k] = parse_int(parts[k]).map_err(e -> s"--meter takes x1,y1,x2,y2, not '${arg}'")?
+
+    Ok(Meter(xy[0], xy[1], xy[2], xy[3]))

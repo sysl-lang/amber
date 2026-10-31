@@ -1,0 +1,14 @@
+# A battery, a resistor and an LED: the first circuit anyone builds.
+#
+# The battery's 9 V is shared between the resistor and the LED. The LED takes about 1.8 V whatever
+# the current, so the resistor takes the rest, and that sets the current: 7.2 V / 470 Ω ≈ 15 mA.
+#
+# Two meters are already across the resistor and the LED; their readings add up to the battery's.
+
+battery  B1   0 0  0 6  9V
+resistor R1   0 0  6 0  470
+led      D1   6 0  6 6  red
+wire          6 6  0 6
+ground        0 6
+meter    M1   0 0  6 0
+meter    M2   6 0  6 6

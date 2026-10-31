@@ -1,0 +1,70 @@
+@tests
+
+import sh.sysl.amber.parse_schematic
+
+val LED = """
+    battery  B1  0 0  0 6  9V
+    resistor R1  0 0  6 0  470
+    led      D1  6 0  6 6  red
+    wire         6 6  0 6
+    ground       0 6
+    """
+
+private led_model() -> &Model = model("led.amber", parse_schematic(LED).unwrap())
+
+@test("two clicks on points make a meter reading the first less the second")
+two_clicks_make_a_meter()
+    val m = led_model()
+
+    assert(m.probe(0, 0))
+    assert(m.probing && m.meters.len() == 0)
+    assert(m.probe(0, 6))
+    assert(!m.probing && m.meters.len() == 1)
+    assert((m.reading(m.meters[0]) - 9.0).abs() < 1e-9)
+
+@test("meters across the resistor and the LED add up to the battery")
+meters_add_up()
+    val m = led_model()
+
+    m.probe(0, 0)
+    m.probe(6, 0)
+    m.probe(6, 0)
+    m.probe(6, 6)
+
+    val total = m.reading(m.meters[0]) + m.reading(m.meters[1])
+
+    assert((total - 9.0).abs() < 1e-9)
+    assert(m.reading(m.meters[1]) > 1.6 && m.reading(m.meters[1]) < 2.1)
+
+@test("a meter with its leads swapped reads negative")
+swapped_leads()
+    val m = led_model()
+
+    m.probe(6, 0)
+    m.probe(0, 0)
+    assert(m.reading(m.meters[0]) < -7.0)
+
+@test("a click where no node is places no lead, and a second click on the red lead's point cancels it")
+clicks_off_the_circuit()
+    val m = led_model()
+
+    assert(!m.probe(3, 3))
+    assert(!m.probing)
+    assert(m.probe(0, 0))
+    assert(m.probe(0, 0))
+    assert(!m.probing && m.meters.len() == 0)
+
+@test("the status line gives a clicked part's voltage, current and power")
+status_of_a_part()
+    val m = led_model()
+
+    m.selected = m.sch.find("R1").unwrap()
+    assert(status(m).starts_with("R1 470Ω resistor: 7.16V across, 15.2mA through, 109mW taken"))
+    m.selected = m.sch.find("B1").unwrap()
+    assert(status(m).ends_with("delivered"))
+
+@test("a circuit that cannot be solved says so instead of reading")
+unsolvable()
+    val m = model("bad.amber", parse_schematic("battery B1 0 0 0 1 5\nwire 0 0 0 1\nground 0 1").unwrap())
+
+    assert(status(m).starts_with("cannot solve:"))

@@ -1,0 +1,696 @@
+// The window: the schematic, drawn with its voltages, and a line about whatever was clicked.
+//
+// **The schematic is drawn into a picture of its own and the picture is put on the canvas.** syslUI's
+// canvas is rectangles and text on purpose, so that it can run where there is no vector rasterizer,
+// and a schematic is zigzags, triangles and circles. The view keeps a PlutoVG surface the size of the
+// board, draws the lines into it, hands it to the canvas as an image, and writes the labels over it
+// through the canvas, in the window's own font.
+
+import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, sim, engineering}
+import sh.sysl.ui.{View, Canvas, Size, Rect, Image, column, row, text, spacer}
+import sh.sysl.ui_sdl.stop
+import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_C, SCANCODE_V}
+import sh.sysl.plutovg
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, min}
+
+const GROUND: u32 = 0x15171C
+const BOARD: u32 = 0x0F1115
+const DOT: u32 = 0x262A33
+const INK: u32 = 0xE8E6E0
+const DIM: u32 = 0x8A8F99
+const RED_LEAD: u32 = 0xE0483E
+const BLACK_LEAD: u32 = 0x9AA0AA
+const SELECTED: u32 = 0x6CB4FF
+
+// A voltmeter: its red lead on one grid point and its black lead on another.
+struct Meter
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
+struct Model
+    file: string
+    sch: Schematic
+    s: Sim
+    // Why the circuit could not be solved, or "".
+    trouble: string
+    meters: Buf[Meter]
+    // Where the red lead of the meter being placed is, while it waits for its black one.
+    probing: bool
+    px: int
+    py: int
+    // The element clicked, or -1.
+    selected: int
+    // Whether every part is labelled with the voltage across it.
+    values: bool
+    // The picture the lines are drawn into, kept from frame to frame and remade when the board's size
+    // changes.
+    picture: Option[&plutovg.Surface]
+    pen: Option[&plutovg.Canvas]
+
+    // A click at grid point (`x`, `y`): a meter's lead if a node is there.
+    probe(*self, x: int, y: int) -> bool
+        if self.sch.node_at(x, y).is_none() then return false
+
+        if !self.probing
+            self.probing = true
+            self.px = x
+            self.py = y
+        else
+            self.probing = false
+
+            if x != self.px || y != self.py then self.meters.push(Meter(self.px, self.py, x, y))
+
+        true
+
+    // The voltage at grid point (`x`, `y`).
+    volts_at(self, x: int, y: int) -> real = self.sch.node_at(x, y) match
+        Some(n) -> self.s.voltage(n)
+        None -> 0.0
+
+    reading(self, m: Meter) -> real = self.volts_at(m.x1, m.y1) - self.volts_at(m.x2, m.y2)
+end Model
+
+model(file: string, sch: Schematic) -> &Model
+    var s = sim(sch.circuit)
+    val trouble = s.operating_point() match
+        Ok(_) -> ""
+        Err(why) -> why
+
+    Model(file, sch, s, trouble, buf(), false, 0, 0, -1, true, None, None)
+
+screen(m: &Model) -> &View =
+    column([
+        board(m).flex(),
+        row([text(status(m)), spacer(), text(HINT)], 10).padding(8),
+    ])
+
+const HINT: string = "click two points: a meter · click a part: its readings · v values · c clear meters"
+
+// The line under the board: what was clicked, or why nothing could be solved.
+status(m: &Model) -> string
+    if m.trouble != "" then return s"cannot solve: ${m.trouble}"
+
+    if m.probing then return s"red lead at ${m.px}, ${m.py} (${volts(m.volts_at(m.px, m.py))}) — click where the black lead goes"
+
+    if m.selected < 0
+        val n = m.meters.len()
+
+        return if n == 0 then "nothing selected" else s"${n} meter${if n == 1 then "" else "s"}"
+
+    val e = m.sch.elements[usize(m.selected)]
+
+    if e.part < 0 then return e.name
+
+    val v = m.s.across(e.part)
+    val i = m.s.current(e.part)
+    val p = m.s.power(e.part)
+
+    s"${e.name} ${described(e)}: ${volts(v)} across, ${engineering(i.abs())}A through, ${engineering(p.abs())}W ${if p < 0.0 then "delivered" else "taken"}"
+
+private described(e: Element) -> string = e.shape match
+    Resistor -> s"${e.value}Ω resistor"
+    Battery -> s"${e.value} battery"
+    CurrentSource -> s"${e.value} current source"
+    Diode -> "diode"
+    Led -> s"${colour_name(e.colour)} LED"
+    _ -> ""
+
+private colour_name(c: Colour) -> string = c match
+    Red -> "red"
+    Yellow -> "yellow"
+    Green -> "green"
+    Blue -> "blue"
+
+private volts(v: real) -> string = s"${engineering(v)}V"
+
+// The keyboard's shortcuts.
+shortcut(m: &Model, e: Event) -> bool
+    if e.kind() != EventKind.KeyDown then return false
+
+    val key = e.key_scancode()
+
+    if key == SCANCODE_ESCAPE
+        if m.probing then m.probing = false else stop()
+    elif key == SCANCODE_C
+        m.meters.clear()
+        m.probing = false
+    elif key == SCANCODE_V
+        m.values = !m.values
+    else
+        return false
+
+    true
+
+// --- The board --------------------------------------------------------------------------------------
+
+private struct Board
+    m: &Model
+
+private board(m: &Model) -> &View = Board(m)
+
+// Where the grid lands: grid point (x, y) is at (`ox` + x·`unit`, `oy` + y·`unit`) in the window.
+private struct Place
+    ox: real
+    oy: real
+    unit: real
+
+    x(self, gx: real) -> real = self.ox + gx * self.unit
+    y(self, gy: real) -> real = self.oy + gy * self.unit
+
+    // The grid point nearest a window point, if it is within a third of a square of it.
+    snap(self, wx: int, wy: int) -> Option[(int, int)]
+        val gx = (real(wx) - self.ox) / self.unit
+        val gy = (real(wy) - self.oy) / self.unit
+        val nx = gx.round()
+        val ny = gy.round()
+
+        if (gx - nx).abs() > 0.34 || (gy - ny).abs() > 0.34 then return None
+
+        Some((int(nx), int(ny)))
+
+impl View for Board
+    measure(&self, c: *Canvas, avail: Size) -> Size = avail
+
+    paint(&self, c: *Canvas, r: Rect)
+        val m = self.m
+        val at = place(m, r)
+
+        c.fill(r, BOARD)
+        c.clip(r)
+
+        if picture_for(m, r, c.pixel_scale()) is Some(vg)
+            draw(m, vg, at, r, c.pixel_scale())
+            c.draw_image(r, Image(m.picture.unwrap()))
+
+        labels(m, c, at)
+        c.unclip()
+
+        if c.tapped(r)
+            val (tx, ty) = c.tap_point()
+
+            if at.snap(tx, ty) is Some((gx, gy))
+                if m.probe(gx, gy) then return
+
+            m.selected = hit(m, at, tx, ty)
+
+// Fit the drawing to the board at no more than 90 points a square, with three squares round it: room
+// for a meter's dial, which stands two and a half squares off the circuit.
+private place(m: &Model, r: Rect) -> Place
+    var x0 = 1 << 30
+    var y0 = 1 << 30
+    var x1 = -(1 << 30)
+    var y1 = -(1 << 30)
+
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+
+        x0 = min(x0, min(e.x1, e.x2))
+        y0 = min(y0, min(e.y1, e.y2))
+        x1 = max(x1, max(e.x1, e.x2))
+        y1 = max(y1, max(e.y1, e.y2))
+
+    if x0 > x1
+        x0 = 0
+        y0 = 0
+        x1 = 1
+        y1 = 1
+
+    val span_x = real(x1 - x0) + 6.0
+    val span_y = real(y1 - y0) + 6.0
+    val unit = min(90.0, min(real(r.w) / span_x, real(r.h) / span_y))
+
+    Place(real(r.x) + (real(r.w) - unit * real(x1 - x0)) / 2.0 - unit * real(x0),
+          real(r.y) + (real(r.h) - unit * real(y1 - y0)) / 2.0 - unit * real(y0), unit)
+
+// The canvas to draw the board's lines with, its surface made or remade to the board's size in device
+// pixels and cleared.
+private picture_for(m: &Model, r: Rect, scale: real) -> Option[&plutovg.Canvas]
+    val w = max(1, int(real(r.w) * scale))
+    val h = max(1, int(real(r.h) * scale))
+    val fits = m.picture match
+        Some(p) -> p.width() == w && p.height() == h
+        None -> false
+
+    if !fits
+        m.pen = None
+        m.picture = plutovg.surface(w, h)
+
+        if m.picture is Some(p) then m.pen = plutovg.canvas(p)
+
+    m.picture match
+        Some(p) -> p.clear(0.0, 0.0, 0.0, 0.0)
+        None -> ()
+
+    m.pen
+
+// The element under a window point, or -1: a part's body, or a wire's line.
+private hit(m: &Model, at: Place, wx: int, wy: int) -> int
+    val px = real(wx)
+    val py = real(wy)
+
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+
+        if e.shape.points() != 2 || e.shape == Meter then continue
+
+        val ax = at.x(real(e.x1))
+        val ay = at.y(real(e.y1))
+        val bx = at.x(real(e.x2))
+        val by = at.y(real(e.y2))
+        val dx = bx - ax
+        val dy = by - ay
+        val t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+
+        if t < 0.0 || t > 1.0 then continue
+
+        val qx = ax + t * dx - px
+        val qy = ay + t * dy - py
+
+        if qx * qx + qy * qy < (0.3 * at.unit) * (0.3 * at.unit) then return int(i)
+
+    -1
+
+// --- Drawing ----------------------------------------------------------------------------------------
+
+// The colour a voltage is drawn in: grey at ground, warming to amber as it rises and cooling to blue
+// as it falls, full at the largest voltage anywhere in the circuit.
+private wire_colour(v: real, most: real) -> u32
+    val t = min(1.0, v.abs() / max(most, 1e-9))
+    val (r, g, b) = if v >= 0.0 then (0xFF, 0xB0, 0x30) else (0x4A, 0x9C, 0xFF)
+
+    mix(0x70, r, t) << 16 | mix(0x76, g, t) << 8 | mix(0x80, b, t)
+
+private mix(a: int, b: int, t: real) -> u32 = u32(int(real(a) + (real(b) - real(a)) * t))
+
+private set(vg: &plutovg.Canvas, colour: u32) =
+    vg.rgb(f32(int((colour >> 16) & 0xFF)) / 255.0, f32(int((colour >> 8) & 0xFF)) / 255.0, f32(int(colour & 0xFF)) / 255.0)
+
+// The highest voltage magnitude at any node, which the wire colours are scaled to.
+private most_volts(m: &Model) -> real
+    var most = 0.0
+
+    for n in 0..<m.sch.circuit.node_count()
+        most = max(most, m.s.voltage(int(n)).abs())
+
+    most
+
+// Draw every element's lines. Coordinates go through `at` into window points, then shift by the
+// board's corner and scale to the surface's device pixels.
+private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
+    val most = most_volts(m)
+    val pen = Pen(vg, at, real(r.x), real(r.y), scale, m)
+
+    vg.line_cap(plutovg.LineCap.Round)
+    vg.line_join(plutovg.LineJoin.Round)
+
+    // The grid's dots, faintly, so a point to click is somewhere to aim.
+    set(vg, DOT)
+
+    val g0x = int(((real(r.x) - at.ox) / at.unit).floor())
+    val g1x = int(((real(r.right()) - at.ox) / at.unit).ceil())
+    val g0y = int(((real(r.y) - at.oy) / at.unit).floor())
+    val g1y = int(((real(r.bottom()) - at.oy) / at.unit).ceil())
+
+    for gy in g0y..g1y
+        for gx in g0x..g1x
+            pen.dot(real(gx), real(gy), 1.6)
+
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+        val hot = int(i) == m.selected
+
+        e.shape match
+            Wire -> pen.wire(e, m.s.voltage(e.a), most, hot)
+            Ground -> pen.ground(e)
+            Label -> ()
+            Meter -> ()
+            _ -> pen.part(e, most, hot)
+
+    // A dot wherever three or more ends meet, as a draughtsman marks a junction.
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+
+        for end in 0..<e.shape.points()
+            val (x, y) = if end == 0 then (e.x1, e.y1) else (e.x2, e.y2)
+
+            if ends_at(m, x, y) >= 3
+                set(vg, wire_colour(m.volts_at(x, y), most))
+                pen.dot(real(x), real(y), 4.0)
+
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+
+        if e.shape == Meter then pen.meter(e.x1, e.y1, e.x2, e.y2)
+
+    for k in 0..<m.meters.len()
+        val mt = m.meters[k]
+
+        pen.meter(mt.x1, mt.y1, mt.x2, mt.y2)
+
+    if m.probing
+        set(vg, RED_LEAD)
+        pen.ring(real(m.px), real(m.py), 7.0)
+
+// How many element ends, and points along wires, are at grid point (`x`, `y`).
+private ends_at(m: &Model, x: int, y: int) -> int
+    var n = 0
+
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+
+        if e.shape == Meter || e.shape == Label then continue
+
+        if e.x1 == x && e.y1 == y then n += 1
+
+        if e.shape.points() == 2
+            if e.x2 == x && e.y2 == y
+                n += 1
+            elif e.shape == Wire && between(x, y, e)
+                n += 2
+
+    n
+
+// Whether (`x`, `y`) is strictly inside wire `e`.
+private between(x: int, y: int, e: Element) -> bool
+    if (e.x2 - e.x1) * (y - e.y1) != (e.y2 - e.y1) * (x - e.x1) then return false
+
+    val inside_x = (x - e.x1) * (x - e.x2) <= 0
+    val inside_y = (y - e.y1) * (y - e.y2) <= 0
+
+    inside_x && inside_y && !(x == e.x1 && y == e.y1) && !(x == e.x2 && y == e.y2)
+
+// What draws into the picture: grid coordinates in, device pixels out.
+private struct Pen
+    vg: &plutovg.Canvas
+    at: Place
+    left: real
+    top: real
+    scale: real
+    m: &Model
+
+    px(self, gx: real) -> f32 = f32((self.at.x(gx) - self.left) * self.scale)
+    py(self, gy: real) -> f32 = f32((self.at.y(gy) - self.top) * self.scale)
+
+    // A length in grid squares, in device pixels.
+    len(self, g: real) -> f32 = f32(g * self.at.unit * self.scale)
+
+    width(self, points: real) = self.vg.line_width(f32(points * self.scale))
+
+    dot(self, gx: real, gy: real, radius: real)
+        self.vg.begin()
+        self.vg.circle(self.px(gx), self.py(gy), f32(radius * self.scale))
+        self.vg.fill()
+
+    ring(self, gx: real, gy: real, radius: real)
+        self.width(2.0)
+        self.vg.begin()
+        self.vg.circle(self.px(gx), self.py(gy), f32(radius * self.scale))
+        self.vg.stroke()
+
+    line(self, x1: real, y1: real, x2: real, y2: real)
+        self.vg.begin()
+        self.vg.move_to(self.px(x1), self.py(y1))
+        self.vg.line_to(self.px(x2), self.py(y2))
+        self.vg.stroke()
+
+    wire(self, e: Element, v: real, most: real, hot: bool)
+        set(self.vg, if hot then SELECTED else wire_colour(v, most))
+        self.width(3.0)
+        self.line(real(e.x1), real(e.y1), real(e.x2), real(e.y2))
+
+    ground(self, e: Element)
+        val x = real(e.x1)
+        val y = real(e.y1)
+
+        set(self.vg, wire_colour(0.0, 1.0))
+        self.width(3.0)
+        self.line(x, y, x, y + 0.35)
+        self.line(x - 0.35, y + 0.35, x + 0.35, y + 0.35)
+        self.line(x - 0.22, y + 0.5, x + 0.22, y + 0.5)
+        self.line(x - 0.09, y + 0.65, x + 0.09, y + 0.65)
+
+    // A two-ended part: a lead from each end in its end's colour, and the symbol in the middle, drawn
+    // in a frame where the part runs along +u from its first end and +n is to its left.
+    part(self, e: Element, most: real, hot: bool)
+        val m = self.m
+        val ax = real(e.x1)
+        val ay = real(e.y1)
+        val dx = real(e.x2 - e.x1)
+        val dy = real(e.y2 - e.y1)
+        val length = (dx * dx + dy * dy).sqrt()
+        val ux = dx / length
+        val uy = dy / length
+        // The symbol takes the middle of the part, at most a square and a half of it.
+        val body = min(1.5, length)
+        val s0 = (length - body) / 2.0
+        val s1 = s0 + body
+        val va = m.s.voltage(e.a)
+        val vb = m.s.voltage(e.b)
+        val f = Frame(self, ax, ay, ux, uy)
+
+        self.width(3.0)
+        set(self.vg, wire_colour(va, most))
+        f.line(0.0, 0.0, s0, 0.0)
+        set(self.vg, wire_colour(vb, most))
+        f.line(s1, 0.0, length, 0.0)
+
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+
+        e.shape match
+            Resistor ->
+                val teeth = 6
+                val step = body / real(teeth * 2)
+                var s = s0
+
+                self.vg.begin()
+                f.move(s, 0.0)
+
+                for k in 0..<teeth * 2
+                    s += step
+                    f.to(s - step / 2.0, if k % 2 == 0 then 0.22 else -0.22)
+
+                f.to(s1, 0.0)
+                self.vg.stroke()
+            Battery ->
+                val mid = (s0 + s1) / 2.0
+
+                f.line(s0, 0.0, mid - 0.12, 0.0)
+                f.line(mid + 0.12, 0.0, s1, 0.0)
+                // The long plate is `+`, the first end; the short, thick one is `−`.
+                f.line(mid - 0.12, -0.45, mid - 0.12, 0.45)
+                self.width(5.0)
+                f.line(mid + 0.12, -0.22, mid + 0.12, 0.22)
+                self.width(2.0)
+                f.line(mid - 0.45, 0.42, mid - 0.25, 0.42)
+                f.line(mid - 0.35, 0.32, mid - 0.35, 0.52)
+            CurrentSource ->
+                val mid = (s0 + s1) / 2.0
+                val radius = min(0.5, body / 2.0)
+
+                f.line(s0, 0.0, mid - radius, 0.0)
+                f.line(mid + radius, 0.0, s1, 0.0)
+                self.vg.begin()
+                self.vg.circle(f.x(mid, 0.0), f.y(mid, 0.0), self.len(radius))
+                self.vg.stroke()
+                // The arrow points the way the current leaves: out of the second end.
+                f.line(mid - radius * 0.6, 0.0, mid + radius * 0.6, 0.0)
+                self.vg.begin()
+                f.move(mid + radius * 0.6, 0.0)
+                f.to(mid + radius * 0.2, 0.18)
+                f.to(mid + radius * 0.2, -0.18)
+                self.vg.close_path()
+                self.vg.fill()
+            Diode | Led ->
+                val mid = (s0 + s1) / 2.0
+
+                if e.shape == Led then self.glow(f, mid, e)
+
+                set(self.vg, if hot then SELECTED else INK)
+                self.width(2.5)
+                f.line(s0, 0.0, mid - 0.3, 0.0)
+                f.line(mid + 0.3, 0.0, s1, 0.0)
+                self.vg.begin()
+                f.move(mid - 0.3, -0.32)
+                f.to(mid + 0.3, 0.0)
+                f.to(mid - 0.3, 0.32)
+                self.vg.close_path()
+                self.vg.stroke()
+                f.line(mid + 0.3, -0.32, mid + 0.3, 0.32)
+
+                if e.shape == Led
+                    // Two arrows leaving it: light.
+                    self.width(1.8)
+
+                    for k in 0..<2
+                        val o = real(k) * 0.24
+
+                        f.line(mid - 0.05 + o, 0.42, mid + 0.15 + o, 0.68)
+                        f.line(mid + 0.15 + o, 0.68, mid + 0.03 + o, 0.65)
+                        f.line(mid + 0.15 + o, 0.68, mid + 0.14 + o, 0.56)
+            _ -> ()
+
+    // An LED's light: a halo in its colour, as bright as its current is near 20 mA.
+    glow(self, f: Frame, mid: real, e: Element)
+        val i = self.m.s.current(e.part)
+        val t = min(1.0, max(0.0, i / 20e-3))
+
+        if t < 0.02 then return
+
+        val c = led_colour(e.colour)
+
+        self.vg.rgba(f32(int((c >> 16) & 0xFF)) / 255.0, f32(int((c >> 8) & 0xFF)) / 255.0, f32(int(c & 0xFF)) / 255.0,
+                     f32(0.15 + 0.6 * t))
+        self.vg.begin()
+        self.vg.circle(f.x(mid, 0.0), f.y(mid, 0.0), self.len(0.35 + 0.35 * t))
+        self.vg.fill()
+
+    // A voltmeter: a dial a square off to the side, and its red and black leads.
+    meter(self, x1: int, y1: int, x2: int, y2: int)
+        val (cx, cy) = meter_centre(self.m, x1, y1, x2, y2)
+
+        self.vg.save()
+        self.width(2.0)
+
+        var dash: [2]f32 = [f32(6.0 * self.scale), f32(4.0 * self.scale)]
+
+        self.vg.dash(dash[..])
+        set(self.vg, RED_LEAD)
+        self.line(real(x1), real(y1), cx, cy)
+        set(self.vg, BLACK_LEAD)
+        self.line(real(x2), real(y2), cx, cy)
+        self.vg.restore()
+
+        set(self.vg, RED_LEAD)
+        self.dot(real(x1), real(y1), 5.0)
+        set(self.vg, BLACK_LEAD)
+        self.dot(real(x2), real(y2), 5.0)
+
+        set(self.vg, 0x1E2128)
+        self.vg.begin()
+        self.vg.round_rect(self.px(cx - 0.75), self.py(cy - 0.3), self.len(1.5), self.len(0.6), self.len(0.12), self.len(0.12))
+        self.vg.fill()
+        set(self.vg, INK)
+        self.width(1.5)
+        self.vg.begin()
+        self.vg.round_rect(self.px(cx - 0.75), self.py(cy - 0.3), self.len(1.5), self.len(0.6), self.len(0.12), self.len(0.12))
+        self.vg.stroke()
+
+// Where a meter's dial sits: off the middle of its two leads, two and a half squares out from the line between
+// them on the side away from the middle of the drawing, so it stands clear of the circuit.
+private meter_centre(m: &Model, x1: int, y1: int, x2: int, y2: int) -> (real, real)
+    val mx = (real(x1) + real(x2)) / 2.0
+    val my = (real(y1) + real(y2)) / 2.0
+    val dx = real(x2 - x1)
+    val dy = real(y2 - y1)
+    val length = (dx * dx + dy * dy).sqrt()
+
+    if length == 0.0 then return (mx, my - 1.5)
+
+    var nx = dy / length
+    var ny = -dx / length
+    val (gx, gy) = middle(m)
+
+    if (mx - gx) * nx + (my - gy) * ny < 0.0
+        nx = -nx
+        ny = -ny
+
+    (mx + 2.5 * nx, my + 2.5 * ny)
+
+// The middle of the drawing: the average of every part's and wire's ends.
+private middle(m: &Model) -> (real, real)
+    var sx = 0.0
+    var sy = 0.0
+    var n = 0.0
+
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+
+        if e.shape == Meter then continue
+
+        sx += real(e.x1 + e.x2)
+        sy += real(e.y1 + e.y2)
+        n += 2.0
+
+    if n == 0.0 then (0.0, 0.0) else (sx / n, sy / n)
+
+private led_colour(c: Colour) -> u32 = c match
+    Red -> 0xFF3B30
+    Yellow -> 0xFFD60A
+    Green -> 0x30D158
+    Blue -> 0x409CFF
+
+// A part's own frame: `s` along it from its first end, `t` across it to the left.
+private struct Frame
+    pen: Pen
+    ax: real
+    ay: real
+    ux: real
+    uy: real
+
+    x(self, s: real, t: real) -> f32 = self.pen.px(self.ax + s * self.ux + t * self.uy)
+    y(self, s: real, t: real) -> f32 = self.pen.py(self.ay + s * self.uy - t * self.ux)
+
+    move(self, s: real, t: real) = self.pen.vg.move_to(self.x(s, t), self.y(s, t))
+    to(self, s: real, t: real) = self.pen.vg.line_to(self.x(s, t), self.y(s, t))
+
+    line(self, s0: real, t0: real, s1: real, t1: real)
+        self.pen.vg.begin()
+        self.move(s0, t0)
+        self.to(s1, t1)
+        self.pen.vg.stroke()
+
+// --- Labels -----------------------------------------------------------------------------------------
+
+// The text over the picture: each part's name and value, the voltage across it when values are on,
+// each label, and each meter's reading.
+private labels(m: &Model, c: *Canvas, at: Place)
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+
+        if e.shape == Label
+            put(c, at.x(real(e.x1)) + 6.0, at.y(real(e.y1)) - 22.0, e.name, DIM, false)
+            continue
+
+        if !e.shape.is_part() then continue
+
+        val mx = at.x((real(e.x1) + real(e.x2)) / 2.0)
+        val my = at.y((real(e.y1) + real(e.y2)) / 2.0)
+        val across = e.y1 == e.y2
+        // Beside a vertical part, under a horizontal one.
+        val (lx, ly) = if across then (mx, my + 0.5 * at.unit) else (mx + 0.75 * at.unit, my - 18.0)
+        val value = e.shape match
+            Resistor -> s"${e.value}Ω"
+            Led -> s"${colour_name(e.colour)}"
+            _ -> e.value
+
+        put(c, lx, ly, s"${e.name} ${value}", INK, across)
+
+        if m.values && m.trouble == "" && e.shape != Battery && e.shape != CurrentSource
+            put(c, lx, ly + 18.0, volts(m.s.across(e.part)), 0xFFB030, across)
+
+    for i in 0..<m.sch.elements.len()
+        val e = m.sch.elements[i]
+
+        if e.shape == Meter then dial(m, c, at, Meter(e.x1, e.y1, e.x2, e.y2))
+
+    for k in 0..<m.meters.len()
+        dial(m, c, at, m.meters[k])
+
+private dial(m: &Model, c: *Canvas, at: Place, mt: Meter)
+    val (cx, cy) = meter_centre(m, mt.x1, mt.y1, mt.x2, mt.y2)
+    val reading = if m.trouble == "" then volts(m.reading(mt)) else "—"
+
+    put(c, at.x(cx), at.y(cy) - 9.0, reading, INK, true)
+
+// Text at a window point: its left edge there, or its middle when `centred`.
+private put(c: *Canvas, x: real, y: real, t: string, colour: u32, centred: bool)
+    val size = c.text_size(t)
+    val left = if centred then int(x) - size.w / 2 else int(x)
+
+    c.ink(colour)
+    c.text(Rect(left, int(y), size.w + 2, size.h), t)
+    c.unink()
