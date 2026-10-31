@@ -26,6 +26,7 @@ import sysl.text.{Search, fields, split}
 // | `battery` | two, `+` first | volts |
 // | `source` | two, `+` first | a wave, below |
 // | `current` | two; the current flows out of the second | amps, or a wave |
+// | `gen` | two: output, then return | a signal generator's settings, below |
 // | `switch` | two | `open` (the default) or `closed` |
 // | `diode` | two, anode first | — |
 // | `led` | two, anode first | `red` (the default), `yellow`, `green` or `blue` |
@@ -50,8 +51,17 @@ import sysl.text.{Search, fields, split}
 //     dc <value>
 //     sine <amplitude> <frequency> [<offset>]
 //     square <low> <high> <frequency> [<duty>]
+//     triangle <low> <high> <frequency>
 //     pulse <low> <high> <delay> <rise> <fall> <width> <period>
 //     pwl <time> <value> <time> <value> …
+//
+// A signal generator is a bench instrument rather than a bare source: a waveform, its frequency, its
+// amplitude (the peak, from the offset), perhaps an offset, and perhaps an output resistance, which is
+// 50 Ω if the line does not say. A `dc` generator puts out its offset, and keeps its frequency and
+// amplitude for when it is switched back to a wave:
+//
+//     gen      G1  0 4  0 8  sine 1k 10m
+//     gen      G2  0 4  0 8  square 50 2.5 2.5 600
 //
 // and a line `speed <seconds>` says how many seconds of the circuit's time a viewer should show in each
 // second of its own. `#` starts a comment, and a blank line is nothing.
@@ -70,6 +80,7 @@ enum Shape: u8
     Battery
     Source
     CurrentSource
+    Generator
     Switch
     Diode
     Led
@@ -395,7 +406,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     val kind = if shape.is_part() then Some(part_kind(shape, words[0], rest, colour)?) else None
     val most = shape match
         Wire | Ground | Label | Meter | Diode -> 0
-        Source | CurrentSource -> rest.len
+        Source | CurrentSource | Generator -> rest.len
         _ -> 1
 
     if rest.len > usize(most) then return Err(s"'${rest[usize(most)]}' is more than ${one} takes")
@@ -440,6 +451,7 @@ private shape_named(word: string) -> Result[Shape, string] = word match
     "battery" -> Ok(Battery)
     "source" -> Ok(Source)
     "current" -> Ok(CurrentSource)
+    "gen" -> Ok(Generator)
     "switch" -> Ok(Switch)
     "diode" -> Ok(Diode)
     "led" -> Ok(Led)
@@ -462,7 +474,8 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 // The part an element is, from the words after its points.
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
     val optional = shape match
-        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos -> true
+        // A generator says for itself what it is missing.
+        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator -> true
         _ -> false
 
     if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
@@ -474,6 +487,10 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
         Battery -> Ok(VoltageSource(Dc(parse_value(rest[0])?)))
         Source -> Ok(VoltageSource(parse_wave(rest)?))
         CurrentSource -> Ok(CurrentSource(if rest.len == 1 then Dc(parse_value(rest[0])?) else parse_wave(rest)?))
+        Generator ->
+            val (osc, ohms) = parse_generator(rest)?
+
+            Ok(Generator(osc.wave(), ohms))
         Switch ->
             if rest.len == 0 then return Ok(Switch(false))
 
@@ -513,7 +530,7 @@ private positive(word: string, what: string) -> Result[real, string]
 
 // A wave from its words: `dc 5`, `sine 5 1k`, `square 0 5 1k`, `pulse …`, `pwl …`.
 parse_wave(words: []string) -> Result[Wave, string]
-    if words.len == 0 then return Err("a wave needs a kind: dc, sine, square, pulse or pwl")
+    if words.len == 0 then return Err("a wave needs a kind: dc, sine, square, triangle, pulse or pwl")
 
     var v: Buf[real] = buf()
 
@@ -543,6 +560,12 @@ parse_wave(words: []string) -> Result[Wave, string]
             if duty <= 0.0 || duty >= 1.0 then return Err("a duty is between 0 and 1")
 
             Ok(square(v[0], v[1], v[2], duty))
+        "triangle" ->
+            if n != 3 then return Err("triangle takes a low, a high and a frequency")
+
+            if v[2] <= 0.0 then return Err("a frequency is more than zero")
+
+            Ok(triangle(v[0], v[1], v[2]))
         "pulse" ->
             if n != 7 then return Err("pulse takes low, high, delay, rise, fall, width and period")
 
@@ -562,7 +585,28 @@ parse_wave(words: []string) -> Result[Wave, string]
                 points.push((v[2 * k], v[2 * k + 1]))
 
             Ok(Pwl(points))
-        _ -> Err(s"'${words[0]}' is not a kind of wave: dc, sine, square, pulse or pwl")
+        _ -> Err(s"'${words[0]}' is not a kind of wave: dc, sine, square, triangle, pulse or pwl")
+
+// A signal generator's settings from the words after its points — `sine 1k 10m`, `square 50 2.5 2.5
+// 600` — and its output resistance, 50 Ω where they do not give one.
+parse_generator(words: []string) -> Result[(Oscillator, real), string]
+    if words.len == 0 then return Err("a generator needs a waveform: sine, square, triangle or dc")
+
+    val form = waveform_named(words[0]).ok_or(s"'${words[0]}' is not a generator's waveform: sine, square, triangle or dc")?
+
+    if words.len < 3 then return Err("a generator takes a waveform, a frequency, an amplitude, and perhaps an offset and an output resistance")
+
+    if words.len > 5 then return Err(s"'${words[5]}' is more than a generator takes")
+
+    val frequency = positive(words[1], "a frequency")?
+    val amplitude = parse_value(words[2])?
+
+    if amplitude < 0.0 then return Err("an amplitude is not below zero")
+
+    val offset = if words.len > 3 then parse_value(words[3])? else 0.0
+    val ohms = if words.len > 4 then positive(words[4], "an output resistance")? else 50.0
+
+    Ok((oscillator(form, frequency, amplitude, offset), ohms))
 
 private parse_coordinate(word: string) -> Result[int, string]
     val b = word.bytes

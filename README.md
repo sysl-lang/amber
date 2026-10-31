@@ -23,16 +23,25 @@ flows, faster for more current.
   what every meter has read over the last five seconds, each in its meter's colour.
 - **Click a switch** to flip it; click any part for the voltage across it, the current through it and
   the power it takes or delivers.
+- **Click a signal generator** to open its panel beside the scope: a waveform (sine, square,
+  triangle or dc), and sliders for its frequency (a tenth of a hertz to a megahertz, a decade to the
+  same length of slider), its amplitude (a millivolt to ten volts, likewise) and its offset. A change
+  reaches the circuit at once, while its clock runs: nothing restarts, and the wave carries on from
+  where it was in its cycle, as a bench generator's does. `close`, or a click anywhere else, puts the
+  panel away; a restart keeps its settings.
 - `space` pauses, `+` and `-` change the speed, `r` switches the circuit on again from empty, `v`
   toggles the voltage beside every part, `c` clears the meters, Escape quits.
 
 `--shot out.png --time 10m` runs the circuit for ten milliseconds of its own time and draws that frame
-to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command line.
+to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command line, and
+`--select G1` clicks an element, so a generator's panel can be drawn too.
 
 The examples: `led` (a battery, a resistor and an LED), `rc` (a capacitor charging when you close the
 switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
-a second) and `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED).
+a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
+(a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 230 mV, upside down;
+turn the generator up past about 150 mV and the output clips).
 
 ## Schematics
 
@@ -52,12 +61,25 @@ meter     OUT 6 0  6 6                     # red lead first
 ```
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
-`switch` (`open` or `closed`), `diode`, `led` (`red`, `yellow`, `green`, `blue`), and the
+`gen` (a signal generator, below), `switch` (`open` or `closed`), `diode`, `led` (`red`, `yellow`,
+`green`, `blue`), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default). Also `wire`,
 `ground`, `label` (names a node) and `meter`. Waves: `dc 5`, `sine 5 1k [offset]`,
-`square 0 5 1k [duty]`, `pulse low high delay rise fall width period` (SPICE's), and
-`pwl t v t v …`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg` (and `1m` is a milliohm).
+`square 0 5 1k [duty]`, `triangle -1 1 1k` (low, high, frequency), `pulse low high delay rise fall
+width period` (SPICE's), and `pwl t v t v …`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg`
+(and `1m` is a milliohm).
+
+A signal generator is a bench instrument: a waveform (`sine`, `square`, `triangle` or `dc`), a
+frequency, an amplitude (the peak, from the offset), and perhaps an offset and an output resistance,
+50 Ω unless the line says otherwise. It is placed by its output and its return, and a meter across
+them reads what reaches the circuit: the wave less what the output resistance drops. A `dc` generator
+puts out its offset, keeping its frequency and amplitude for when it is switched back to a wave.
+
+```
+gen       G1  2 5  2 10  sine 1k 10m             # output, return; 10 mV at 1 kHz from 50 Ω
+gen       G2  0 0  0 4   square 50 2.5 2.5 600   # 0 to 5 V at 50 Hz from 600 Ω
+```
 
 A transistor is placed by three points — collector, base, emitter — with its base a square or more
 off the line between the other two, which is where its symbol is drawn:
@@ -82,7 +104,8 @@ cli/amber-cli oracle/rc_pulse.cir
 
 reads a SPICE netlist — the format published circuits and every other simulator use — runs its
 analyses and prints their tables. The subset: `R`, `C` and `L` (with `IC=`), `V` and `I` sources
-(DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; an `AC` part is set aside), `D` with `.model … D`
+(DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; an `AC` part is set aside; a triangle is a
+`PULSE` with no top, `PULSE(low high 0 T/2 T/2 0 T)`), `D` with `.model … D`
 (`IS`, `N`, `RS`, and an area), `Q` bipolar transistors (collector, base, emitter, an optional
 substrate, a model and an area) with `.model … NPN` or `PNP` (`IS`, `BF`, `BR`, `NF`, `NR`, `VAF`,
 `VAR`), `M` MOSFETs (drain, gate, source, bulk, a model, and `L=`, `W=` and `M=`, SPICE's 100 µm when
@@ -134,7 +157,10 @@ print(s.voltage_at("top"))      // 5 (1 − e⁻¹) ≈ 3.16
 
 `operating_point()` finds the circuit settled; `power_on()` starts it from empty; `advance_to(t)`
 runs it to a time, landing on it exactly; `set_switch` and `set_wave` change it between steps. That
-incremental shape is what lets a program — an emulated microcontroller, say — drive it as it runs. It
+incremental shape is what lets a program — an emulated microcontroller, say — drive it as it runs.
+`Generator(wave, ohms)` is a bench signal generator, its wave behind an output resistance, and an
+`Oscillator` (`oscillator(Waveform.Sine, 1000.0, 10e-3)`) makes its wave and, `retuned` at the moment
+of a change, carries its phase across it. It
 needs nothing but an allocator. What is planned is in [DESIGN.md](DESIGN.md).
 
 ```

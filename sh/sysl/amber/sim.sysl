@@ -135,6 +135,7 @@ struct Sim
             Inductor(_) -> self.x[usize(self.extra[usize(i)])]
             VoltageSource(_) -> self.x[usize(self.extra[usize(i)])]
             CurrentSource(w) -> w.at(self.time)
+            Generator(w, ohms) -> (self.across(i) - w.at(self.time)) / ohms
             Diode(m) ->
                 val v = self.junction[usize(2 * i)]
 
@@ -234,6 +235,7 @@ struct Sim
         self.circuit.parts[usize(i)].kind match
             VoltageSource(_) -> self.circuit.parts[usize(i)].kind = VoltageSource(w)
             CurrentSource(_) -> self.circuit.parts[usize(i)].kind = CurrentSource(w)
+            Generator(_, ohms) -> self.circuit.parts[usize(i)].kind = Generator(w, ohms)
             _ -> return
 
         self.corner()
@@ -642,6 +644,14 @@ struct Sim
 
                     self.sys.rhs(a, -amps)
                     self.sys.rhs(b, amps)
+                Generator(w, ohms) ->
+                    // The wave behind its resistance, as the current it would drive into a short
+                    // circuit with the resistance across it.
+                    val amps = w.at(self.time) / ohms
+
+                    self.conductance(a, b, 1.0 / ohms)
+                    self.sys.rhs(a, amps)
+                    self.sys.rhs(b, -amps)
                 Diode(m) ->
                     val inner = self.extra[i]
                     val anode = if inner >= 0 then inner else a

@@ -2,16 +2,17 @@
 // can be put across anything.
 //
 //     amber <file.amber>
-//     amber <file.amber> --shot <out.png> [--time <seconds>] [--meter <x1>,<y1>,<x2>,<y2>]...
+//     amber <file.amber> --shot <out.png> [--time <seconds>] [--meter <x1>,<y1>,<x2>,<y2>]... [--select <name>]
 //
 // The circuit is switched on when the window opens and its clock runs at the file's speed. Click a grid
 // point to put a meter's red lead there, and a second one for its black lead; the meter reads the first
 // point's voltage less the second's, and the scope under the circuit draws what it has read. Click a
-// part to see the voltage across it and the current through it, and a switch to flip it.
+// part to see the voltage across it and the current through it, a switch to flip it, and a signal
+// generator to open its panel and turn its knobs while the circuit runs.
 //
 // `--shot` draws one frame with no window and writes it to a PNG, after running the circuit for
-// `--time` seconds of its own, with any meters `--meter` places, so the picture a person would see is
-// one a machine can check.
+// `--time` seconds of its own, with any meters `--meter` places and the element `--select` names
+// clicked, so the picture a person would see is one a machine can check.
 
 import sh.sysl.amber.{parse_schematic, parse_value}
 import sh.sysl.ui.{Rect, render, pluto_canvas, fraction}
@@ -28,6 +29,7 @@ main(args: []string) -> Result[unit, string]
     var file = ""
     var shot = ""
     var time = 0.0
+    var chosen = ""
     var placed: Buf[(int, int, int, int)] = buf()
     var i: usize = 1
 
@@ -43,13 +45,16 @@ main(args: []string) -> Result[unit, string]
         elif a == "--meter" && i + 1 < args.len
             placed.push(meter_option(args[i + 1])?)
             i += 2
+        elif a == "--select" && i + 1 < args.len
+            chosen = args[i + 1]
+            i += 2
         elif file == "" && !a.starts_with("--")
             file = a
             i += 1
         else
-            return Err(s"usage: amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]... ('${a}' is not one of these)")
+            return Err(s"usage: amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]... [--select <name>] ('${a}' is not one of these)")
 
-    if file == "" then return Err("usage: amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]...")
+    if file == "" then return Err("usage: amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]... [--select <name>]")
 
     val text = read_text(file).map_err(e -> s"${file}: ${e}")?
     val sch = parse_schematic(text).map_err(e -> s"${file}: ${e}")?
@@ -59,6 +64,9 @@ main(args: []string) -> Result[unit, string]
         val (x1, y1, x2, y2) = placed[k]
 
         m.add_meter(x1, y1, x2, y2)
+
+    if chosen != ""
+        m.select(sch.find(chosen).ok_or(s"--select: ${file} has no element called '${chosen}'")?)
 
     if shot == "" then return run(app(s"amber — ${file}", () -> screen(m), () -> GROUND, WIDTH, HEIGHT,
                                       on_event = e -> shortcut(m, e), on_frame = dt -> tick(m, dt)))

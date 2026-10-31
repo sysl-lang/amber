@@ -1,0 +1,303 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, min, tau}
+import sysl.raw.str_cast
+
+// The triangle wave, the signal generator's oscillator, the generator as a part, and the amplifier
+// example it drives.
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// --- The triangle wave ------------------------------------------------------------------------------
+
+@test("a triangle rises from its low to its high over half a period and falls back over the other half")
+triangle_shape()
+    val w = triangle(0.0, 2.0, 1000.0)
+
+    assert(near(w.at(0.0), 0.0, 1e-12))
+    assert(near(w.at(0.125e-3), 0.5, 1e-9))
+    assert(near(w.at(0.25e-3), 1.0, 1e-9))
+    assert(near(w.at(0.5e-3), 2.0, 1e-9))
+    assert(near(w.at(0.75e-3), 1.0, 1e-9))
+    assert(near(w.at(1.0e-3), 0.0, 1e-9))
+    assert(near(w.at(3.25e-3), 1.0, 1e-9))
+
+@test("a triangle's corners are its peaks and its troughs, where the solver lands a step")
+triangle_corners()
+    val w = triangle(-1.0, 1.0, 1000.0, delay = 0.2e-3)
+
+    assert(w.next_corner(0.0) == Some(0.2e-3))
+    assert(near(w.next_corner(0.3e-3).unwrap(), 0.7e-3, 1e-15))
+    assert(near(w.next_corner(0.8e-3).unwrap(), 1.2e-3, 1e-15))
+    assert(near(w.at(0.7e-3), 1.0, 1e-9))
+
+@test("a schematic's triangle is the triangle wave")
+schematic_triangle()
+    val sch = parse_schematic("source V1 0 0 0 4 triangle -1 1 500\nground 0 4").unwrap()
+
+    assert(sch.circuit.parts[0].kind.wave() == Some(triangle(-1.0, 1.0, 500.0)))
+
+@test("a netlist writes a triangle as a pulse with no top, and it is the same wave")
+netlist_triangle()
+    val net = parse_netlist("triangle\nV1 a 0 PULSE(-1 1 0 0.5m 0.5m 0 1m)\nR1 a 0 1k\n.end").unwrap()
+
+    assert(net.circuit.parts[0].kind.wave() == Some(triangle(-1.0, 1.0, 1000.0)))
+
+// --- The oscillator ---------------------------------------------------------------------------------
+
+@test("every waveform starts its cycle where a sine does, at its offset and rising")
+oscillator_waveforms()
+    val period = 1e-3
+    val sine = oscillator(Waveform.Sine, 1000.0, 2.0, 1.0).wave()
+    val square = oscillator(Waveform.Square, 1000.0, 2.0, 1.0).wave()
+    val tri = oscillator(Waveform.Triangle, 1000.0, 2.0, 1.0).wave()
+    val dc = oscillator(Waveform.Dc, 1000.0, 2.0, 1.0).wave()
+
+    assert(near(sine.at(0.0), 1.0, 1e-12))
+    assert(near(sine.at(period / 4.0), 3.0, 1e-9))
+    assert(near(sine.at(3.0 * period / 4.0), -1.0, 1e-9))
+
+    assert(near(square.at(0.1 * period), 3.0, 1e-9))
+    assert(near(square.at(0.4 * period), 3.0, 1e-9))
+    assert(near(square.at(0.6 * period), -1.0, 1e-9))
+    assert(near(square.at(0.9 * period), -1.0, 1e-9))
+
+    assert(near(tri.at(0.0), 1.0, 1e-9))
+    assert(near(tri.at(period / 4.0), 3.0, 1e-9))
+    assert(near(tri.at(period / 2.0), 1.0, 1e-9))
+    assert(near(tri.at(3.0 * period / 4.0), -1.0, 1e-9))
+    assert(near(tri.at(period / 8.0), 2.0, 1e-9))
+
+    assert(dc == Dc(1.0))
+
+@test("an oscillator's phase runs on with its frequency and wraps at each whole cycle")
+oscillator_phase()
+    val o = oscillator(Waveform.Sine, 1000.0, 1.0)
+
+    assert(near(o.phase_at(0.25e-3), 0.25, 1e-9))
+    assert(near(o.phase_at(2.75e-3), 0.75, 1e-9))
+
+    val r = o.retuned(2.75e-3)
+
+    assert(r.start == 2.75e-3)
+    assert(near(r.phase, 0.75, 1e-9))
+    assert(near(r.phase_at(3.0e-3), 0.0, 1e-9) || near(r.phase_at(3.0e-3), 1.0, 1e-9))
+
+@test("a new frequency picks up where the old wave was in its cycle, for every waveform")
+retuned_is_continuous()
+    for form in WAVEFORMS
+        val old = oscillator(form, 1000.0, 1.0, 0.5)
+        // A moment partway up a rise, a third of the way through the fourth cycle.
+        val t = 3.33e-3
+        var r = old.retuned(t)
+
+        r.frequency = 2500.0
+
+        // The square's value is at its high on either side of the change, the others at the same
+        // point of their slope.
+        assert(near(r.wave().at(t), old.wave().at(t), 1e-6))
+
+        // And it runs on at the new frequency: a whole cycle of it later, the same value again.
+        assert(near(r.wave().at(t + 1.0 / 2500.0), old.wave().at(t), 1e-6))
+
+// --- The generator as a part ------------------------------------------------------------------------
+
+@test("a generator into a load of its own output resistance gives half its wave at its terminals")
+generator_matched_load()
+    var c = circuit()
+
+    c.connect("G1", Generator(Dc(1.0), 50.0), "out", "0")
+    c.connect("RL", Resistor(50.0), "out", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(near(s.across(0), 0.5, 1e-9))
+    // Delivering: the current leaves by its first terminal, so it is negative, as a battery's is.
+    assert(near(s.current(0), -10e-3, 1e-12))
+    assert(near(s.power(0), -5e-3, 1e-12))
+    assert(near(s.current(1), 10e-3, 1e-12))
+
+@test("a generator's output resistance divides with its load, and an open one shows its whole wave")
+generator_output_resistance()
+    for (ohms, load) in [(600.0, 1200.0), (50.0, 1e9), (50.0, 450.0)]
+        var c = circuit()
+
+        c.connect("G1", Generator(Dc(3.0), ohms), "out", "0")
+        c.connect("RL", Resistor(load), "out", "0")
+
+        var s = sim(c)
+
+        s.operating_point().unwrap()
+        assert(near(s.across(0), 3.0 * load / (load + ohms), 1e-9))
+        assert(near(s.current(0), -3.0 / (load + ohms), 1e-12))
+
+@test("a generator's wave changed while the clock runs is followed from that moment")
+generator_retuned_mid_run()
+    var c = circuit()
+    var o = oscillator(Waveform.Sine, 1000.0, 1.0)
+
+    c.connect("G1", Generator(o.wave(), 50.0), "out", "0")
+    c.connect("RL", Resistor(50.0), "out", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s.advance_to(1.1e-3).unwrap()
+    assert(near(s.across(0), 0.5 * (tau * 0.1).sin(), 1e-6))
+
+    var r = o.retuned(s.time)
+
+    r.form = Waveform.Square
+    s.set_wave(0, r.wave())
+    // The kind keeps its output resistance.
+    assert(s.circuit.parts[0].kind == Generator(r.wave(), 50.0))
+
+    // A tenth of a cycle on, still high; past the half cycle, low; the square starts no new cycle.
+    s.advance_to(1.2e-3).unwrap()
+    assert(near(s.across(0), 0.5, 1e-6))
+    s.advance_to(1.6e-3).unwrap()
+    assert(near(s.across(0), -0.5, 1e-6))
+
+@test("a source's new wave mid-run is a corner: the capacitor charges on from where it was")
+new_wave_mid_run_follows_the_capacitor()
+    var c = circuit()
+
+    // τ = 1 ms.
+    c.connect("V1", VoltageSource(Dc(1.0)), "a", "0")
+    c.connect("R1", Resistor(1000.0), "a", "b")
+    c.connect("C1", Capacitor(1e-6), "b", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    s.advance_to(5e-3).unwrap()
+    s.set_wave(0, Dc(3.0))
+
+    // From 1 V toward 3 V: 1 + 2 · (1 − e^(−t/τ)) at each τ along.
+    for k in 1..4
+        s.advance_to(5e-3 + real(k) * 1e-3).unwrap()
+        assert(near(s.voltage_at("b"), 1.0 + 2.0 * (1.0 - (-real(k)).exp()), 2e-3))
+
+    // A second change, a step down to 0 V, starts from where the charging had got to.
+    val from = s.voltage_at("b")
+
+    s.set_wave(0, Dc(0.0))
+    s.advance_to(10e-3).unwrap()
+    assert(near(s.voltage_at("b"), from * (-1.0).exp(), 2e-3))
+
+@test("a generator line reads its waveform, frequency, amplitude, offset and output resistance")
+schematic_generator()
+    val sch = parse_schematic("""
+        gen      G1  0 0  0 4  sine 1k 10m
+        gen      G2  2 0  2 4  square 50 2.5 2.5 600
+        gen      G3  4 0  4 4  triangle 200 1 0
+        gen      G4  6 0  6 4  dc 1k 1 -2
+        wire         0 4  6 4
+        ground       0 4
+        """).unwrap()
+
+    assert(sch.elements[0].shape == Shape.Generator)
+    assert(sch.elements[0].value == "sine 1k 10m")
+    assert(sch.circuit.parts[0].kind == Generator(oscillator(Waveform.Sine, 1000.0, 10e-3).wave(), 50.0))
+    assert(sch.circuit.parts[1].kind == Generator(oscillator(Waveform.Square, 50.0, 2.5, 2.5).wave(), 600.0))
+    assert(sch.circuit.parts[2].kind == Generator(oscillator(Waveform.Triangle, 200.0, 1.0).wave(), 50.0))
+    assert(sch.circuit.parts[3].kind == Generator(Dc(-2.0), 50.0))
+
+    val (o, ohms) = parse_generator(["square", "50", "2.5", "2.5", "600"]).unwrap()
+
+    assert(o == oscillator(Waveform.Square, 50.0, 2.5, 2.5))
+    assert(ohms == 600.0)
+
+@test("a generator line's mistakes are refused with their line")
+generator_refusals()
+    assert(parse_schematic("gen G1 0 0 0 4").unwrap_err() == "line 1: a generator needs a waveform: sine, square, triangle or dc")
+    assert(parse_schematic("gen G1 0 0 0 4 sawtooth 1k 1").unwrap_err() == "line 1: 'sawtooth' is not a generator's waveform: sine, square, triangle or dc")
+    assert(parse_schematic("gen G1 0 0 0 4 sine 1k").unwrap_err() == "line 1: a generator takes a waveform, a frequency, an amplitude, and perhaps an offset and an output resistance")
+    assert(parse_schematic("gen G1 0 0 0 4 sine 1k 1 0 50 9").unwrap_err() == "line 1: '9' is more than a generator takes")
+    assert(parse_schematic("gen G1 0 0 0 4 sine 0 1").unwrap_err() == "line 1: a frequency is more than zero")
+    assert(parse_schematic("gen G1 0 0 0 4 sine 1k -1").unwrap_err() == "line 1: an amplitude is not below zero")
+    assert(parse_schematic("gen G1 0 0 0 4 sine 1k 1 0 0").unwrap_err() == "line 1: an output resistance is more than zero")
+    assert(parse_schematic("gen G1 0 0 0 4 sine 1k loud").unwrap_err() == "line 1: 'loud' is not a number")
+    assert(parse_schematic("gen G1 0 0 0 4 sine 1k 1 high").unwrap_err() == "line 1: 'high' is not a number")
+    assert(parse_schematic("gen G1 0 0 0 0 sine 1k 1").unwrap_err() == "line 1: a gen needs two different points")
+    assert(parse_schematic("gen G1 0 0 0").unwrap_err() == "line 1: a gen is placed by 2 points")
+
+// --- The amplifier example --------------------------------------------------------------------------
+
+// The 1 kHz part of `v` over whole cycles sampled evenly: its peak and its phase, in radians.
+private tone(v: Buf[real]) -> (real, real)
+    var re = 0.0
+    var im = 0.0
+    val n = real(v.len())
+
+    for k in 0..<v.len()
+        val a = tau * real(k) * 3.0 / n
+
+        re += v[k] * a.cos()
+        im += v[k] * a.sin()
+
+    (2.0 * (re * re + im * im).sqrt() / n, im.atan2(re))
+
+@test("the amplifier example amplifies about as much as the hand estimate says, and inverts")
+amplifier_example()
+    val sch = parse_schematic(str_cast(embed("../../../examples/amplifier.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val g1 = sch.find("G1").unwrap()
+    var ins: Buf[real] = buf()
+    var outs: Buf[real] = buf()
+
+    assert(sch.elements[g1].shape == Shape.Generator)
+
+    s.operating_point().unwrap()
+    s.advance_to(20e-3).unwrap()
+
+    // Three whole cycles, a thousand samples each.
+    for k in 1..3000
+        s.advance_to(20e-3 + real(k) * 1e-6).unwrap()
+        ins.push(s.voltage_at("in"))
+        outs.push(s.voltage_at("out"))
+
+    val (vin, pin) = tone(ins)
+    val (vout, pout) = tone(outs)
+    // RC ∥ RL over RE1 and the emitter's own resistance at about 1.3 mA.
+    val estimate = (3.9e3 * 10e3 / 13.9e3) / (100.0 + 0.02585 / 1.3e-3)
+    val gain = vout / vin
+    var shift = (pout - pin) * 360.0 / tau
+
+    while shift < 0.0
+        shift += 360.0
+
+    assert(near(vin, 10e-3, 0.3e-3))
+    assert(gain > 0.85 * estimate && gain < 1.15 * estimate)
+    // Inverted, less what the capacitors lead by at 1 kHz: about 3° for each coupling capacitor and
+    // 7° for CE, whose 16 Ω stands beside RE1's 100 Ω rather than shorting it.
+    assert(shift > 160.0 && shift < 175.0)
+
+@test("the amplifier's output clips when the generator is turned up")
+amplifier_clips()
+    val sch = parse_schematic(str_cast(embed("../../../examples/amplifier.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val g1 = sch.elements[sch.find("G1").unwrap()].part
+    var lo = 1e9
+    var hi = -1e9
+
+    s.operating_point().unwrap()
+    s.set_wave(g1, oscillator(Waveform.Sine, 1000.0, 0.5).retuned(s.time).wave())
+    s.advance_to(20e-3).unwrap()
+
+    for k in 1..2000
+        s.advance_to(20e-3 + real(k) * 1e-6).unwrap()
+
+        val v = s.voltage_at("out")
+
+        lo = min(lo, v)
+        hi = max(hi, v)
+
+    // Undistorted, half a volt in would be more than eleven volts out each way; the supply allows
+    // nothing like it, and the two sides clip differently.
+    assert(hi - lo < 10.0)
+    assert(hi < 5.0 && lo > -8.0)
+    assert((hi + lo).abs() > 0.3)

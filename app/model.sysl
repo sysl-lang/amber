@@ -1,6 +1,6 @@
 // What the viewer knows: the circuit and its simulation, the clock, the meters and what they have read.
 
-import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, sim, engineering}
+import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, Waveform, sim, engineering, parse_generator}
 import sh.sysl.ui_sdl.stop
 import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_C, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
@@ -8,6 +8,7 @@ import sh.sysl.plutovg
 import sh.sysl.ui.Rect
 import sysl.buf.{Buf, buf}
 import sysl.math.{max, min}
+import sysl.text.fields
 
 // Seconds of the circuit's time a second of the window's may show, slowest first; `+` and `-` move
 // along them.
@@ -111,6 +112,45 @@ struct Model
     most_amps: real
     board: Picture
     scope: Picture
+    // The controls of every part that has settings to turn, one panel each, kept while the circuit
+    // runs and across a restart.
+    panels: Buf[Panel]
+
+    // A click on element `i`, or on nothing for -1: it is selected, a switch flips, and a part with
+    // settings shows its panel.
+    select(*self, i: int)
+        self.selected = i
+
+        if i >= 0 then self.toggle(i)
+
+    // The panel of element `i`, if it has one.
+    panel_of(self, i: int) -> Option[usize]
+        for k in 0..<self.panels.len()
+            if self.panels[k].element == i then return Some(k)
+
+        None
+
+    // The panel showing: the selected element's, if it has one.
+    open_panel(self) -> Option[usize] = if self.selected < 0 then None else self.panel_of(self.selected)
+
+    // Hand any setting turned since the last frame to the circuit, from its present time; whether
+    // one was.
+    sync(*self) -> bool
+        var any = false
+
+        for k in 0..<self.panels.len()
+            if self.panels[k].sync(&self.s) then any = true
+
+        any
+
+    // The waveform part `part` is putting out, if it is a signal generator.
+    waveform_of(self, part: int) -> Option[Waveform]
+        for k in 0..<self.panels.len()
+            if self.panels[k].part == part
+                return self.panels[k].instrument match
+                    SignalGenerator(o) -> Some(o.form)
+
+        None
 
     // A click at grid point (`x`, `y`): a meter's lead if a node is there.
     probe(*self, x: int, y: int) -> bool
@@ -176,6 +216,10 @@ struct Model
 
         for k in 0..<self.meters.len()
             self.meters[k].forget()
+
+        // The instruments keep their settings: the circuit is switched on again with them as they are.
+        for k in 0..<self.panels.len()
+            self.panels[k].apply(&self.s, true)
 
         if self.s.power_on() is Err(why)
             self.trouble = why
@@ -256,7 +300,7 @@ model(file: string, sch: Schematic) -> &Model
         emitters.push(0.0)
 
     val m: &Model = Model(file, sch, sim(sch.circuit), "", buf(), false, 0, 0, -1, true, true, speed_index(sch.speed), flows,
-                  parts, bases, emitters, 0.0, Picture(None, None), Picture(None, None))
+                  parts, bases, emitters, 0.0, Picture(None, None), Picture(None, None), panels(sch))
 
     // The meters the file places are the first ones.
     for i in 0..<sch.elements.len()
@@ -266,6 +310,21 @@ model(file: string, sch: Schematic) -> &Model
 
     m.restart()
     m
+
+// A panel for every part of `sch` with settings to turn: each signal generator, set as its line says.
+private panels(sch: Schematic) -> Buf[Panel]
+    var out: Buf[Panel] = buf()
+
+    for i in 0..<sch.elements.len()
+        val e = sch.elements[i]
+
+        if e.shape == Shape.Generator
+            // The line was read when the schematic was, so it reads again.
+            val (osc, _) = parse_generator(fields(e.value)).unwrap()
+
+            out.push(generator_panel(e.name, int(i), e.part, osc))
+
+    out
 
 // The speed nearest `seconds` a second, real time if the file does not say.
 private speed_index(seconds: real) -> int
@@ -279,6 +338,8 @@ private speed_index(seconds: real) -> int
 
 // What a frame does on its own: run the clock by the frame's share of the speed.
 tick(m: &Model, dt: real)
+    m.sync()
+
     if !m.running then return
 
     // A frame late by more than a tenth of a second does not owe the time it lost.
@@ -353,6 +414,9 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Battery -> s"${e.value} battery"
     Source -> s"${e.value} source"
     CurrentSource -> s"${e.value} current source"
+    Generator -> m.panel_of(m.selected) match
+        Some(k) -> s"${m.panels[k].summary()} signal generator"
+        None -> "signal generator"
     Switch -> if m.s.circuit.parts[usize(e.part)].kind == Switch(true) then "closed switch" else "open switch"
     Diode -> "diode"
     Led -> s"${colour_name(e.colour)} LED"

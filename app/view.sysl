@@ -6,7 +6,7 @@
 // board, draws the lines into it, hands it to the canvas as an image, and writes the labels over it
 // through the canvas, in the window's own font.
 
-import sh.sysl.amber.{Element, Shape, Colour, Wave, Pulse, Sine, Switch}
+import sh.sysl.amber.{Element, Shape, Colour, Wave, Waveform, Pulse, Sine, Switch}
 import sh.sysl.ui.{View, Canvas, Size, Rect, Image, column, row, text, spacer}
 import sh.sysl.plutovg
 import sysl.buf.{Buf, buf}
@@ -39,15 +39,19 @@ const REACH: real = 0.5
 const PLATE: real = 0.6
 const PLATE_HALF: real = 0.42
 
-// The whole window: the board, the scope under it, and the status line.
+// The whole window: the board, the scope under it with the clicked instrument's panel beside it, and
+// the status line.
 screen(m: &Model) -> &View =
     column([
         board(m).flex(),
-        scope(m),
-        row([text(status(m)), spacer(), text(HINT)], 10).padding(8),
+        m.open_panel() match
+            Some(k) -> row([scope(m).flex(), panel_view(m.panels[k], () -> m.select(-1))])
+            None -> scope(m),
+        row([text(status(m)), spacer(), text(if m.panels.len() > 0 then INSTRUMENT_HINT else HINT)], 10).padding(8),
     ])
 
 const HINT: string = "click two points: a meter · click a switch to flip it · space pause · +/- speed · r restart · v values · c clear"
+const INSTRUMENT_HINT: string = "click two points: a meter · click a generator to tune it · space pause · +/- speed · r restart · v values · c clear"
 
 // --- The board --------------------------------------------------------------------------------------
 
@@ -99,9 +103,7 @@ impl View for Board
             if at.snap(tx, ty) is Some((gx, gy))
                 if m.probe(gx, gy) then return
 
-            m.selected = hit(m, at, tx, ty)
-
-            if m.selected >= 0 then m.toggle(m.selected)
+            m.select(hit(m, at, tx, ty))
 
 // Fit the drawing to the board at no more than 90 points a square, with four squares round it: room
 // for a meter's dial, which stands three squares off the circuit.
@@ -460,6 +462,7 @@ private struct Pen
                 // `+` beside the first end.
                 f.line(mid - radius - 0.3, 0.32, mid - radius - 0.1, 0.32)
                 f.line(mid - radius - 0.2, 0.22, mid - radius - 0.2, 0.42)
+            Generator -> self.generator(f, (s0 + s1) / 2.0, s0, s1, m.waveform_of(e.part), hot)
             Battery ->
                 val mid = (s0 + s1) / 2.0
 
@@ -517,6 +520,93 @@ private struct Pen
                         f.line(mid + 0.15 + o, 0.68, mid + 0.03 + o, 0.65)
                         f.line(mid + 0.15 + o, 0.68, mid + 0.14 + o, 0.56)
             _ -> ()
+
+    // A signal generator: a small instrument's case standing upright on its lead whichever way the part
+    // runs, with the waveform it is putting out on its screen, a knob under the screen, and `+` beside
+    // its output, the first end.
+    generator(self, f: Frame, mid: real, s0: real, s1: real, form: Option[Waveform], hot: bool)
+        val w = 0.62
+        val h = 0.46
+
+        f.line(s0, 0.0, s1, 0.0)
+
+        // The case, filled with the board's colour over the lead running through it.
+        set(self.vg, BOARD)
+        self.outline(f, mid, w, h)
+        self.vg.fill()
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+        self.outline(f, mid, w, h)
+        self.vg.stroke()
+
+        // The screen, and the waveform on it.
+        val sx = 0.42
+        val sy = 0.2
+        val cy = 0.1
+
+        self.width(1.5)
+        self.vg.begin()
+        f.move_across(mid, -sx, cy - sy)
+        f.to_across(mid, sx, cy - sy)
+        f.to_across(mid, sx, cy + sy)
+        f.to_across(mid, -sx, cy + sy)
+        self.vg.close_path()
+        self.vg.stroke()
+
+        val gw = sx * 0.75
+        val gh = sy * 0.6
+
+        self.width(2.0)
+        self.vg.begin()
+
+        form match
+            Some(Waveform.Square) ->
+                f.move_across(mid, -gw, cy - gh)
+                f.to_across(mid, -gw, cy + gh)
+                f.to_across(mid, 0.0, cy + gh)
+                f.to_across(mid, 0.0, cy - gh)
+                f.to_across(mid, gw, cy - gh)
+                f.to_across(mid, gw, cy + gh)
+            Some(Waveform.Triangle) ->
+                f.move_across(mid, -gw, cy)
+                f.to_across(mid, -gw / 2.0, cy + gh)
+                f.to_across(mid, gw / 2.0, cy - gh)
+                f.to_across(mid, gw, cy)
+            Some(Waveform.Dc) ->
+                f.move_across(mid, -gw, cy + gh / 2.0)
+                f.to_across(mid, gw, cy + gh / 2.0)
+            _ ->
+                for j in 0..24
+                    val u = real(j) / 24.0
+                    val dx = -gw + 2.0 * gw * u
+                    val dy = cy + gh * (tau * u).sin()
+
+                    if j == 0 then f.move_across(mid, dx, dy) else f.to_across(mid, dx, dy)
+
+        self.vg.stroke()
+
+        // A knob under the screen, and a terminal either side of it.
+        self.width(1.5)
+        self.vg.begin()
+        self.vg.circle(self.px(f.gx(mid, 0.0)), self.py(f.gy(mid, 0.0) + 0.29), self.len(0.08))
+        self.vg.stroke()
+        self.dot(f.gx(mid, 0.0) - 0.4, f.gy(mid, 0.0) + 0.29, 2.5)
+        self.dot(f.gx(mid, 0.0) + 0.4, f.gy(mid, 0.0) + 0.29, 2.5)
+
+        // `+` beside the output.
+        self.width(2.0)
+        f.line(s0 - 0.05, 0.32, s0 + 0.15, 0.32)
+        f.line(s0 + 0.05, 0.22, s0 + 0.05, 0.42)
+
+    // The outline of an instrument's case, `w` either side of the middle of a part and `h` above and
+    // below it, upright on the screen.
+    outline(self, f: Frame, mid: real, w: real, h: real)
+        self.vg.begin()
+        f.move_across(mid, -w, -h)
+        f.to_across(mid, w, -h)
+        f.to_across(mid, w, h)
+        f.to_across(mid, -w, h)
+        self.vg.close_path()
 
     // An LED's light: a halo in its colour, as bright as its current is near 20 mA.
     glow(self, f: Frame, mid: real, e: Element)
@@ -839,6 +929,10 @@ private labels(m: &Model, c: *Canvas, at: Place)
             Inductor -> s"${e.value}H"
             Led -> colour_name(e.colour)
             Switch -> ""
+            // What it is set to now, which its panel may have changed.
+            Generator -> m.panel_of(int(i)) match
+                Some(k) -> m.panels[k].summary()
+                None -> e.value
             _ -> e.value
 
         put(c, lx, ly, s"${e.name} ${value}", INK, across)

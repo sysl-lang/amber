@@ -84,12 +84,97 @@ enum Wave derives Eq
     is_constant(self) -> bool = self is Dc(_)
 
 // A square wave between `low` and `high` at `frequency`, high for `duty` of each period, its edges a
-// thousandth of the period long.
-square(low: real, high: real, frequency: real, duty: real = 0.5) -> Wave
+// thousandth of the period long, its first rising edge starting at `delay`.
+square(low: real, high: real, frequency: real, duty: real = 0.5, delay: real = 0.0) -> Wave
     val period = 1.0 / frequency
     val edge = period / 1000.0
 
-    Pulse(low, high, 0.0, edge, edge, duty * period - edge, period)
+    Pulse(low, high, delay, edge, edge, duty * period - edge, period)
+
+// A triangle wave between `low` and `high` at `frequency`: at `low` at `delay`, rising for half of
+// each period and falling for the other half.
+//
+// **A triangle is a pulse with no top**, its rise and fall each half the period and its width zero, so
+// it is not a wave of its own: the solver already lands a step on each of its corners, and a netlist
+// writes it as `PULSE(low high delay T/2 T/2 0 T)`.
+triangle(low: real, high: real, frequency: real, delay: real = 0.0) -> Wave
+    val half = 0.5 / frequency
+
+    Pulse(low, high, delay, half, half, 0.0, 2.0 * half)
+
+// The shapes a signal generator puts out.
+enum Waveform: u8
+    Sine
+    Square
+    Triangle
+    // A steady level: the generator's offset, alone.
+    Dc
+
+    // Its name, as a schematic writes it.
+    name(self) -> string = self match
+        Sine -> "sine"
+        Square -> "square"
+        Triangle -> "triangle"
+        Dc -> "dc"
+
+// The waveforms in the order a generator's selector lists them.
+val WAVEFORMS = [Waveform.Sine, Waveform.Square, Waveform.Triangle, Waveform.Dc]
+
+// The waveform called `word`, as a schematic writes it.
+waveform_named(word: string) -> Option[Waveform] = word match
+    "sine" -> Some(Waveform.Sine)
+    "square" -> Some(Waveform.Square)
+    "triangle" -> Some(Waveform.Triangle)
+    "dc" -> Some(Waveform.Dc)
+    _ -> None
+
+// A signal generator's oscillator: what it is set to put out, and where it is in its cycle.
+//
+// `amplitude` is the peak, measured from `offset`: a sine of amplitude 1 and offset 2 swings from 1 to
+// 3 volts. Every waveform's cycle starts where a sine's does, at the offset and rising: a square goes
+// high there, and a triangle is halfway up its rise.
+//
+// **Its phase carries across a change of setting, as a bench generator's does.** `phase` is how far
+// through its cycle, in cycles, it is at time `start`; `retuned` moves both to the moment of a change,
+// so the new wave picks up where the old one was in its cycle rather than starting a fresh one, and a
+// new frequency bends the wave without a jump in its phase.
+struct Oscillator derives Eq
+    form: Waveform
+    frequency: real
+    amplitude: real
+    offset: real
+    start: real
+    phase: real
+
+    // How far through its cycle it is at time `t`, in cycles from 0 up to 1.
+    phase_at(self, t: real) -> real = cycle(self.phase + self.frequency * (t - self.start))
+
+    // The same oscillator, its cycle measured from time `t`: what a change of setting at `t` starts
+    // from.
+    retuned(self, t: real) -> Oscillator =
+        Oscillator(self.form, self.frequency, self.amplitude, self.offset, t, self.phase_at(t))
+
+    // The wave it puts out from `start` on.
+    wave(self) -> Wave
+        val period = 1.0 / self.frequency
+        // When the cycle running at `start` began, which every waveform's timing is measured from.
+        val began = self.start - self.phase * period
+        val low = self.offset - self.amplitude
+        val high = self.offset + self.amplitude
+
+        self.form match
+            Sine -> Sine(self.offset, self.amplitude, self.frequency, 0.0, 0.0, 360.0 * cycle(-self.frequency * began))
+            Square -> square(low, high, self.frequency, delay = began)
+            // At its low a quarter of a cycle before the sine's rising crossing.
+            Triangle -> triangle(low, high, self.frequency, delay = began - period / 4.0)
+            Dc -> Dc(self.offset)
+
+// An oscillator set to `form` at `frequency`, `amplitude` and `offset`, starting its cycle at time 0.
+oscillator(form: Waveform, frequency: real, amplitude: real, offset: real = 0.0) -> Oscillator =
+    Oscillator(form, frequency, amplitude, offset, 0.0, 0.0)
+
+// `x` less its whole cycles: from 0 up to 1.
+private cycle(x: real) -> real = x - x.floor()
 
 // A piecewise-linear wave through `points`, which must be in time order.
 pwl(points: [](real, real)) -> Wave

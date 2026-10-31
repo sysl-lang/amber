@@ -48,7 +48,7 @@ pwl_shape()
 
 @test("a sine holds its offset until its delay, and asks for twenty steps a period")
 sine_shape()
-    val w = Sine(1.0, 2.0, 50.0, 0.01, 0.0, 0.0)
+    val w: Wave = Sine(1.0, 2.0, 50.0, 0.01, 0.0, 0.0)
 
     assert(w.at(0.005) == 1.0)
     assert(close(w.at(0.01 + 0.005), 3.0, 1e-12))
@@ -379,11 +379,11 @@ readme_example()
 
 @test("a sine's damping shrinks it and its phase shifts it, as SPICE's SIN has them")
 sine_damping_and_phase()
-    val damped = Sine(0.0, 1.0, 1.0, 0.0, 2.0, 0.0)
+    val damped: Wave = Sine(0.0, 1.0, 1.0, 0.0, 2.0, 0.0)
 
     assert(close(damped.at(0.25), (-0.5).exp(), 1e-12))
 
-    val shifted = Sine(1.0, 1.0, 1.0, 0.5, 0.0, 90.0)
+    val shifted: Wave = Sine(1.0, 1.0, 1.0, 0.5, 0.0, 90.0)
 
     // Before its delay, a sine holds the value its phase starts it at.
     assert(close(shifted.at(0.1), 2.0, 1e-12))

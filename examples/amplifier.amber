@@ -1,0 +1,46 @@
+# A common-emitter amplifier: a 2N3904 turning a 10 mV signal into one more than twenty times larger,
+# upside down.
+#
+# R1 and R2 divide the 12 V supply to hold the base at about 2 V, so about 1.3 mA flows through the
+# transistor and its collector sits near 7 V, halfway up, with room to swing both ways. CIN passes the
+# generator's signal to the base without upsetting that bias, and COUT passes the collector's swing to
+# the load RL without its 7 V.
+#
+# The emitter's resistance sets the gain. RE2 holds the bias steady, and CE bypasses it, so the signal
+# sees only RE1: the gain is about the collector's resistance, RC and RL in parallel, 2.8 kΩ, over RE1
+# and the transistor's own 20 Ω at this current, about 23. The output falls as the input rises.
+#
+# Click the generator to turn it up. Past about 150 mV the output's top flattens — the transistor
+# cannot pass less than no current — and further on its bottom does too, as it saturates.
+
+speed 2m
+
+gen       G1    2 5   2 10   sine 1k 10m
+wire            2 5   5 5
+capacitor CIN   5 5   7 5    470n
+wire            7 5   12 5
+
+battery   B1    28 0  28 10  12V
+wire            8 0   28 0
+wire            2 10  28 10
+ground          2 10
+
+resistor  R1    8 0   8 5    47k
+resistor  R2    8 5   8 10   10k
+
+resistor  RC    14 0  14 3   3.9k
+npn       Q1    14 3  12 5   14 7   2N3904
+resistor  RE1   14 7  14 8   100
+resistor  RE2   14 8  14 10  1k
+wire            14 8  17 8
+capacitor CE    17 8  17 10  10u
+
+wire            14 3  18 3
+capacitor COUT  18 3  20 3   220n
+wire            20 3  23 3
+resistor  RL    23 3  23 10  10k
+
+label     in    2 5
+label     out   23 3
+meter     IN    2 5   2 10
+meter     OUT   23 3  23 10

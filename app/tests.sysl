@@ -1,6 +1,7 @@
 @tests
 
-import sh.sysl.amber.{parse_schematic, Switch}
+import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc}
+import sysl.math.max
 import sysl.text.Search
 
 val LED = """
@@ -311,3 +312,177 @@ mosfet_dots()
     assert((p.part_flow[i] + 0.3).abs() < 1e-9)
     assert((p.emitter_flow[i] + 0.3).abs() < 1e-9)
     assert(p.base_flow[i] == 0.0)
+
+// --- Instrument panels ------------------------------------------------------------------------------
+
+// A signal generator driving a low-pass filter, its output on a meter.
+val BENCH = """
+    speed 1m
+    gen       G1  0 0  0 4  sine 1k 1
+    resistor  R1  0 0  4 0  1k
+    capacitor C1  4 0  4 4  100n
+    wire          4 4  0 4
+    ground        0 4
+    meter     OUT 4 0  4 4
+    """
+
+private bench() -> &Model = model("bench.amber", parse_schematic(BENCH).unwrap())
+
+private close(got: real, want: real) -> bool = (got - want).abs() <= 1e-9 * max(1.0, want.abs())
+
+// The generator's oscillator as its panel last handed it to the circuit.
+private osc(m: &Model) -> Oscillator = m.panels[0].instrument match
+    SignalGenerator(o) -> o
+
+@test("clicking a generator opens its panel, set as its line says; clicking anything else closes it")
+panel_opens_and_closes()
+    val m = bench()
+    val g1 = m.sch.find("G1").unwrap()
+
+    assert(m.panels.len() == 1)
+    assert(m.open_panel().is_none())
+    m.select(g1)
+    assert(m.open_panel() == Some(0))
+
+    val p = m.panels[0]
+
+    assert(p.title == "G1 signal generator")
+    assert(p.choices[0].options.len() == 4 && p.choices[0].options[2] == "triangle")
+    assert(p.choices[0].chosen.read() == 0)
+    assert(close(p.knobs[0].value(), 1000.0))
+    assert(close(p.knobs[1].value(), 1.0))
+    assert(p.knobs[2].value() == 0.0)
+
+    m.select(m.sch.find("R1").unwrap())
+    assert(m.open_panel().is_none())
+    m.select(g1)
+    m.select(-1)
+    assert(m.open_panel().is_none())
+
+@test("a logarithmic knob slides along the value's logarithm, and a straight one along the value")
+knob_scales()
+    val m = bench()
+    val f = m.panels[0].knobs[0]
+    val offset = m.panels[0].knobs[2]
+
+    assert(f.log && !offset.log)
+    assert(f.ends() == ((0.1).log10(), 6.0))
+    assert(close(f.position.read(), 3.0))
+    f.position.set(4.5)
+    assert(close(f.value(), 10.0.pow(4.5)))
+    f.set(250.0)
+    assert(close(f.position.read(), (250.0).log10()))
+    offset.position.set(-2.5)
+    assert(offset.value() == -2.5)
+    assert(offset.ends() == (-10.0, 10.0))
+
+@test("a turned knob reaches the circuit at once, while it runs: no restart, and the generator's cycle carries on")
+knob_reaches_the_circuit()
+    val m = bench()
+    val part = m.panels[0].part
+
+    m.run(2.3e-3, 23)
+
+    val t = m.s.time
+    val before = m.reading(m.meters[0])
+    val wave_before = m.s.circuit.parts[usize(part)].kind.wave().unwrap()
+
+    // Nothing turned: nothing is handed over, so the solver is not made to start a step afresh.
+    assert(!m.sync())
+
+    m.panels[0].knobs[0].set(2000.0)
+    m.panels[0].knobs[1].set(3.0)
+    assert(m.sync())
+    assert(!m.sync())
+
+    // The clock and the capacitor are where they were.
+    assert(m.s.time == t)
+    assert(m.reading(m.meters[0]) == before)
+
+    val o = osc(m)
+
+    assert(close(o.frequency, 2000.0) && close(o.amplitude, 3.0) && o.form == Waveform.Sine)
+    assert(o.start == t)
+    // Three tenths of the way through its cycle at 2.3 ms, and still there when the knob turned.
+    assert(close(o.phase, 0.3))
+    assert(m.s.circuit.parts[usize(part)].kind == Generator(o.wave(), 50.0))
+
+    // The new sine is the old one's phase at three times the amplitude.
+    val now = m.s.circuit.parts[usize(part)].kind.wave().unwrap()
+
+    assert((now.at(t) - 3.0 * wave_before.at(t)).abs() < 1e-9)
+
+    // And the clock runs on with it: a quarter of the new period later, the sine is at its peak's
+    // phase plus a quarter.
+    m.run(0.125e-3, 5)
+    assert(close(osc(m).phase_at(m.s.time), 0.55))
+
+@test("a new waveform chosen on the panel is what the generator puts out from then on")
+waveform_choice_reaches_the_circuit()
+    val m = bench()
+    val part = m.panels[0].part
+
+    m.run(1e-3, 10)
+    m.panels[0].choices[0].chosen.set(1)
+    assert(m.sync())
+    assert(osc(m).form == Waveform.Square)
+    assert(m.s.circuit.parts[usize(part)].kind == Generator(osc(m).wave(), 50.0))
+    assert(m.waveform_of(part) == Some(Waveform.Square))
+
+    m.panels[0].choices[0].chosen.set(3)
+    m.panels[0].knobs[2].set(2.0)
+    m.sync()
+    assert(m.s.circuit.parts[usize(part)].kind == Generator(Dc(2.0), 50.0))
+
+    // A dc generator charges the capacitor to its offset.
+    m.run(5e-3, 10)
+    assert((m.reading(m.meters[0]) - 2.0).abs() < 1e-3)
+
+@test("a frame hands over a turned knob even with the clock paused, and the clock stays where it was")
+paused_frame_syncs()
+    val m = bench()
+    val part = m.panels[0].part
+
+    m.running = false
+    m.panels[0].choices[0].chosen.set(2)
+    tick(m, 0.1)
+    assert(m.s.time == 0.0)
+    assert(m.s.circuit.parts[usize(part)].kind == Generator(osc(m).wave(), 50.0))
+    assert(osc(m).form == Waveform.Triangle)
+
+@test("a restart keeps the panel's settings and starts the generator's cycle afresh")
+restart_keeps_settings()
+    val m = bench()
+    val part = m.panels[0].part
+
+    m.run(1.7e-3, 17)
+    m.panels[0].choices[0].chosen.set(2)
+    m.panels[0].knobs[0].set(500.0)
+    m.sync()
+    m.restart()
+
+    val o = osc(m)
+
+    assert(m.s.time == 0.0)
+    assert(o.start == 0.0 && o.phase == 0.0)
+    assert(o.form == Waveform.Triangle && close(o.frequency, 500.0))
+    assert(m.s.circuit.parts[usize(part)].kind == Generator(o.wave(), 50.0))
+    assert(!m.sync())
+
+@test("the generator's label and the status line give its present settings")
+generator_status()
+    val m = bench()
+
+    m.select(m.sch.find("G1").unwrap())
+    assert(m.panels[0].summary() == "sine 1kHz 1V")
+    assert(status(m).contains("G1 sine 1kHz 1V signal generator: "))
+
+    m.panels[0].choices[0].chosen.set(1)
+    m.panels[0].knobs[0].set(20e3)
+    m.panels[0].knobs[2].set(-0.5)
+    m.sync()
+    assert(m.panels[0].summary() == "square 20kHz 1V -500mV offset")
+
+    m.panels[0].choices[0].chosen.set(3)
+    m.sync()
+    assert(m.panels[0].summary() == "dc -500mV offset")

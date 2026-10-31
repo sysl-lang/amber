@@ -1,0 +1,177 @@
+// Instrument panels: the controls of a part that has settings, turned while the circuit runs.
+//
+// **A panel is a list of choices and knobs, and it knows nothing about what they mean.** It holds each
+// setting in a signal its control writes, draws them beside the board, and says when one has moved.
+// What the settings do is the instrument's: an `Instrument` is told the settings and the time, and puts
+// its part in the circuit right from that moment, without the circuit being switched on again. A
+// signal generator is one instrument; a bench supply would be another variant of `Instrument`, whose
+// knobs are a voltage and a current limit and whose `apply` gives its part those.
+
+import sh.sysl.amber.{Sim, Waveform, Oscillator, WAVEFORMS, oscillator, engineering}
+import sh.sysl.ui.{View, Signal, signal, column, row, text, spacer, slider, radio, button}
+import sysl.buf.{Buf, buf}
+
+const SLIDER_WIDTH: int = 200
+const LABEL_WIDTH: int = 80
+const VALUE_WIDTH: int = 70
+const LINE_HEIGHT: int = 20
+const PANEL_GROUND: u32 = 0x1B1E25
+
+// One of a few settings, picked from a row of options: a generator's waveform.
+struct Choice
+    label: string
+    options: Buf[string]
+    chosen: &Signal[int]
+
+// A setting turned along a slider, between `lo` and `hi`, in `unit`.
+//
+// **A logarithmic knob slides along the value's logarithm**, so each decade of a frequency or an
+// amplitude takes the same length of the slider: 10 Hz to 100 Hz is as far as 100 kHz to 1 MHz, as it
+// is on a bench generator's dial.
+struct Knob
+    label: string
+    unit: string
+    lo: real
+    hi: real
+    log: bool
+    // Where the slider is: the value, or its base-10 logarithm on a logarithmic knob.
+    position: &Signal[real]
+
+    value(self) -> real = if self.log then 10.0.pow(self.position.read()) else self.position.read()
+
+    set(self, v: real) = self.position.set(if self.log then v.log10() else v)
+
+    // The slider's ends, in the units it slides in.
+    ends(self) -> (real, real) = if self.log then (self.lo.log10(), self.hi.log10()) else (self.lo, self.hi)
+
+// A knob holding `value` to start with.
+knob(label: string, unit: string, lo: real, hi: real, value: real, log: bool = false) -> Knob
+    val k = Knob(label, unit, lo, hi, log, signal(0.0))
+
+    k.set(value)
+    k
+
+// What a panel drives, and what each kind of instrument remembers between changes.
+enum Instrument
+    // A signal generator, whose oscillator remembers where it is in its cycle, so a change carries on
+    // from there.
+    SignalGenerator(osc: Oscillator)
+
+// The controls of one instrument on the bench: element `element` of the schematic, part `part` of the
+// circuit.
+struct Panel
+    title: string
+    element: int
+    part: int
+    instrument: Instrument
+    choices: Buf[Choice]
+    knobs: Buf[Knob]
+    // The settings as they were last applied, choices first, then knobs.
+    applied: Buf[real]
+
+    // Every setting as a number, the choices first and then the knobs.
+    settings(self) -> Buf[real]
+        var out: Buf[real] = buf()
+
+        for k in 0..<self.choices.len()
+            out.push(real(self.choices[k].chosen.read()))
+
+        for k in 0..<self.knobs.len()
+            out.push(self.knobs[k].value())
+
+        out
+
+    // Whether a setting has moved since the settings were last applied.
+    moved(self) -> bool
+        val now = self.settings()
+
+        for k in 0..<now.len()
+            if now[k] != self.applied[k] then return true
+
+        false
+
+    // Hand the settings to the circuit if one has moved since they last were, from the circuit's
+    // present time on; whether anything was handed.
+    sync(*self, s: *Sim) -> bool
+        if !self.moved() then return false
+
+        self.apply(s, false)
+        true
+
+    // Put the instrument's part in the circuit as the settings say, from the present time on. A
+    // `fresh` start is a circuit just switched on again: a generator starts its cycle anew, where
+    // otherwise it carries on from where it was in it.
+    apply(*self, s: *Sim, fresh: bool)
+        self.instrument = self.instrument match
+            SignalGenerator(osc) ->
+                var o = if fresh then oscillator(osc.form, osc.frequency, osc.amplitude, osc.offset).retuned(s.time) else osc.retuned(s.time)
+
+                o.form = WAVEFORMS[usize(self.choices[0].chosen.read())]
+                o.frequency = self.knobs[0].value()
+                o.amplitude = self.knobs[1].value()
+                o.offset = self.knobs[2].value()
+                s.set_wave(self.part, o.wave())
+                SignalGenerator(o)
+
+        self.applied = self.settings()
+
+    // The settings in a few words, for a label beside the part: `sine 1kHz 10mV`.
+    summary(self) -> string = self.instrument match
+        SignalGenerator(o) ->
+            val form = o.form.name()
+            val offset = if o.offset != 0.0 then s" ${engineering(o.offset)}V offset" else ""
+
+            if o.form == Waveform.Dc then s"dc${offset}" else s"${form} ${engineering(o.frequency)}Hz ${engineering(o.amplitude)}V${offset}"
+end Panel
+
+// A signal generator's panel, starting from `osc`: its waveform, and its frequency and amplitude on
+// logarithmic knobs, from a tenth of a hertz to a megahertz and from a millivolt to ten volts, and its
+// offset on a straight one, ten volts either way.
+generator_panel(name: string, element: int, part: int, osc: Oscillator) -> Panel
+    var options: Buf[string] = buf()
+    var at = 0
+
+    for k in 0..<WAVEFORMS.len
+        options.push(WAVEFORMS[k].name())
+
+        if WAVEFORMS[k] == osc.form then at = int(k)
+
+    var choices: Buf[Choice] = buf()
+    var knobs: Buf[Knob] = buf()
+
+    choices.push(Choice("waveform", options, signal(at)))
+    knobs.push(knob("frequency", "Hz", 0.1, 1e6, osc.frequency, log = true))
+    knobs.push(knob("amplitude", "V", 1e-3, 10.0, osc.amplitude, log = true))
+    knobs.push(knob("offset", "V", -10.0, 10.0, osc.offset))
+
+    var p = Panel(s"${name} signal generator", element, part, SignalGenerator(osc), choices, knobs, buf())
+
+    p.applied = p.settings()
+    p
+
+// A panel drawn: its title and a button to close it, then a line for each setting — its name, and a
+// row of options for a choice or a slider with the value beside it for a knob.
+panel_view(p: Panel, close: &Fn() -> unit) -> &View
+    var lines: Buf[&View] = buf()
+
+    lines.push(row([text(p.title), spacer(), button("close", close)], 8))
+
+    for k in 0..<p.choices.len()
+        val c = p.choices[k]
+        var options: Buf[&View] = buf()
+
+        options.push(text(c.label).frame(LABEL_WIDTH, LINE_HEIGHT))
+
+        for j in 0..<c.options.len()
+            options.push(radio(c.chosen, int(j), c.options[j]))
+
+        lines.push(row(options.view(), 10))
+
+    for k in 0..<p.knobs.len()
+        val n = p.knobs[k]
+        val (lo, hi) = n.ends()
+
+        lines.push(row([text(n.label).frame(LABEL_WIDTH, LINE_HEIGHT), slider(n.position, lo, hi, SLIDER_WIDTH),
+                        text(s"${engineering(n.value())}${n.unit}").frame(VALUE_WIDTH, LINE_HEIGHT)], 10))
+
+    column(lines.view(), 8).padding(12).background(PANEL_GROUND)

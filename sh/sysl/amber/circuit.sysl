@@ -105,6 +105,11 @@ enum Kind derives Eq
     // An ideal current source: the wave's value flows through it from its first terminal to its second,
     // so out of the second into the circuit, as SPICE has it.
     CurrentSource(wave: Wave)
+    // A bench signal generator: the wave's value behind an output resistance of `ohms`, which must be
+    // more than zero. Its terminals are its output and its return, so the voltage across it is what
+    // reaches the circuit, the wave less what the resistance drops. It is solved as its Norton
+    // equivalent, `wave / ohms` in parallel with `ohms`, and needs no node of its own.
+    Generator(wave: Wave, ohms: real)
     // A junction diode, conducting from its first terminal (the anode) to its second (the cathode).
     Diode(model: DiodeModel)
     // A switch: a hundredth of an ohm closed, and no connection open.
@@ -124,6 +129,7 @@ enum Kind derives Eq
     wave(self) -> Option[Wave] = self match
         VoltageSource(w) -> Some(w)
         CurrentSource(w) -> Some(w)
+        Generator(w, _) -> Some(w)
         _ -> None
 
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and

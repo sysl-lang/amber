@@ -1,0 +1,24 @@
+Common-emitter amplifier driven by a 10 mV sine from a 50 ohm generator
+* examples/amplifier.amber as a netlist: the generator is its sine behind its output resistance.
+VG g 0 SIN(0 10m 1k)
+RG g in 50
+CIN in b 470n
+VCC vcc 0 12
+R1 vcc b 47k
+R2 b 0 10k
+RC vcc c 3.9k
+Q1 c b e q2n3904
+RE1 e x 100
+RE2 x 0 1k
+CE x 0 10u
+COUT c out 220n
+RL out 0 10k
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.tran 10u 5m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 10u 5m 0 1u
+linearize v(in) v(b) v(c) v(out)
+wrdata ce_amplifier.data v(in) v(b) v(c) v(out)
+.endc
+.end
