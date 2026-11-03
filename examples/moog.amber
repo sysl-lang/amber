@@ -1,5 +1,11 @@
 # A synthesizer's voice: the signal generator's square wave through a transistor ladder filter, the
-# circuit Robert Moog patented in 1969, and out through a speaker. Turn P1's voltage to sweep it.
+# circuit Robert Moog patented in 1969, and out through a speaker. Press S1 to play a note.
+#
+# **S1 strikes the note.** It charges CE in about 10 ms, and let go CE drains through RD over about
+# a second. That voltage, through REM, opens QT: the ladder's current rises at once and dies away with
+# it, and the ladder's corner and its gain both follow the current, so each note starts bright and loud
+# and fades darker and quieter — the Moog's pluck. Tap out a bass line; the generator's panel sets the
+# pitch.
 #
 # The ladder is ten transistors. Q1 and Q2 at the bottom are a differential pair, steering the current
 # QT gives them between the two columns as the input swings; above them four rungs of pairs, Q3 to
@@ -8,17 +14,19 @@
 # corner is the current over the capacitor: four poles, so above the corner the square's harmonics
 # fall away 24 dB an octave, the Moog's sound.
 #
-# **P1 is the cutoff.** It sets QT's base, so QT's current, so how fast each rung charges its
-# capacitors: about 0.85 V is a few hundred hertz, dark and muffled; 2.5 V is a few kilohertz, bright.
+# **P1 is where the note rests.** It also sets QT's base, under the envelope: at its 0.5 V QT is off
+# between notes and the ladder silent. Turn it up for a drone that never closes: about 0.85 V is a few
+# hundred hertz, dark and muffled; 2.5 V is a few kilohertz, bright.
 #
 # **RK is the resonance**: the output fed back to Q2, the pair's other side. Around the corner the four
 # poles turn the signal half way round, so what comes back there adds rather than subtracts, and the
 # filter rings at its corner as it sweeps — the vowel-like sweep of a synthesizer.
 #
-# U1 follows the top of the ladder's right column and drives the speaker. The speaker plays while the
-# clock runs at a second a second, and the status line says how fast the sound is being worked out.
-# This is the heaviest circuit here, 38 unknowns solved 59,000 times a second of sound, and today it
-# is worked out at about half the speed it plays: expect dropouts until the solver is sparse.
+# U1 follows the top of the ladder's right column and drives the speaker through CSP, which keeps the
+# ladder's DC, rising and falling with each note, out of it. The speaker plays while the clock runs at
+# a second a second, and the status line says how fast the sound is being worked out: this is the
+# heaviest circuit here, about 40 unknowns solved some 30,000 times a second of sound, and on an idle
+# machine it keeps up with about one and a half times to spare.
 
 speed 1
 start settled
@@ -80,7 +88,21 @@ npn       QT    17 24 19 27  17 28  2N3904
 resistor  RT    17 28 17 32  10k
 ground          17 32
 resistor  RCV   19 27 30 27  10k
-supply    P1    30 27 30 31  1.6 10m
+supply    P1    30 27 30 31  0.5 10m
+
+# The envelope: S1 charges CE through RA in about 10 ms, and let go, CE drains through RD over about
+# half a second. Through REM it lifts QT's base above what P1 holds it at.
+wire            19 27 19 30
+resistor  REM   19 30 19 34  47k
+capacitor CE    19 34 19 38  10u
+ground          19 38
+wire            19 34 21 34
+resistor  RD    21 34 21 38  47k
+ground          21 38
+resistor  RA    21 34 23 34  1k
+button    S1    23 34 26 34
+battery   BE    26 34 26 38  15V
+ground          26 38
 ground          30 31
 
 # The input: the generator onto Q1, both bases biased to 4 V, which leaves QT room to stay out of
@@ -121,7 +143,8 @@ wire            28 3  32 3
 wire            32 3  32 6
 
 # The speaker.
-wire            32 6  36 6
+wire            32 6  34 6
+capacitor CSP   34 6  36 6   2.2u
 resistor  RS    36 6  36 10  1k
 speaker   SPK   36 10 36 13  8
 ground          36 13

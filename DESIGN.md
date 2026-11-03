@@ -138,9 +138,12 @@ Each is a piece of work of its own, in this order.
    it with `jωC` and `jωL` added, by the same LU generic over its entry (`real` through time,
    `Complex[real]` here, pivoting on `Magnitude`), held to ngspice on an RLC band-pass and bipolar and
    MOSFET amplifiers; the viewer's Bode plot, each meter's gain and phase driven from the generator.~~
-6. **Sparse LU** with a symbolic factorisation reused across iterations and steps. The measured need:
-   `examples/moog.amber`, 38 unknowns stepped at the speaker's 48 kHz, is worked out at about half
-   real time on the dense solver (59,000 accepted steps a second of sound), where the smaller audio
-   circuits run four to sixteen times faster than real time.
+6. **Sparse LU.** Done in part: the matrix is kept dense and eliminated sparse — each step looks once
+   at its pivot's row and column for what is not zero and updates only that, bit for bit the dense
+   answer — and clearing touches only the entries ever written. With the speaker at 24 kHz,
+   `examples/moog.amber` (43 unknowns) went from 0.55× real time to 2.2×. A plan replayed from the
+   first factorisation was tried and was slower: without a fill-reducing order, the pattern's fill
+   is nearly dense. What is left is a real sparse structure, rows and columns as lists with a
+   Markowitz or minimum-degree order, which `amber-app <file> --bench <seconds>` will measure.
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save.
 8. **Benchtop's analog layer**, measured against the H747 real-time bar.

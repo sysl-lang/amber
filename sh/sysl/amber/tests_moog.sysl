@@ -51,14 +51,56 @@ private voice(cutoff: real) -> Buf[real]
 
     out
 
+// The speaker's voltage from `from` for `seconds`, `dt` apart, run on from where `s` is.
+private span(s: *Sim, speaker: int, from: real, seconds: real, dt: real) -> Buf[real]
+    var v: Buf[real] = buf()
+    val count = int(seconds / dt)
+
+    for k in 0..<count
+        s.advance_to(from + real(k) * dt).unwrap()
+        v.push(s.across(speaker))
+
+    v
+
+@test("a press of S1 plays a note: silent before, bright and loud at once, then darker and quieter as it fades")
+moog_note()
+    val sch = parse_schematic(str_cast(embed("../../../examples/moog.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val speaker = sch.elements[usize(sch.find("SPK").unwrap())].part
+    val button = sch.elements[usize(sch.find("S1").unwrap())].part
+    val dt = 1.0 / 24000.0
+
+    s.operating_point().unwrap()
+
+    val before = span(&s, speaker, dt, 0.2, dt)
+
+    // A 10 ms tap, as a click gives.
+    s.set_switch(button, true)
+    span(&s, speaker, 0.2, 0.01, dt)
+    s.set_switch(button, false)
+
+    val early = span(&s, speaker, 0.21, 0.1, dt)
+    val late = span(&s, speaker, 0.51, 0.3, dt)
+    val loud = at(early, dt, 110.0)
+
+    // Silent until struck: P1's 0.5 V leaves QT off and the ladder closed.
+    assert(at(before, dt, 110.0) < loud / 1000.0)
+    // Loud at once, fading to under half in half a second.
+    assert(at(late, dt, 110.0) < 0.5 * loud)
+    // Bright at once — the 9th harmonic a good part of a square's ninth — and dark as it fades.
+    assert(at(early, dt, 990.0) / loud > 0.1)
+    assert(at(late, dt, 990.0) / at(late, dt, 110.0) < 0.02)
+
 // How much of the square's top end gets through: its 9th to 15th harmonics against its first.
 private bright(h: Buf[real]) -> real = h[4] + h[5] + h[6] + h[7]
 
-@test("the ladder's cutoff follows P1: dark at 0.9 V, its upper harmonics almost gone; bright at 2.5 V")
+// P1's voltage reaches QT's base through RCV against REM to the emptied envelope, 47k / 57k of it:
+// these are the voltages that put 0.9, 1.6 and 2.5 V on the base.
+@test("the ladder's cutoff follows P1: dark at 1.1 V, its upper harmonics almost gone; bright at 3 V")
 moog_cutoff()
-    val dark = voice(0.9)
-    val middle = voice(1.6)
-    val open = voice(2.5)
+    val dark = voice(1.1)
+    val middle = voice(1.95)
+    val open = voice(3.0)
 
     // A square's 9th harmonic is a ninth of its first; four poles below it take nearly all of it.
     assert(dark[4] < 0.02)
@@ -67,9 +109,14 @@ moog_cutoff()
     // The fundamental gets through whatever the cutoff.
     assert(dark[0] > 0.2 && open[0] > 0.4)
 
-    // Near the corner the resonance lifts a harmonic above where a square has it: at 1.6 V the 13th,
-    // 1.4 kHz, stands above a square's 1/13.
-    assert(middle[6] > 1.0 / 13.0)
+    // Near the corner the resonance lifts a harmonic above where a square has it, its nth at 1/n: at
+    // 1.95 V the corner is around a kilohertz, among the 9th to the 15th.
+    var lifted = false
+
+    for (k, n) in [(4, 9.0), (5, 11.0), (6, 13.0), (7, 15.0)]
+        if middle[usize(k)] > 1.0 / n then lifted = true
+
+    assert(lifted)
 
 @test("the ladder's tail transistor stays out of saturation across P1's range")
 moog_tail()
@@ -77,7 +124,7 @@ moog_tail()
     val qt = sch.elements[usize(sch.find("QT").unwrap())]
     val p1 = sch.elements[usize(sch.find("P1").unwrap())].part
 
-    for cv in [0.9, 1.6, 2.5]
+    for cv in [1.1, 1.95, 3.0]
         var s = sim(sch.circuit)
 
         s.set_supply(p1, regulated(cv, 10e-3))

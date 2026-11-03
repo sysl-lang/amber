@@ -1,8 +1,8 @@
 // The speaker's sound: the voltage across a `speaker`, sampled in the circuit's own time and played
 // through the computer's sound output.
 //
-// **It plays only while the clock runs at a second a second.** A sample is taken every 1/48000 of a
-// second of the circuit's time and played every 1/48000 of a second of ours, so at any other speed the
+// **It plays only while the clock runs at a second a second.** A sample is taken every 1/24000 of a
+// second of the circuit's time and played every 1/24000 of a second of ours, so at any other speed the
 // pitch would be wrong by the ratio, and a circuit slowed to watch would be heard as a growl.
 //
 // **What reaches the speaker is levelled the way a listener would turn the knob.** Its slow average, the
@@ -15,7 +15,9 @@ import sh.sysl.sdl3.{AudioStream, init_audio, open_audio_stream}
 import sysl.buf.{Buf, buf}
 import sysl.math.{max, min}
 
-// Samples a second.
+// Samples a second: everything up to 12 kHz, which these circuits' sound lies well inside, and every
+// sample a step the circuit must be solved at, so half the work 48 kHz would be. The sound output
+// converts it to the device's own rate.
 const RATE: int = 24000
 
 // How long the DC average takes to follow a change, and the levelled peak to fall back, in seconds.

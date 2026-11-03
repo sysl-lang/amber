@@ -44,7 +44,7 @@ so a small signal beside a large bias still rocks where it can be seen.
   operating point with every capacitor already charged, `v`
   toggles the voltage beside every part, `c` clears the meters, Escape quits.
 - **A speaker is heard.** A circuit with a `speaker` plays the voltage across it through the
-  computer's sound output, sampled 48,000 times a second of the circuit's time, whenever the clock runs
+  computer's sound output, sampled 24,000 times a second of the circuit's time, whenever the clock runs
   at a second a second — the only speed its sound is the right pitch at; `m` mutes it. Its DC is
   taken off and its level set the way a listener would turn the knob, so a whisper of a signal and a
   9 V swing both play at a comfortable volume, and a circuit's rounding is silence. The status line
@@ -82,10 +82,10 @@ about 1% of it, against the phase-shift oscillator's 9%), `opamp` (a TL072 ampli
 generator's sine eleven times into a speaker through a push-pull pair, its feedback taken after the
 pair so the op-amp jumps the pair's crossover gap and the speaker gets a clean sine), `kick` (a
 TR-808-style kick drum: a push button strikes an op-amp bridged-T resonator, which booms at 55 Hz and
-dies away over half a second; tap out a rhythm), `moog` (a transistor ladder filter, Moog's 1969
-circuit, on the generator's square wave: P1's voltage sweeps its four-pole cutoff from dark to
-bright, and its resonance rings at the corner; the heaviest circuit here, it is worked out at about
-half the speed it plays until the solver is sparse), `zener` (a raw supply's 2 V of ripple
+dies away over half a second; tap out a rhythm), `moog` (a synthesizer voice: the generator's
+square wave through Moog's 1969 transistor ladder filter; press S1 and an envelope opens the ladder,
+each note starting bright and loud and fading darker and quieter, the Moog pluck; P1 sets where it
+rests, for a drone; the heaviest circuit here, about twice as fast as it plays), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
 of a rippling 15 V, the ripple cut two-hundredfold), `pins` (three of a microcontroller's pins: one
 lighting an LED, one reading a button, one an ADC on a divider; click them) and `wallwart` (a 5 V supply that plugs into the
