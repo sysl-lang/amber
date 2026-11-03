@@ -289,6 +289,61 @@ amplifier_example()
     // 2° for CE, whose 1.6 Ω stands beside RE1's 22 Ω rather than shorting it.
     assert(shift > 160.0 && shift < 175.0)
 
+// How far `b` leads `a`, in degrees from 0 up to 360.
+private lead(a: real, b: real) -> real
+    var shift = (b - a) * 360.0 / tau
+
+    while shift < 0.0
+        shift += 360.0
+
+    while shift >= 360.0
+        shift -= 360.0
+
+    shift
+
+@test("the two-stage example: each stage gains about twenty, each inverts, and the two together come out the right way up")
+two_stage_example()
+    val sch = parse_schematic(str_cast(embed("../../../examples/two_stage.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    var ins: Buf[real] = buf()
+    var mids: Buf[real] = buf()
+    var outs: Buf[real] = buf()
+
+    s.operating_point().unwrap()
+    s.advance_to(20e-3).unwrap()
+
+    for k in 1..3000
+        s.advance_to(20e-3 + real(k) * 1e-6).unwrap()
+        ins.push(s.voltage_at("in"))
+        mids.push(s.voltage_at("mid"))
+        outs.push(s.voltage_at("out"))
+
+    val (vin, pin) = tone(ins)
+    val (vmid, pmid) = tone(mids)
+    val (vout, pout) = tone(outs)
+    // The first stage's load is RC1 beside the second stage's input: its divider, and its transistor's
+    // gain times RE3 and its own emitter resistance. Each stage gains its load over RE and that.
+    val re = 0.02585 / 1.3e-3
+    val second_input = 1.0 / (1.0 / 47e3 + 1.0 / 10e3 + 1.0 / (150.0 * (100.0 + re)))
+    val first = 1.0 / (1.0 / 3.9e3 + 1.0 / second_input) / (100.0 + re)
+    val second = (3.9e3 * 10e3 / 13.9e3) / (100.0 + re)
+
+    assert(near(vin, 2e-3, 0.1e-3))
+    assert(vmid / vin > 0.85 * first && vmid / vin < 1.15 * first)
+    assert(vout / vmid > 0.85 * second && vout / vmid < 1.15 * second)
+    assert(vout / vin > 400.0 && vout / vin < 560.0)
+    // Each stage upside down, less what its capacitors lead by at 1 kHz; the two together upright.
+    assert(lead(pin, pmid) > 170.0 && lead(pin, pmid) < 185.0)
+    assert(lead(pin, pout) > 355.0 || lead(pin, pout) < 10.0)
+
+    // The small-signal answer at 1 kHz is the same gain.
+    var fresh = sim(sch.circuit)
+    val g1 = sch.elements[usize(sch.find("G1").unwrap())].part
+    val r = fresh.response(1e3, [drive(g1, 1.0, 0.0)]).unwrap()
+    val ac_gain = r.voltage(sch.circuit.find_node("out").unwrap()).abs() / r.voltage(sch.circuit.find_node("in").unwrap()).abs()
+
+    assert((ac_gain - vout / vin).abs() < 0.02 * ac_gain)
+
 @test("the amplifier's output clips when the generator is turned up")
 amplifier_clips()
     val sch = parse_schematic(str_cast(embed("../../../examples/amplifier.amber"))).unwrap()

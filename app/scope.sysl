@@ -73,9 +73,11 @@ impl View for Scope
 // What the legend says of a channel whose readings ran from `lo` to `hi` and read `now` last: how far
 // it swings from top to bottom, so that an amplifier's gain is the ratio of two figures side by side,
 // since each trace is scaled to fill the plot whatever its size. A channel that hardly moves, by less
-// than a millivolt or a twentieth of its voltage, has no swing worth reading, and gives its voltage.
+// than a millivolt or a two-hundredth of its voltage, has no swing worth reading, and gives its
+// voltage: a regulated 5 V with 10 mV of ripple is 5 V, while a first stage's 80 mV on its 2 V bias is
+// a swing.
 legend_value(lo: real, hi: real, now: real) -> string
-    if hi - lo < max(1e-3, 0.05 * max(lo.abs(), hi.abs())) then volts(now) else s"${volts(hi - lo)} p-p"
+    if hi - lo < max(1e-3, 0.005 * max(lo.abs(), hi.abs())) then volts(now) else s"${volts(hi - lo)} p-p"
 
 // The lowest and highest reading meter `mt` has made since `from`, or zero for both if it has made none.
 reach(mt: Meter, from: real) -> (real, real)

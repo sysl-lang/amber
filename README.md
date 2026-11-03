@@ -61,7 +61,9 @@ switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
-turn the generator up past about 50 mV and the output clips), `zener` (a raw supply's 2 V of ripple
+turn the generator up past about 50 mV and the output clips), `two_stage` (two such stages coupled
+through a capacitor: 2 mV in, about 1 V out the right way up, 54 dB, with a meter between the stages
+showing each one's gain), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
 of a rippling 15 V, the ripple cut two-hundredfold) and `wallwart` (a 5 V supply that plugs into the
 wall: 120 V at 60 Hz through a 120:9 transformer, a diode bridge and a 1000 µF reservoir, then a
@@ -176,8 +178,8 @@ hundred times tighter than amber's by `oracle/generate.zsh`, which writes its an
 along a sweep, and to within 0.2% of each waveform's swing through time (0.03% but for a resonant
 circuit rung for twelve cycles and an astable multivibrator's steep edges); the whole wall supply,
 transformer to regulated output, switched on from empty, agrees through its first 100 ms. Across
-frequency, an RLC band-pass, a transformer and two amplifiers, one bipolar and one MOSFET, agree to a
-few parts in ten million.
+frequency, an RLC band-pass, a transformer and three amplifiers, a bipolar stage, a MOSFET stage and
+the two-stage amplifier, agree to a few parts in ten million.
 
 ## The library
 

@@ -1,0 +1,33 @@
+Two-stage amplifier driven by a 2 mV sine from a 50 ohm generator
+* examples/two_stage.amber as a netlist: two common-emitter stages coupled through CC, about 480 times
+* the right way up.
+VG g 0 SIN(0 2m 1k)
+RG g in 50
+CIN in b1 1u
+VCC vcc 0 12
+R1 vcc b1 47k
+R2 b1 0 10k
+RC1 vcc c1 3.9k
+Q1 c1 b1 e1 q2n3904
+RE1 e1 x1 100
+RE2 x1 0 1k
+CE1 x1 0 100u
+CC c1 mid 1u
+R3 vcc mid 47k
+R4 mid 0 10k
+RC2 vcc c2 3.9k
+Q2 c2 mid e2 q2n3904
+RE3 e2 x2 100
+RE4 x2 0 1k
+CE2 x2 0 100u
+COUT c2 out 1u
+RL out 0 10k
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.tran 20u 5m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 20u 5m 0 1u
+linearize v(in) v(mid) v(out)
+wrdata two_stage.data v(in) v(mid) v(out)
+.endc
+.end

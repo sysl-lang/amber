@@ -1,0 +1,33 @@
+Two-stage amplifier's gain from 1 Hz to 10 MHz
+* examples/two_stage.amber as a netlist: each stage's gain, and the two together, flat above the
+* corners the coupling and bypass capacitors make; the model has no junction capacitance, so the high
+* end stays flat.
+VG g 0 DC 0 AC 1
+RG g in 50
+CIN in b1 1u
+VCC vcc 0 12
+R1 vcc b1 47k
+R2 b1 0 10k
+RC1 vcc c1 3.9k
+Q1 c1 b1 e1 q2n3904
+RE1 e1 x1 100
+RE2 x1 0 1k
+CE1 x1 0 100u
+CC c1 mid 1u
+R3 vcc mid 47k
+R4 mid 0 10k
+RC2 vcc c2 3.9k
+Q2 c2 mid e2 q2n3904
+RE3 e2 x2 100
+RE4 x2 0 1k
+CE2 x2 0 100u
+COUT c2 out 1u
+RL out 0 10k
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.ac dec 5 1 10meg
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+ac dec 5 1 10meg
+wrdata ac_two_stage.data vr(out) vi(out) vr(mid) vi(mid)
+.endc
+.end
