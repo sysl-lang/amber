@@ -507,16 +507,26 @@ struct Sim
     // a few ohms against an inductor's resistance of `2L / h` — ten million million ohms for 10 H over a
     // picosecond — it wobbles by parts in ten thousand, and a step judged by that wobble is cut shorter
     // still and never recovers.
+    //
+    // **Nor is a node voltage judged finer than its rounding**, `ROUNDING` of the largest: a node held
+    // only weakly, a transformer's secondary held to the wall by its insulation, is known no better.
     private step_error(self, end: real) -> real
         if self.history < 2 || self.method != Trapezoid then return 0.5
 
         val t0 = self.time
         val t1 = self.time1
         val t2 = self.time2
+        val nodes = self.circuit.node_count() - 1
+        var largest = 0.0
         var worst = 0.0
+
+        for k in 0..<nodes
+            largest = max(largest, self.x[usize(k)].abs())
 
         for k in 0..<self.size
             if self.is_source_current(k) then continue
+
+            val floor = if k < nodes then 12.0 * ROUNDING * largest else 0.0
 
             val x0 = self.saved_x[usize(k)]
             val x1 = self.back1[usize(k)]
@@ -527,7 +537,7 @@ struct Sim
                 x2 * (end - t0) * (end - t1) / ((t2 - t0) * (t2 - t1))
             val got = self.x[usize(k)]
             // The trapezoidal rule's own error is about a twelfth of the parabola's miss.
-            val err = (got - predicted).abs() / 12.0 / (REL_TOL * max(got.abs(), x0.abs()) + ABS_TOL)
+            val err = max(0.0, (got - predicted).abs() - floor) / 12.0 / (REL_TOL * max(got.abs(), x0.abs()) + ABS_TOL)
 
             worst = max(worst, err)
 
@@ -638,9 +648,8 @@ struct Sim
             for i in 0..<self.size
                 val was = self.x[usize(i)]
                 val now = self.sys.z[usize(i)]
-                val floor = if i < nodes then ROUNDING * largest else 0.0
 
-                if (now - was).abs() > max(1e-6 * max(now.abs(), was.abs()) + 1e-9, floor) then still = false
+                if i < nodes && (now - was).abs() > max(1e-6 * max(now.abs(), was.abs()) + 1e-9, ROUNDING * largest) then still = false
 
                 self.x[usize(i)] = now
 

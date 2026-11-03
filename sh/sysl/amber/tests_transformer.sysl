@@ -1,0 +1,254 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, min}
+import sysl.math.complex.Complex
+import sysl.raw.str_cast
+
+// Coupled inductors: SPICE's `K` card, a schematic's `transformer`, and what they do in time, at DC and
+// to a small sine.
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// A 10 H primary behind an ohm from the source and a 0.1 H secondary, a tenth of its turns, across a
+// megohm: almost nothing drawn, so the secondary is the primary's voltage times `M / L1`, which is
+// `k · √(L2 / L1)`. `secondary` is how the secondary's ends are written, dotted end first or last. The
+// ohm is there because at DC a winding is a wire, and a source straight across a wire has no answer;
+// at 60 Hz the primary is 3.8 kΩ, and the ohm turns the primary's voltage by a quarter of a milliradian.
+private open_transformer(source: string, k: string, secondary: string) -> Netlist = parse_netlist(s"""
+    open secondary
+    V1 in 0 ${source}
+    RP in a 1
+    LP a 0 10
+    LS ${secondary} 0.1
+    K1 LP LS ${k}
+    RL b 0 1meg
+    .tran 0.1m 100m
+    """).unwrap()
+
+@test("a K card couples two inductors, named before it or after it")
+coupling_reads()
+    val net = parse_netlist("t\nK1 L1 L2 0.5\nL1 a 0 1\nL2 b 0 4\nR1 a 0 1\nR2 b 0 1\nKX L2 L1 1\n").unwrap()
+
+    assert(net.circuit.couplings.len() == 2)
+    assert(net.circuit.couplings[0] == Coupling("k1", 0, 1, 0.5))
+    assert(net.circuit.couplings[1] == Coupling("kx", 1, 0, 1.0))
+    // A coupling is not a part: it has no terminals and nothing to switch on with.
+    assert(net.circuit.parts.len() == 4 && net.initial.len() == 4)
+
+@test("a K card's mistakes are refused with their line")
+coupling_refused()
+    val inductors = "L1 a 0 1\nL2 b 0 1\nR1 a 0 1\nR2 b 0 1\n"
+
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L2\n").unwrap_err() == "line 6: 'k1' takes two inductors and a coupling")
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L2 0.5 0.5\n").unwrap_err() == "line 6: 'k1' takes two inductors and a coupling")
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L3 0.5\n").unwrap_err() == "line 6: 'k1' couples 'l3', which is not in the netlist")
+    assert(parse_netlist(s"t\n${inductors}K1 L1 R1 0.5\n").unwrap_err() == "line 6: 'k1' couples 'r1', which is not an inductor")
+    assert(parse_netlist(s"t\n${inductors}K1 R2 L1 0.5\n").unwrap_err() == "line 6: 'k1' couples 'r2', which is not an inductor")
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L1 0.5\n").unwrap_err() == "line 6: 'k1' couples 'l1' to itself")
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L2 0\n").unwrap_err() == "line 6: 'k1' couples by more than 0 and at most 1, not 0")
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L2 1.5\n").unwrap_err() == "line 6: 'k1' couples by more than 0 and at most 1, not 1.5")
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L2 -0.5\n").unwrap_err() == "line 6: 'k1' couples by more than 0 and at most 1, not -0.5")
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L2 lots\n").unwrap_err().starts_with("line 6: "))
+    assert(parse_netlist(s"t\n${inductors}K1 L1 L2 0.5\nK1 L2 L1 0.5\n").unwrap_err() == "line 7: 'k1' is already the name of another element")
+
+@test("a transformer's secondary is the primary's sine times k · √(L2 / L1), in phase from its dotted end")
+coupling_ratio_ac()
+    for (k, want) in [("0.999", 0.0999), ("1", 0.1), ("0.5", 0.05)]
+        val net = open_transformer("AC 1", k, "b 0")
+        var s = sim(net.circuit)
+
+        for hz in [60.0, 1e3]
+            val r = s.response(hz, net.drives.view()).unwrap()
+            val b = r.voltage(s.circuit.find_node("b").unwrap())
+
+            assert(near(b.abs(), want, 2e-6))
+            assert(near(b.arg(), 0.0, 1e-3))
+
+    // Wound the other way round, it is upside down.
+    val net = open_transformer("AC 1", "0.999", "0 b")
+    var s = sim(net.circuit)
+    val b = s.response(60.0, net.drives.view()).unwrap().voltage(s.circuit.find_node("b").unwrap())
+
+    assert(near(b.abs(), 0.0999, 2e-6) && b.re < 0.0)
+
+@test("in time, a transformer's secondary follows its primary's sine at the turns ratio")
+coupling_ratio_tran()
+    for (k, want) in [("0.999", 0.0999), ("1", 0.1)]
+        val net = open_transformer("SIN(0 170 60)", k, "b 0")
+        var s = sim(net.circuit)
+        var hi = 0.0
+        var lo = 0.0
+
+        s.operating_point().unwrap()
+
+        // Two cycles in, over one cycle.
+        for j in 0..<1000
+            s.advance_to(2.0 / 60.0 + real(j) / 60e3).unwrap()
+
+            hi = max(hi, s.voltage_at("b"))
+            lo = min(lo, s.voltage_at("b"))
+
+        assert(near(hi, 170.0 * want, 0.01) && near(lo, -170.0 * want, 0.01))
+
+@test("at DC a transformer passes nothing: each winding is a wire, and the secondary carries no current")
+coupling_dc()
+    val net = parse_netlist("t\nV1 a 0 5\nRP a p 10\nLP p 0 1\nLS b 0 1\nK1 LP LS 0.999\nRL b 0 100\n").unwrap()
+    var s = sim(net.circuit)
+
+    s.operating_point().unwrap()
+
+    assert(near(s.voltage_at("p"), 0.0, 1e-9))
+    assert(near(s.current(2), 0.5, 1e-9))
+    assert(near(s.current(3), 0.0, 1e-9) && near(s.voltage_at("b"), 0.0, 1e-9))
+
+@test("switched on, a transformer's DC primary current rises at the rate the primary's own inductance allows, and the secondary sees only the change")
+coupling_switched_on()
+    // 5 V across 1 H through 10 Ω: the primary's current rises as 0.5 · (1 − e^(−10t)), and the
+    // secondary, across 100 Ω, carries a pulse while it does; a pulse, since a steady current induces
+    // nothing.
+    val net = parse_netlist("t\nV1 a 0 5\nRP a p 10\nLP p 0 1\nLS b 0 1\nK1 LP LS 0.5\nRL b 0 100\n").unwrap()
+    var s = sim(net.circuit)
+
+    s.power_on().unwrap()
+    s.advance_to(2.0).unwrap()
+
+    assert(near(s.current(2), 0.5, 1e-4))
+    assert(near(s.voltage_at("b"), 0.0, 1e-4))
+
+@test("a schematic's transformer is two windings coupled at 0.999, its secondary's inductance set by the turns ratio")
+transformer_schematic()
+    val sch = parse_schematic("""
+        source  V1  0 0  0 4  sine 170 60
+        ground      0 4
+        transformer T1  2 0  2 4  4 0  4 4  120:9
+        wire        0 0  2 0
+        wire        0 4  2 4
+        resistor RL 4 0  4 4  100
+        ground      4 4
+        """).unwrap()
+    val c = sch.circuit
+    val windings = [sch.elements[2], sch.elements[3]]
+
+    assert(windings[0].shape == Winding && windings[1].shape == Winding)
+    assert(windings[0].name == "T1" && windings[1].name == "T1")
+    assert(windings[0].value == "120:9" && windings[1].value == "")
+    assert(sch.find("T1") == Some(2))
+    assert(c.parts[usize(windings[0].part)].kind == Inductor(10.0))
+    assert(c.parts[usize(windings[1].part)].kind == Inductor(10.0 * (9.0 / 120.0) * (9.0 / 120.0)))
+    assert(c.couplings.len() == 1)
+    assert(c.couplings[0] == Coupling("T1", windings[0].part, windings[1].part, 0.999))
+
+    // Its insulation, a gigohm between its windings' second ends, which are both ground here.
+    val insulation = c.find_part("T1 insulation").unwrap()
+
+    assert(c.parts[usize(insulation)].kind == Resistor(1e9))
+    assert(c.parts[usize(insulation)].a == c.parts[usize(windings[1].part)].b)
+    assert(c.parts[usize(insulation)].b == c.parts[usize(windings[0].part)].b)
+
+    // Its core's losses, ten kilohms across its primary.
+    val core = c.find_part("T1 core").unwrap()
+
+    assert(c.parts[usize(core)].kind == Resistor(10e3))
+    assert(c.parts[usize(core)].a == c.parts[usize(windings[0].part)].a)
+    assert(c.parts[usize(core)].b == c.parts[usize(windings[0].part)].b)
+
+    // A primary's inductance, given.
+    val given = parse_schematic("transformer T2  2 0  2 4  4 0  4 4  10:1 2.5\nresistor R 2 0 2 4 1\nresistor S 4 0 4 4 1").unwrap()
+
+    assert(given.circuit.parts[0].kind == Inductor(2.5) && given.circuit.parts[1].kind == Inductor(0.025))
+
+@test("a schematic's transformer gives the secondary its share of the mains, and the secondary is insulated from it")
+transformer_schematic_runs()
+    val sch = parse_schematic("""
+        source  V1  0 0  0 4  sine 170 60
+        ground      0 4
+        transformer T1  2 0  2 4  4 0  4 4  120:12
+        resistor RP 0 0  2 0  1
+        wire        0 4  2 4
+        resistor RL 4 0  4 4  1k
+        """).unwrap()
+    var s = sim(sch.circuit)
+    var hi = 0.0
+    var common = 0.0
+
+    s.operating_point().unwrap()
+
+    for j in 0..<1000
+        s.advance_to(2.0 / 60.0 + real(j) / 60e3).unwrap()
+
+        // The secondary's two ends, which are nodes of their own: nothing but the insulation joins
+        // them to ground.
+        val top = s.voltage(sch.elements[3].a)
+        val bottom = s.voltage(sch.elements[3].b)
+
+        hi = max(hi, top - bottom)
+        common = max(common, bottom.abs())
+
+    assert(near(hi, 17.0 * 0.999, 0.05))
+    assert(common < 1e-3)
+
+@test("a transformer line's mistakes are refused with their line")
+transformer_refused()
+    assert(parse_schematic("transformer").unwrap_err() == "line 1: a transformer needs a name")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0").unwrap_err() == "line 1: a transformer is placed by 4 points: its primary's two ends, then its secondary's")
+    assert(parse_schematic("transformer T1 0 0 0 0 2 0 2 4 2:1").unwrap_err() == "line 1: a transformer's primary needs two different points")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0 2 0 2:1").unwrap_err() == "line 1: a transformer's secondary needs two different points")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0 2 4").unwrap_err() == "line 1: a transformer needs its turns ratio, primary:secondary, such as 120:9")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0 2 4 12").unwrap_err() == "line 1: '12' is not a turns ratio: primary:secondary, such as 120:9")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0 2 4 1:2:3").unwrap_err() == "line 1: '1:2:3' is not a turns ratio: primary:secondary, such as 120:9")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0 2 4 12:0").unwrap_err() == "line 1: a turns ratio's secondary is more than zero")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0 2 4 0:1").unwrap_err() == "line 1: a turns ratio's primary is more than zero")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0 2 4 2:1 -1").unwrap_err() == "line 1: an inductance is more than zero")
+    assert(parse_schematic("transformer T1 0 0 0 4 2 0 2 4 2:1 1 more").unwrap_err() == "line 1: 'more' is more than a transformer takes")
+    assert(parse_schematic("resistor T1 0 0 0 4 1\ntransformer T1 2 0 2 4 4 0 4 4 2:1").unwrap_err() == "line 2: 'T1' is already the name of another element")
+    assert(parse_schematic("transformer T1 2 0 2 4 4 0 4 4 2:1\nresistor T1 0 0 0 4 1").unwrap_err() == "line 2: 'T1' is already the name of another element")
+    // A winding is only ever half of a transformer.
+    assert(parse_schematic("winding W1 0 0 0 4 1").unwrap_err() == "line 1: 'winding' is not a kind of element")
+
+// The wall supply's output and reservoir over its last cycle by 50 µs steps: their lowest and highest.
+private over_a_cycle(s: *Sim, from: real) -> (real, real, real, real)
+    var out_lo = 1e9
+    var out_hi = -1e9
+    var raw_lo = 1e9
+    var raw_hi = -1e9
+
+    for j in 1..334
+        s.advance_to(from + real(j) * 50e-6).unwrap()
+
+        out_lo = min(out_lo, s.voltage_at("out"))
+        out_hi = max(out_hi, s.voltage_at("out"))
+        raw_lo = min(raw_lo, s.voltage_at("raw"))
+        raw_hi = max(raw_hi, s.voltage_at("raw"))
+
+    (out_lo, out_hi, raw_lo, raw_hi)
+
+@test("the wall supply example: 5.1 V out with its ripple left behind on the reservoir, and unplugged it fades")
+wallwart_example()
+    val sch = parse_schematic(str_cast(embed("../../../examples/wallwart.amber"))).unwrap()
+    var s = sim(sch.circuit)
+
+    s.power_on().unwrap()
+    s.advance_to(0.2).unwrap()
+
+    val (out_lo, out_hi, raw_lo, raw_hi) = over_a_cycle(&s, 0.2)
+
+    // The reservoir: the transformer's 12.7 V peak less two diodes, sagging a few hundred millivolts
+    // between top-ups.
+    assert(raw_hi > 10.0 && raw_hi < 11.5)
+    assert(raw_hi - raw_lo > 0.1 && raw_hi - raw_lo < 1.0)
+    // The output: the zener and a base drop, raised by R1 and R2, with more than twenty times less of
+    // that ripple.
+    assert(out_lo > 4.9 && out_hi < 5.3)
+    assert((out_hi - out_lo) < (raw_hi - raw_lo) / 20.0)
+
+    // Unplugged, the reservoir carries the load a while, then everything falls.
+    s.set_switch(sch.elements[usize(sch.find("S1").unwrap())].part, false)
+    s.advance_to(0.25).unwrap()
+
+    val held = s.voltage_at("out")
+
+    s.advance_to(1.0).unwrap()
+
+    assert(held < 5.3 && s.voltage_at("out") < 1.0)

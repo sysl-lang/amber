@@ -62,8 +62,13 @@ and an inductor trading energy), `astable` (two transistors blinking two LEDs in
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
 turn the generator up past about 50 mV and the output clips), `zener` (a raw supply's 2 V of ripple
-cut to about 27 mV by a 5.1 V zener) and `regulator` (a zener-referenced emitter follower: 4.87 V out
-of a rippling 15 V, the ripple cut two-hundredfold).
+cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
+of a rippling 15 V, the ripple cut two-hundredfold) and `wallwart` (a 5 V supply that plugs into the
+wall: 120 V at 60 Hz through a 120:9 transformer, a diode bridge and a 1000 µF reservoir, then a
+series regulator with an error amplifier, holding 5.13 V while the reservoir ripples by 0.4 V; flip
+S1 to unplug it).
+
+![The wall supply: mains, transformer, bridge, reservoir and a two-transistor regulator, with the reservoir's ripple and the steady 5 V output on the scope](wallwart.png)
 
 ## Schematics
 
@@ -116,6 +121,17 @@ supply    P2  0 0  0 8   15 500m raw 2 60 1.5    # 15 V raw, 2 V of 120 Hz rippl
 zener     DZ  6 8  6 0   5.1                     # anode, cathode; breaks down at 5.1 V
 ```
 
+A transformer is placed by four points, its primary's two ends and then its secondary's, the first
+of each its dotted end, and given its turns ratio (and perhaps its primary's inductance, 10 H unless
+it says). Its windings are coupled at 0.999, and it carries what a real one has without being drawn:
+a gigohm of insulation between its windings and 10 kΩ of core loss across its primary. A source
+straight across a winding has no DC answer, since at DC a winding is a wire; put the winding's
+resistance in series, as `wallwart` does.
+
+```
+transformer T1  10 2  10 10  12 2  12 10  120:9   # primary, secondary, turns ratio
+```
+
 A transistor is placed by three points — collector, base, emitter — with its base a square or more
 off the line between the other two, which is where its symbol is drawn:
 
@@ -138,7 +154,8 @@ cli/amber-cli oracle/rc_pulse.cir
 ```
 
 reads a SPICE netlist — the format published circuits and every other simulator use — runs its
-analyses and prints their tables. The subset: `R`, `C` and `L` (with `IC=`), `V` and `I` sources
+analyses and prints their tables. The subset: `R`, `C` and `L` (with `IC=`), `K` coupling two
+inductors into a transformer (`K1 LP LS 0.999`), `V` and `I` sources
 (DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; `AC magnitude [phase]` drives it for `.ac`; a triangle is a
 `PULSE` with no top, `PULSE(low high 0 T/2 T/2 0 T)`), `D` with `.model … D`
 (`IS`, `N`, `RS`, `BV` and `IBV` for a zener's breakdown, and an area), `Q` bipolar transistors (collector, base, emitter, an optional
@@ -157,8 +174,10 @@ field-effect transistor, a MOSFET above level 1, a subcircuit, `.param`) is refu
 hundred times tighter than amber's by `oracle/generate.zsh`, which writes its answers into
 `tests_oracle.sysl`; amber agrees with them to a few parts in ten million at an operating point and
 along a sweep, and to within 0.2% of each waveform's swing through time (0.03% but for a resonant
-circuit rung for twelve cycles and an astable multivibrator's steep edges). Across frequency, an RLC
-band-pass and two amplifiers, one bipolar and one MOSFET, agree to a few parts in ten million.
+circuit rung for twelve cycles and an astable multivibrator's steep edges); the whole wall supply,
+transformer to regulated output, switched on from empty, agrees through its first 100 ms. Across
+frequency, an RLC band-pass, a transformer and two amplifiers, one bipolar and one MOSFET, agree to a
+few parts in ten million.
 
 ## The library
 

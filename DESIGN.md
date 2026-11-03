@@ -26,11 +26,18 @@
 ## The solver
 
 Modified nodal analysis: one KCL equation per non-ground node, plus a current unknown per voltage
-source (and, coming, per inductor), plus an inner node per diode with series resistance. Nonlinear
-parts are linearised about the present solution and the system re-solved until neither the unknowns
-nor any junction voltage moves (relative 1e-6, absolute 1e-9). Junction steps are limited as SPICE's
-`pnjlim` does. If plain Newton fails, gmin stepping: a shunt from every node to ground, removed a
-decade at a time.
+source and per inductor, plus an inner node per diode with series resistance. Coupled inductors (a
+transformer) add their mutual inductance between their two current equations. Nonlinear parts are
+linearised about the present solution and the system re-solved until no node voltage moves (relative
+1e-6, absolute 1e-9, or within 1e-7 of the largest node voltage, which is rounding) and every
+junction lies where it was linearised — by its voltage, or for a diode by its current, as SPICE
+judges one, so a reversed diode on a weakly held node is not chased through its voltage's rounding.
+Branch currents are not judged: once the junctions and node voltages hold, they follow linearly.
+Junction steps are limited as SPICE's `pnjlim` does. If plain Newton fails, gmin stepping: a shunt
+from every node to ground, removed a decade at a time.
+
+A step's error is judged on every node voltage and inductor current, never finer than that rounding,
+and never on a voltage source's current, which is algebraic and mostly rounding once steps are short.
 
 A diode's reported current is read off the line the last system was linearised on, so KCL holds
 exactly at every node in what is reported.

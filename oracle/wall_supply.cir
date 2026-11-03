@@ -4,12 +4,13 @@ A 5 V supply from the wall: transformer, bridge, reservoir and a series regulato
 * an error amplifier steers, comparing a share of the output with a 3.3 V zener. Switched on at a zero
 * crossing with every capacitor empty.
 *
-* RI is the transformer's insulation, which a schematic's transformer has built in: without it the
-* secondary has nothing to say where it stands while all four diodes are off, and ngspice and amber
-* both give up at about 6.4 ms.
+* RI and RC are the transformer's insulation and core losses, which a schematic's transformer has
+* built in. Without RI the secondary has nothing to say where it stands while all four diodes are off,
+* and ngspice and amber both give up at about 6.4 ms.
 VM line 0 SIN(0 170 60)
 RP line p 12
 LP p 0 10
+RC p 0 10k
 LS s1 s2 56.25m
 K1 LP LS 0.999
 RI s2 0 1g
@@ -26,7 +27,6 @@ RZ out ref 1k
 DZ 0 ref dz3v3
 R1 out fb 2.7k
 R2 fb 0 10k
-CO out 0 10u
 RL out 0 100
 RLED out led 1k
 DLED led 0 dred

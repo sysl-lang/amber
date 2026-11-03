@@ -1,0 +1,66 @@
+# A 5 V supply that plugs into the wall: the inside of a wall wart, before switching supplies made them
+# small.
+#
+# The mains is 120 V at 60 Hz, 170 V at its peaks. T1 steps it down 120:9, to about 12.7 V at the
+# peaks, and keeps the circuit after it insulated from the wall; RP is its primary winding's
+# resistance and RW its secondary's. The bridge of four diodes turns both halves of each cycle
+# upward, so CF is topped up 120 times a second, to the peak less two diodes' drops, and sags between
+# top-ups as the load drains it: about 10.4 V with a few hundred millivolts of ripple.
+#
+# Q1 passes the load's current from CF and drops what is left over. Q2 holds it there: it compares
+# a share of the output, from R1 and R2, with the 3.3 V zener DZ, and takes current away from Q1's
+# base when the output rises, so Q1 passes less. The output settles where the share is a base drop
+# above the zener, 5.1 V, and the ripple on CF all but vanishes from it. The LED is its pilot light.
+#
+# Flip S1 to unplug it: CF carries the load for a few cycles while the output holds, then both fall.
+
+speed 20m
+
+switch    S1     2 2   5 2   closed
+resistor  RP     5 2   10 2  12
+source    MAINS  2 2   2 10  sine 170 60
+wire             2 10  10 10
+ground           2 10
+
+transformer T1   10 2  10 10  12 2  12 10  120:9
+
+resistor  RW     12 2  18 2  0.3
+wire             18 2  18 3
+wire             12 10 18 10
+wire             18 10 18 9
+
+diode     D1     18 3  21 6
+diode     D2     18 9  21 6
+diode     D3     15 6  18 3
+diode     D4     15 6  18 9
+wire             15 6  14 6
+ground           14 6
+
+capacitor CF     21 6  21 14  1000u
+wire             21 6  31 6
+wire             31 6  31 3
+resistor  RZ     26 6  26 9   1k
+wire             26 9  26 12
+wire             26 12 33 12
+
+npn       Q1     31 3  33 5  35 3   2N3904
+resistor  RB     31 6  33 6  1k
+wire             33 5  33 8
+npn       Q2     33 8  35 10 33 12  2N3904
+zener     DZ     33 14 33 12  3.3
+
+wire             35 3  45 3
+resistor  R1     37 3  37 10  2.7k
+wire             37 10 35 10
+resistor  R2     37 10 37 14  10k
+resistor  RLED   41 3  41 8   1k
+led       LED    41 8  41 14  red
+resistor  RL     45 3  45 14  100
+
+wire             21 14 45 14
+ground           21 14
+
+label     raw    21 6
+label     out    45 3
+meter     RAW    21 6  21 14
+meter     OUT    37 3  37 14

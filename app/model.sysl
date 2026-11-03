@@ -524,6 +524,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Resistor -> s"${e.value}Ω resistor"
     Capacitor -> s"${e.value}F capacitor"
     Inductor -> s"${e.value}H inductor"
+    Winding -> if e.value == "" then "transformer's secondary" else s"${e.value} transformer's primary"
     Battery -> s"${e.value} battery"
     Source -> s"${e.value} source"
     CurrentSource -> s"${e.value} current source"

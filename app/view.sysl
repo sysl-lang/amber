@@ -427,22 +427,17 @@ private struct Pen
                 self.width(3.5)
                 f.line(mid - 0.1, -0.4, mid - 0.1, 0.4)
                 f.line(mid + 0.1, -0.4, mid + 0.1, 0.4)
-            Inductor ->
-                // Four loops of wire, each a half circle standing on the line.
-                val turn = body / 4.0
+            Inductor -> coil(f, s0, body, 1.0)
+            Winding ->
+                // A transformer's winding is a coil whose loops face away from the other winding, with
+                // the core's two bars on the side toward it and a dot at the winding's first end.
+                val toward = partner_side(m, e, ax, ay, ux, uy)
 
-                self.vg.begin()
-                f.move(s0, 0.0)
-
-                for k in 0..<4
-                    val c = s0 + turn * (real(k) + 0.5)
-
-                    for j in 1..12
-                        val a = pi * real(j) / 12.0
-
-                        f.to(c - turn / 2.0 * a.cos(), turn / 2.0 * a.sin())
-
-                self.vg.stroke()
+                coil(f, s0, body, -toward)
+                self.width(2.0)
+                f.line(s0, toward * 0.3, s1, toward * 0.3)
+                f.line(s0, toward * 0.42, s1, toward * 0.42)
+                self.dot(f.gx(s0 + 0.12, -toward * 0.4), f.gy(s0 + 0.12, -toward * 0.4), 3.0)
             Switch ->
                 val closed = m.s.circuit.parts[usize(e.part)].kind == Switch(true)
 
@@ -908,6 +903,38 @@ private led_colour(c: Colour) -> u32 = c match
     Green -> 0x30D158
     Blue -> 0x409CFF
 
+// Four loops of wire along `body` from `s0`, each a half circle standing on the line on `side` of it:
+// 1 to the left, -1 to the right.
+private coil(f: Frame, s0: real, body: real, side: real)
+    val turn = body / 4.0
+
+    f.pen.vg.begin()
+    f.move(s0, 0.0)
+
+    for k in 0..<4
+        val c = s0 + turn * (real(k) + 0.5)
+
+        for j in 1..12
+            val a = pi * real(j) / 12.0
+
+            f.to(c - turn / 2.0 * a.cos(), side * turn / 2.0 * a.sin())
+
+    f.pen.vg.stroke()
+
+// Which side of winding `e` the transformer's other winding is on, in the frame running from (`ax`,
+// `ay`) along (`ux`, `uy`): 1 to its left, -1 to its right.
+private partner_side(m: &Model, e: Element, ax: real, ay: real, ux: real, uy: real) -> real
+    for i in 0..<m.sch.elements.len()
+        val o = m.sch.elements[i]
+
+        if o.shape == Winding && o.name == e.name && (o.x1 != e.x1 || o.y1 != e.y1 || o.x2 != e.x2 || o.y2 != e.y2)
+            val px = (real(o.x1) + real(o.x2)) / 2.0 - ax
+            val py = (real(o.y1) + real(o.y2)) / 2.0 - ay
+
+            return if px * uy - py * ux >= 0.0 then 1.0 else -1.0
+
+    1.0
+
 // A part's own frame: `s` along it from its first end, `t` across it to the left.
 private struct Frame
     pen: Pen
@@ -984,9 +1011,15 @@ private labels(m: &Model, c: *Canvas, at: Place)
             transistor_label(m, c, at, e)
             continue
 
-        val mx = at.x((real(e.x1) + real(e.x2)) / 2.0)
-        val my = at.y((real(e.y1) + real(e.y2)) / 2.0)
-        val across = e.y1 == e.y2
+        // A transformer is labelled once, under its two windings and between them, with its secondary's
+        // voltage.
+        if e.shape == Winding && e.value == "" then continue
+
+        val placed = if e.shape == Winding then m.sch.elements[i + 1] else e
+        val pair = e.shape == Winding
+        val mx = at.x(if pair then (real(e.x1 + e.x2) + real(placed.x1 + placed.x2)) / 4.0 else (real(e.x1) + real(e.x2)) / 2.0)
+        val my = if pair then at.y(real(max(max(e.y1, e.y2), max(placed.y1, placed.y2)))) else at.y((real(e.y1) + real(e.y2)) / 2.0)
+        val across = e.y1 == e.y2 || pair
         // Beside a vertical part, under a horizontal one.
         // Clear of a supply's case, which is wider and taller than a symbol.
         val clear = if e.shape == Supply then SUPPLY_W + 0.15 else 0.75
@@ -996,6 +1029,7 @@ private labels(m: &Model, c: *Canvas, at: Place)
             Resistor -> s"${e.value}Ω"
             Capacitor -> s"${e.value}F"
             Inductor -> s"${e.value}H"
+            Winding -> e.value
             Led -> colour_name(e.colour)
             Switch -> ""
             // What it is set to now, which its panel may have changed.
@@ -1012,7 +1046,7 @@ private labels(m: &Model, c: *Canvas, at: Place)
             continue
 
         if m.values && m.trouble == "" && e.shape != Battery
-            put(c, lx, ly + 18.0, volts(m.s.across(e.part)), 0xFFB030, across)
+            put(c, lx, ly + 18.0, volts(m.s.across(placed.part)), 0xFFB030, across)
 
     for k in 0..<m.meters.len()
         dial(m, c, at, m.meters[k])

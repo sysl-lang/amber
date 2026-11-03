@@ -34,6 +34,7 @@ import sysl.text.{Search, fields, split}
 // | `zener` | two, anode first | the voltage it breaks down at, reversed |
 // | `npn`, `pnp` | three: collector, base, emitter | a model: `2N3904` (an npn's, the default) or `2N3906` (a pnp's) |
 // | `nmos`, `pmos` | three: drain, gate, source | a model: `2N7000` (an nmos's, the default) or `BS250` (a pmos's) |
+// | `transformer` | four: the primary's two ends, then the secondary's | a turns ratio, `120:9`, and perhaps the primary's inductance |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -47,6 +48,14 @@ import sysl.text.{Search, fields, split}
 // channel is the library's default width and length:
 //
 //     nmos     M1  3 9  1 11  3 13  2N7000
+//
+// A transformer is two windings, each placed by its two ends, the first its dotted end, where the two
+// rise together. Its primary is 10 H unless the line gives another inductance after the ratio, and its
+// secondary is that over the ratio squared; the two are coupled at 0.999. It carries what a real one
+// has without being drawn: a gigohm of insulation between its windings' second ends, and its core's
+// losses, 10 kΩ across its primary.
+//
+//     transformer T1  10 2  10 10  12 2  12 10  120:9
 //
 // A wave is one of
 //
@@ -102,6 +111,8 @@ enum Shape: u8
     Pnp
     Nmos
     Pmos
+    // One winding of a transformer: a `transformer` line makes two, its primary and then its secondary.
+    Winding
     Ground
     Label
     Meter
@@ -369,14 +380,22 @@ parse_schematic(text: string) -> Result[Schematic, string]
             settled = true
             continue
 
-        val (e, kind) = element(words).map_err(why -> s"line ${line_no}: ${why}")?
+        var parts: Buf[(Element, Option[Kind])] = buf()
 
-        if e.name != ""
+        if words[0] == "transformer"
+            parts = transformer(words).map_err(why -> s"line ${line_no}: ${why}")?
+        else
+            parts.push(element(words).map_err(why -> s"line ${line_no}: ${why}")?)
+
+        val name = parts[0].0.name
+
+        if name != ""
             for k in 0..<elements.len()
-                if elements[k].name == e.name then return Err(s"line ${line_no}: '${e.name}' is already the name of another element")
+                if elements[k].name == name then return Err(s"line ${line_no}: '${name}' is already the name of another element")
 
-        elements.push(e)
-        kinds.push(kind)
+        for (e, kind) in parts
+            elements.push(e)
+            kinds.push(kind)
 
     join(&elements)
 
@@ -442,6 +461,62 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
         _ -> rest.join(" ")
 
     Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], -1, -1, -1, -1, colour), kind))
+
+// A transformer's primary inductance when its line gives none: about 30 mA drawn from 120 V at 60 Hz
+// with nothing on the secondary, a small mains transformer's.
+const PRIMARY_HENRIES: real = 10.0
+
+// How closely a transformer's windings are coupled: all but a thousandth of the flux one makes passes
+// through the other.
+const TRANSFORMER_COUPLING: real = 0.999
+
+// The insulation between a transformer's windings. It carries nothing to speak of, and it says where
+// the secondary stands while whatever it feeds draws nothing, as a rectifier's diodes all off do;
+// without it the secondary's voltage would be anything at all, and the solver would chase it.
+const INSULATION_OHMS: real = 1e9
+
+// A transformer's core losses, as a resistance across its primary: about a watt and a half from 120 V,
+// a small mains transformer's with nothing on its secondary. It is also where the core's energy goes
+// when the primary is cut off, as a switch opening on it does; without it the current in the primary
+// would have nowhere to go, and its voltage no limit.
+const CORE_OHMS: real = 10e3
+
+// A transformer's line: its name, its primary's two points, its secondary's two points, its turns ratio
+// `primary:secondary`, and perhaps its primary's inductance. Each winding's first point is its dotted
+// end, so the two first points rise together. It is two windings, the primary first.
+private transformer(words: []string) -> Result[Buf[(Element, Option[Kind])], string]
+    if words.len < 2 then return Err("a transformer needs a name")
+
+    val name = words[1]
+
+    if words.len < 10 then return Err("a transformer is placed by 4 points: its primary's two ends, then its secondary's")
+
+    var xy: [8]int = [0, 0, 0, 0, 0, 0, 0, 0]
+
+    for k in 0..<8
+        xy[k] = parse_coordinate(words[2 + k])?
+
+    if xy[0] == xy[2] && xy[1] == xy[3] then return Err("a transformer's primary needs two different points")
+
+    if xy[4] == xy[6] && xy[5] == xy[7] then return Err("a transformer's secondary needs two different points")
+
+    val rest = words[10..<words.len]
+
+    if rest.len == 0 then return Err("a transformer needs its turns ratio, primary:secondary, such as 120:9")
+
+    if rest.len > 2 then return Err(s"'${rest[2]}' is more than a transformer takes")
+
+    val sides = split(rest[0], ":")
+
+    if sides.len != 2 then return Err(s"'${rest[0]}' is not a turns ratio: primary:secondary, such as 120:9")
+
+    val ratio = positive(sides[0], "a turns ratio's primary")? / positive(sides[1], "a turns ratio's secondary")?
+    val primary = if rest.len == 2 then positive(rest[1], "an inductance")? else PRIMARY_HENRIES
+    var out: Buf[(Element, Option[Kind])] = buf()
+
+    out.push((Element(Winding, name, rest[0], xy[0], xy[1], xy[2], xy[3], xy[2], xy[3], -1, -1, -1, -1, Red), Some(Inductor(primary))))
+    out.push((Element(Winding, name, "", xy[4], xy[5], xy[6], xy[7], xy[6], xy[7], -1, -1, -1, -1, Red), Some(Inductor(primary / (ratio * ratio)))))
+    Ok(out)
 
 // "a resistor", "an inductor", "an npn": the kind with its article.
 private a_word(word: string) -> string
@@ -822,6 +897,18 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
             elements[i].part = int(c.parts.len())
 
             if kind.terminals() == 3 then c.add3(e.name, kind, e.a, e.b, e.c) else c.add(e.name, kind, e.a, e.b)
+
+    // A transformer's windings, the primary (which carries the ratio) and the secondary after it, are
+    // coupled, its insulation joins their second ends, and its core's losses are across its primary.
+    for i in 0..<elements.len()
+        val e = elements[i]
+
+        if e.shape == Winding && e.value != ""
+            val other = elements[i + 1]
+
+            c.couple(e.name, e.part, other.part, TRANSFORMER_COUPLING)?
+            c.add(s"${e.name} insulation", Resistor(INSULATION_OHMS), other.b, e.b)
+            c.add(s"${e.name} core", Resistor(CORE_OHMS), e.a, e.b)
 
     Ok(Schematic(elements, c, segments_of(elements), 0.0, false))
 
