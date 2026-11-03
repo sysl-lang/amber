@@ -1,6 +1,6 @@
 // What the viewer knows: the circuit and its simulation, the clock, the meters and what they have read.
 
-import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, Supply, Waveform, sim, engineering, parse_generator}
+import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, Supply, Waveform, Pin, PinMode, PinDrive, sim, engineering, parse_generator}
 import sh.sysl.ui_sdl.stop
 import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_B, SCANCODE_C, SCANCODE_M, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
@@ -232,8 +232,21 @@ struct Model
     window(self) -> real = SCOPE_SECONDS * self.pace()
 
     // Open or close the switch that element `i` is.
+    // Or set the pin element `i` is going round its modes, as a program running on its chip might:
+    // listening, driving high, driving low.
     toggle(*self, i: int)
         val e = self.sch.elements[usize(i)]
+
+        if e.shape == Shape.Pin
+            if self.s.circuit.parts[usize(e.part)].kind is Pin(d)
+                val next = d.mode match
+                    Input -> PinMode.High
+                    High -> PinMode.Low
+                    Low -> PinMode.Input
+
+                self.s.set_pin(e.part, next, d.pull)
+
+            return
 
         if e.shape != Shape.Switch then return
 
@@ -486,6 +499,15 @@ private speed_index(seconds: real) -> int
 
     best
 
+// What a pin is doing, as its chip's program set it.
+pin_doing(d: PinDrive) -> string = d.mode match
+    High -> "driving high"
+    Low -> "driving low"
+    Input -> d.pull match
+        Up -> "listening, pulled up"
+        Down -> "listening, pulled down"
+        Floating -> "listening"
+
 // The element that is the schematic's first speaker, or -1; the first is the one that is heard.
 first_speaker(sch: Schematic) -> int
     for i in 0..<sch.elements.len()
@@ -563,6 +585,15 @@ status(m: &Model) -> string
 
         return s"${clock} · ${e.name} ${described(m, e)}: ${volts(m.s.across(e.part))} drain to source, ${volts(vgs)} gate to source, ${engineering(id.abs())}A ${into(id)} the drain"
 
+    if e.shape == Shape.Pin
+        if m.s.circuit.parts[usize(e.part)].kind is Pin(d)
+            val v = m.s.across(e.part)
+            val i = -m.s.current(e.part)
+            val reads = if v >= d.high_volts then "reads 1" elif v <= d.low_volts then "reads 0" else "between its thresholds"
+            val code = max(0, min(4095, int((v / d.volts * 4096.0).round())))
+
+            return s"${clock} · ${e.name} ${described(m, e)} ${pin_doing(d)}: ${volts(v)}, ${engineering(i.abs())}A ${if i < 0.0 then "in" else "out"}; ${reads}, ADC ${code} of 4096 · click to set it going round"
+
     if e.shape == Shape.OpAmp
         val io = m.s.current(e.part)
 
@@ -587,6 +618,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Inductor -> s"${e.value}H inductor"
     Speaker -> s"${e.value}Ω speaker"
     OpAmp -> s"${e.value} op-amp"
+    Pin -> s"${e.value} pin"
     Winding -> if e.value == "" then "transformer's secondary" else s"${e.value} transformer's primary"
     Battery -> s"${e.value} battery"
     Source -> s"${e.value} source"

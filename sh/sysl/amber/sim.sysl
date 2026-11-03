@@ -157,6 +157,11 @@ struct Sim
             Transistor(_) | Mosfet(_, _, _) -> self.terminal_current(i, 0)
             // An op-amp's is the current out of its output.
             OpAmp(_) -> -self.terminal_current(i, 2)
+            // A pin's is the current into it from the circuit: negative while it drives current out.
+            Pin(d) ->
+                val (g, e) = pin_line(d)
+
+                g * (self.across(i) - e)
 
     // The current flowing into part `i` at terminal `k`, counting from 0. The currents into a part's
     // terminals sum to zero: a two-terminal part's second is the first's negative, a transistor's
@@ -267,6 +272,25 @@ struct Sim
     // and taken by backward Euler.
     set_switch(*self, i: int, closed: bool)
         self.circuit.parts[usize(i)].kind = Switch(closed)
+        self.corner()
+
+    // Have pin `i` do `mode` with its pull `pull` from now on; a corner, as `set_switch` is. Anything
+    // but a pin is left as it is.
+    set_pin(*self, i: int, mode: PinMode, pull: Pull)
+        if self.circuit.parts[usize(i)].kind is Pin(d)
+            if d.mode == mode && d.pull == pull then return
+
+            self.circuit.parts[usize(i)].kind = Pin(d.set(mode, pull))
+            self.corner()
+
+    // Carry the circuit to `until` without solving it, as it stands: every voltage held, every
+    // capacitor and inductor holding what it held. For a stretch the solver could not follow — a
+    // step it gave up on leaves the circuit as it was before that step — so that what is driving the
+    // circuit can carry on, and the solver can start afresh from there.
+    hold_to(*self, until: real)
+        if until <= self.time then return
+
+        self.time = until
         self.corner()
 
     // Give source `i` a new wave from now on; a corner, as `set_switch` is.
@@ -932,6 +956,14 @@ struct Sim
                         self.sys.at(row, g, sign * line.gm)
                         self.sys.at(row, s, -sign * (line.gm + line.gds))
                         self.sys.rhs(row, -sign * owed)
+                Pin(d) ->
+                    // A conductance to a voltage: the current it drives into a short circuit, with the
+                    // conductance across it.
+                    val (g, e) = pin_line(d)
+
+                    self.conductance(a, b, g)
+                    self.sys.rhs(a, g * e)
+                    self.sys.rhs(b, -g * e)
                 OpAmp(m) ->
                     // Each current on the line touching it at the present solution: a current `I` out
                     // of a node, `I0 + Σ slope · (v − v0)`, is its slopes in the node's row and
@@ -1206,6 +1238,16 @@ const INNER_PAST: real = 0.1
 // The current around zero over which an op-amp's output current passes from being drawn from its
 // negative supply to its positive one.
 const SPLIT_AMPS: real = 1e-6
+
+// A pin as a conductance and the voltage it pulls towards: its rail or ground behind its output
+// resistance while it drives, its pull while it listens with one on, and its leakage otherwise.
+private pin_line(d: PinDrive) -> (real, real) = d.mode match
+    High -> (1.0 / d.ohms, d.volts)
+    Low -> (1.0 / d.ohms, 0.0)
+    Input -> d.pull match
+        Up -> (1.0 / d.pull_ohms, d.volts)
+        Down -> (1.0 / d.pull_ohms, 0.0)
+        Floating -> (GMIN, 0.0)
 
 // An op-amp's currents at one set of voltages, and their slopes against them.
 private struct OpAmpLine

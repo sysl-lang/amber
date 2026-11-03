@@ -976,3 +976,45 @@ speaker_levels()
         most = max(most, real(quiet.hear(1.0 + 1e-6 * (tau * 440.0 * real(k) / 48000.0).sin())).abs())
 
     assert(most < 1e-4)
+
+// --- Pins -------------------------------------------------------------------------------------------
+
+private pins() -> &Model = model("pins.amber", parse_schematic(str_cast(embed("../examples/pins.amber"))).unwrap())
+
+@test("clicking a pin sets it going round: listening, driving high, driving low, and listening again")
+pin_clicks()
+    val m = pins()
+    val gp2 = m.sch.find("GP2").unwrap()
+    val d1 = m.sch.elements[usize(m.sch.find("D1").unwrap())].part
+
+    assert(status(m).contains("t = ") && m.s.current(d1).abs() < 1e-9)
+
+    m.select(gp2)
+    m.run(1e-3, 8)
+    assert(status(m).contains("GP2 RP2040 pin driving high"))
+    assert(m.s.current(d1) > 3e-3)
+
+    m.select(gp2)
+    m.run(1e-3, 8)
+    assert(status(m).contains("driving low") && m.s.current(d1).abs() < 1e-9)
+
+    m.select(gp2)
+    assert(status(m).contains("GP2 RP2040 pin listening:"))
+
+@test("a pin's status says what its chip would read: the level, and the ADC's code")
+pin_status()
+    val m = pins()
+
+    // GP26 on its divider: 3.3 V × 22k / 32k is 2.27 V, 2816 of 4096. Selected without a click's
+    // turn, to read it as it is.
+    m.selected = m.sch.find("GP26").unwrap()
+    assert(status(m).contains("2.27V") && status(m).contains("reads 1, ADC 2816 of 4096"))
+
+    // GP1 pulled up, then pressed.
+    m.selected = m.sch.find("GP1").unwrap()
+    assert(status(m).contains("reads 1"))
+
+    m.select(m.sch.find("S1").unwrap())
+    m.run(1e-3, 8)
+    m.selected = m.sch.find("GP1").unwrap()
+    assert(status(m).contains("reads 0"))

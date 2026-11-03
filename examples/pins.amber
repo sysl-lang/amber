@@ -1,0 +1,37 @@
+# Three of a microcontroller's pins wired to the world, the way a program running on the chip would
+# meet them. Click a pin to set it going round, as the program could: listening, driving high, driving
+# low. Click it to see what it reads.
+#
+#   * GP2 lights an LED through R1 while it drives high: about 4.5 mA, and the pin's own voltage
+#     droops by what its 50 Ω drops.
+#   * GP1 is a button: RPU pulls it up, S1 pulls it down when pressed, and listening it reads 1 or 0.
+#   * GP26 is an analog input: RA and RB divide the 3.3 V rail to 2.27 V, which its ADC reads as about
+#     2816 of 4096; C1 keeps it steady.
+#
+# Driven from an emulated chip instead of by clicking, the same pins are `Cosim`'s: the program's time
+# is the master, and each change lands at its own instant.
+
+speed 1m
+start settled
+
+battery   B1    33 0  33 10  3.3V
+wire            12 0  33 0
+wire            2 10  33 10
+ground          2 10
+
+pin       GP2   2 4   2 10
+wire            2 4   5 4
+resistor  R1    5 4   8 4    330
+led       D1    8 4   8 10   red
+
+pin       GP1   12 4  12 10
+resistor  RPU   12 0  12 4   10k
+switch    S1    12 4  15 4   open
+wire            15 4  15 10
+
+pin       GP26  20 4  20 10
+resistor  RA    20 0  20 4   10k
+wire            20 4  24 4
+resistor  RB    24 4  24 10  22k
+wire            24 4  28 4
+capacitor C1    28 4  28 10  100n

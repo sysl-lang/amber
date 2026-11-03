@@ -37,6 +37,7 @@ import sysl.text.{Search, fields, split}
 // | `transformer` | four: the primary's two ends, then the secondary's | a turns ratio, `120:9`, and perhaps the primary's inductance |
 // | `speaker` | two | its voice coil's resistance, 8 Ω if not given; a viewer plays the voltage across it |
 // | `opamp` | one, its middle; its pins are around it | a model: `741` (the default) or `TL072` |
+// | `pin` | two: the pin, then the chip's ground | the chip, `RP2040` (the default); an input, floating, until a program sets it |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -120,6 +121,9 @@ enum Shape: u8
     // An op-amp, placed by its middle, its five pins around it: its non-inverting input, inverting
     // input, output, positive supply and negative supply.
     OpAmp
+    // A microcontroller's pin, from the pin to the chip's ground, which a program running on the chip
+    // drives, releases and reads.
+    Pin
     Ground
     Label
     Meter
@@ -477,6 +481,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     val value = shape match
         Npn | Pnp | Nmos | Pmos -> if rest.len == 0 then default_model(shape) else rest[0]
         Speaker -> if rest.len == 0 then "8" else rest[0]
+        Pin -> "RP2040"
         _ -> rest.join(" ")
 
     Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5], -1, -1, -1, -1, -1, -1, colour), kind))
@@ -612,6 +617,7 @@ private shape_named(word: string) -> Result[Shape, string] = word match
     "label" -> Ok(Label)
     "meter" -> Ok(Meter)
     "speaker" -> Ok(Speaker)
+    "pin" -> Ok(Pin)
     _ -> Err(s"'${word}' is not a kind of element")
 
 private colour_named(word: string) -> Result[Colour, string] = word match
@@ -625,7 +631,7 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
     val optional = shape match
         // A generator and a supply say for themselves what they are missing.
-        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker -> true
+        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin -> true
         _ -> false
 
     if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
@@ -650,6 +656,10 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
                 "closed" -> Ok(Switch(true))
                 _ -> Err(s"'${rest[0]}' is not a switch's state: open or closed")
         Speaker -> Ok(Resistor(if rest.len == 0 then SPEAKER_OHMS else positive(rest[0], "a speaker's resistance")?))
+        Pin ->
+            if rest.len > 0 && rest[0] != "RP2040" then return Err(s"'${rest[0]}' is not a chip whose pins amber has: RP2040")
+
+            Ok(Pin(RP2040_PIN))
         Diode -> Ok(Diode(SILICON))
         Led -> Ok(Diode(colour.model()))
         Zener -> Ok(Diode(zener_model(positive(rest[0], "a breakdown voltage")?)))

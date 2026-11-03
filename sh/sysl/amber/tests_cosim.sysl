@@ -1,0 +1,193 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+
+// A microcontroller's pins wired into circuits, and a test playing the part of the program running on
+// it: driving, listening, reading and converting, each at its own instant of the program's time.
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// The circuit `text` describes as a schematic, as a co-simulation switched on settled.
+private board(text: string) -> Cosim
+    var b = cosim(parse_schematic(text).unwrap().circuit)
+
+    b.start(true)
+    b
+
+@test("a pin drives its rail behind its 50 Ω, low to ground, and listening it is its pull or nothing")
+pin_electrical()
+    var b = board("pin GP0 0 0 0 4\nresistor R1 0 0 4 0 1k\nwire 4 0 4 4\nwire 4 4 0 4\nground 0 4")
+    val k = b.pin("GP0").unwrap()
+
+    // An input, floating, out of reset: the resistor holds it at ground.
+    assert(near(b.volts(k, 1e-3), 0.0, 1e-6))
+
+    b.drive(k, true, 2e-3)
+    assert(near(b.volts(k, 3e-3), 3.3 * 1e3 / 1050.0, 1e-9))
+    assert(near(b.amps(k, 3e-3), 3.3 / 1050.0, 1e-9))
+
+    b.drive(k, false, 4e-3)
+    assert(near(b.volts(k, 5e-3), 0.0, 1e-9))
+
+    // Pulled up against the 1k to ground: 50k and 1k divide the rail.
+    b.listen(k, Pull.Up, 6e-3)
+    assert(near(b.volts(k, 7e-3), 3.3 * 1e3 / 51e3, 1e-9))
+
+    b.listen(k, Pull.Down, 8e-3)
+    assert(near(b.volts(k, 9e-3), 0.0, 1e-9))
+
+    assert(b.pin("GP9").is_none())
+    assert(b.held == 0)
+
+@test("a pin reads as a Schmitt trigger does: a 1 above 2 V, a 0 below 0.8 V, and between them what it read last")
+pin_hysteresis()
+    // A source ramping 0 → 3.3 V over 1 ms and back, into the pin through 1k.
+    var b = board("source V1 0 0 0 4 pwl 0 0 1m 3.3 2m 0\nresistor R1 0 0 4 0 1k\npin GP0 4 0 4 4\nwire 4 4 0 4\nground 0 4")
+    val k = b.pin("GP0").unwrap()
+    var rose = 0.0
+    var fell = 0.0
+    var was = false
+
+    for step in 1..2000
+        val t = real(step) * 1e-6
+        val now = b.read(k, t)
+
+        if now && !was then rose = b.volts(k, t)
+        if !now && was then fell = b.volts(k, t)
+
+        was = now
+
+    assert(near(rose, 2.0, 0.01))
+    assert(near(fell, 0.8, 0.01))
+
+// A PWM of `duty` at 10 kHz on GP0, filtered by 10k and 1 µF into GP26, run for `ms` milliseconds;
+// the program meeting the circuit every `sync` seconds as well as at each edge. GP26's ADC code at the
+// end.
+private pwm_into_adc(duty: real, ms: real, sync: real) -> (int, real, int)
+    var b = board("pin GP0 0 0 0 6\nresistor RF 0 0 6 0 10k\ncapacitor CF 6 0 6 6 1u\npin GP26 6 0 6 6\nwire 6 6 0 6\nground 0 6")
+    val pwm = b.pin("GP0").unwrap()
+    val adc = b.pin("GP26").unwrap()
+    val period = 1e-4
+    var t = 0.0
+    var next_sync = sync
+
+    while t < ms * 1e-3
+        b.drive(pwm, true, t)
+
+        while next_sync < t + duty * period
+            b.run_to(next_sync)
+            next_sync += sync
+
+        b.drive(pwm, false, t + duty * period)
+
+        while next_sync < t + period
+            b.run_to(next_sync)
+            next_sync += sync
+
+        t += period
+
+    val volts = b.volts(adc, t)
+
+    (b.convert(adc, t), volts, b.held)
+
+@test("a PWM filtered by an RC reads on the ADC as its duty times the rail, whatever the program's pace")
+pwm_adc()
+    // Five time constants of a 25% PWM: 0.825 V, a quarter of the codes.
+    val (code, volts, held) = pwm_into_adc(0.25, 50.0, 1.0)
+
+    assert(held == 0)
+    assert(near(volts, 0.25 * 3.3, 0.02))
+    assert(code > 1000 && code < 1050)
+
+    // Met every 10 µs or only at the edges, the circuit is the same circuit: the solver's steps land
+    // on every edge either way.
+    val (_, often, _) = pwm_into_adc(0.25, 20.0, 10e-6)
+    val (_, seldom, _) = pwm_into_adc(0.25, 20.0, 1.0)
+
+    assert(near(often, seldom, 1e-5))
+
+    for duty in [0.1, 0.5, 0.9]
+        val (_, v, _) = pwm_into_adc(duty, 50.0, 1.0)
+
+        assert(near(v, duty * 3.3, 0.03))
+
+@test("a button to ground on a pulled-up input reads 1 until it is pressed")
+pin_button()
+    var b = board("pin GP1 0 0 0 4\nswitch S1 0 0 4 0 open\nwire 4 0 4 4\nwire 4 4 0 4\nground 0 4")
+    val k = b.pin("GP1").unwrap()
+    val s1 = b.sim.circuit.find_part("S1").unwrap()
+
+    b.listen(k, Pull.Up, 0.0)
+    assert(b.read(k, 1e-3))
+
+    b.sim.set_switch(s1, true)
+    assert(!b.read(k, 2e-3))
+    assert(near(b.amps(k, 2e-3), 3.3 / 50e3, 1e-7))
+
+    b.sim.set_switch(s1, false)
+    assert(b.read(k, 3e-3))
+
+    // Floating, a pressed button still reads 0, and an open one reads whatever is left on the pin.
+    b.listen(k, Pull.Floating, 4e-3)
+    b.sim.set_switch(s1, true)
+    assert(!b.read(k, 5e-3))
+
+@test("a pin lighting an LED through 220 Ω gives it about 5 mA, and its own voltage droops by what its 50 Ω drops")
+pin_led()
+    var b = board("pin GP2 0 0 0 6\nresistor R1 0 0 6 0 220\nled D1 6 0 6 6 red\nwire 6 6 0 6\nground 0 6")
+    val k = b.pin("GP2").unwrap()
+
+    b.drive(k, true, 0.0)
+
+    val amps = b.amps(k, 1e-3)
+
+    assert(amps > 4e-3 && amps < 7e-3)
+    assert(near(b.volts(k, 1e-3), 3.3 - 50.0 * amps, 1e-6))
+
+    b.drive(k, false, 2e-3)
+    assert(b.amps(k, 3e-3).abs() < 1e-9)
+
+@test("a stretch the solver cannot follow is held over, and the program's time goes on")
+cosim_holds()
+    // Two batteries of different voltages straight across each other have no answer at all, so every
+    // stretch fails, and every one is held over.
+    var b = board("battery B1 0 0 0 4 5V\nbattery B2 2 0 2 4 3V\nwire 0 0 2 0\nwire 0 4 2 4\nground 0 4\npin GP0 4 0 4 4\nwire 2 4 4 4")
+    val k = b.pin("GP0").unwrap()
+
+    assert(b.held == 1 && b.trouble.contains("loop of voltage sources"))
+
+    b.drive(k, true, 1e-3)
+    b.run_to(2e-3)
+    assert(b.held >= 2 && b.sim.time == 2e-3)
+
+    // The program's own pins still answer, as the circuit last stood.
+    assert(!b.read(k, 3e-3))
+    assert(b.sim.time == 3e-3)
+
+@test("held over, a circuit keeps what its capacitors held, and starts again from there")
+hold_keeps_state()
+    var s = sim(parse_schematic("battery B1 0 0 0 4 5V\nresistor R1 0 0 4 0 1k\ncapacitor C1 4 0 4 4 1u\nwire 4 4 0 4\nground 0 4").unwrap().circuit)
+
+    s.power_on().unwrap()
+    s.advance_to(0.5e-3).unwrap()
+
+    val before = s.voltage_at("n2")
+
+    s.hold_to(5e-3)
+    assert(s.time == 5e-3 && s.voltage_at("n2") == before)
+
+    // And charges on from where it was held, not from where it would have been.
+    s.advance_to(5.5e-3).unwrap()
+    assert(near(s.voltage_at("n2"), 5.0 - (5.0 - before) * (-0.5).exp(), 2e-3))
+
+@test("a schematic's pin is an RP2040's, an input floating until a program sets it")
+pin_schematic()
+    val sch = parse_schematic("pin GP0 0 0 0 4\npin GP1 2 0 2 4 RP2040\nground 0 4\nwire 0 4 2 4").unwrap()
+
+    assert(sch.elements[0].shape == Pin && sch.elements[0].value == "RP2040")
+    assert(sch.circuit.parts[0].kind == Pin(RP2040_PIN))
+    assert(RP2040_PIN.mode == PinMode.Input && RP2040_PIN.pull == Pull.Floating)
+    assert(cosim(sch.circuit).names.len() == 2)
+    assert(parse_schematic("pin GP0 0 0 0 4 ATmega").unwrap_err() == "line 1: 'ATmega' is not a chip whose pins amber has: RP2040")
+    assert(parse_schematic("pin GP0 0 0 0 4 RP2040 3V3").unwrap_err() == "line 1: '3V3' is more than a pin takes")

@@ -6,7 +6,7 @@
 // board, draws the lines into it, hands it to the canvas as an image, and writes the labels over it
 // through the canvas, in the window's own font.
 
-import sh.sysl.amber.{Element, Shape, Colour, Wave, Waveform, Pulse, Sine, Switch, engineering}
+import sh.sysl.amber.{Element, Shape, Colour, Wave, Waveform, Pulse, Sine, Switch, Pin, PinMode, engineering}
 import sh.sysl.ui.{View, Canvas, Size, Rect, Image, column, row, text, spacer}
 import sh.sysl.plutovg
 import sysl.buf.{Buf, buf}
@@ -489,6 +489,39 @@ private struct Pen
                 f.line(s0, toward * 0.3, s1, toward * 0.3)
                 f.line(s0, toward * 0.42, s1, toward * 0.42)
                 self.dot(f.gx(s0 + 0.12, -toward * 0.4), f.gy(s0 + 0.12, -toward * 0.4), 3.0)
+            Pin ->
+                // A square pad where the pin meets the circuit, filled warm while it drives high and
+                // cool while it drives low, and open while it listens; a thin line on to the chip's
+                // ground.
+                val mid = (s0 + s1) / 2.0
+                val half = 0.3
+                val mode = m.s.circuit.parts[usize(e.part)].kind match
+                    Pin(d) -> d.mode
+                    _ -> PinMode.Input
+
+                f.line(s0, 0.0, mid - half, 0.0)
+                self.width(1.5)
+                f.line(mid + half, 0.0, s1, 0.0)
+                self.width(2.5)
+                self.vg.begin()
+                f.move(mid - half, -half)
+                f.to(mid + half, -half)
+                f.to(mid + half, half)
+                f.to(mid - half, half)
+                f.to(mid - half, -half)
+
+                if mode != PinMode.Input
+                    set(self.vg, if mode == PinMode.High then 0xFFB030 else 0x4A9CFF)
+                    self.vg.fill()
+                    set(self.vg, if hot then SELECTED else INK)
+                    self.vg.begin()
+                    f.move(mid - half, -half)
+                    f.to(mid + half, -half)
+                    f.to(mid + half, half)
+                    f.to(mid - half, half)
+                    f.to(mid - half, -half)
+
+                self.vg.stroke()
             Switch ->
                 val closed = m.s.circuit.parts[usize(e.part)].kind == Switch(true)
 
@@ -1090,7 +1123,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin -> true
     _ -> false
 
 // The text over the picture: each part's name and value, the voltage across it when values are on,
@@ -1146,6 +1179,13 @@ private labels(m: &Model, c: *Canvas, at: Place)
             Inductor -> s"${e.value}H"
             Winding -> e.value
             Speaker -> s"${e.value}Ω"
+            // What it is doing: driving high or low, or listening.
+            Pin -> m.s.circuit.parts[usize(e.part)].kind match
+                Pin(d) -> d.mode match
+                    High -> "high"
+                    Low -> "low"
+                    Input -> "in"
+                _ -> ""
             Led -> colour_name(e.colour)
             Switch -> ""
             // What it is set to now, which its panel may have changed.

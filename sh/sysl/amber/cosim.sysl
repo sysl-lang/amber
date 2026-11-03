@@ -1,0 +1,111 @@
+module sh.sysl.amber
+
+import sysl.buf.{Buf, buf}
+
+// A circuit wired to a microcontroller that something else is running: an emulator of the chip, or a
+// test playing the part of its program.
+//
+// **The program's time is the master.** It says what its pins do and when — drive this one high at
+// 1.25 ms, read that one at 1.30 ms, start a conversion on another at 1.31 ms — and the circuit is run
+// up to each of those moments and no further, so every change lands at its own instant and a read
+// sees the circuit exactly as it stands then. Nothing about the result depends on how often the two
+// meet: the solver's steps land on each event, wherever the events are.
+//
+// **A pin is found by its part's name**, once, and used by its number after: `pin("GP0")`.
+//
+// **A stretch the solver cannot follow does not stop the program.** The circuit is held as it last
+// stood across that stretch, as a real circuit would carry on doing something, and the solver starts
+// afresh after it; `held` counts the stretches and `trouble` says why the last one was.
+struct Cosim
+    sim: Sim
+    // Each pin's part, and what the program last read from it.
+    parts: Buf[int]
+    names: Buf[string]
+    levels: Buf[bool]
+    held: int
+    trouble: string
+
+    // Pin number `name` is, if the circuit has a pin of that name.
+    pin(self, name: string) -> Option[int]
+        for k in 0..<self.names.len()
+            if self.names[k] == name then return Some(int(k))
+
+        None
+
+    // Switch the circuit on with everything empty at the present time, as a board is powered up, or
+    // settled at its operating point.
+    start(*self, settled: bool)
+        if (if settled then self.sim.operating_point() else self.sim.power_on()) is Err(why)
+            self.trouble = why
+            self.held += 1
+
+    // Run the circuit to the program's time `t`. A time already passed is now.
+    run_to(*self, t: real)
+        if t <= self.sim.time then return
+
+        if self.sim.advance_to(t) is Err(why)
+            self.trouble = why
+            self.held += 1
+            self.sim.hold_to(t)
+
+    // At `t`, have pin `k` drive high or low.
+    drive(*self, k: int, high: bool, t: real)
+        self.run_to(t)
+        self.sim.set_pin(self.parts[usize(k)], if high then PinMode.High else PinMode.Low, self.drive_of(k).pull)
+
+    // At `t`, have pin `k` stop driving and listen, its pull `pull`.
+    listen(*self, k: int, pull: Pull, t: real)
+        self.run_to(t)
+        self.sim.set_pin(self.parts[usize(k)], PinMode.Input, pull)
+
+    // The voltage on pin `k` at `t`, against the chip's ground.
+    volts(*self, k: int, t: real) -> real
+        self.run_to(t)
+        self.sim.across(self.parts[usize(k)])
+
+    // What pin `k` reads at `t`: a 1 above its high threshold, a 0 below its low one, and between them
+    // what it read last.
+    read(*self, k: int, t: real) -> bool
+        val v = self.volts(k, t)
+        val d = self.drive_of(k)
+
+        if v >= d.high_volts
+            self.levels[usize(k)] = true
+        elif v <= d.low_volts
+            self.levels[usize(k)] = false
+
+        self.levels[usize(k)]
+
+    // What an analog-to-digital converter of `bits` bits, its reference the pin's rail, makes of pin
+    // `k` at `t`: the voltage as a fraction of the rail, rounded to the nearest code and kept within
+    // the codes there are.
+    convert(*self, k: int, t: real, bits: int = 12) -> int
+        val v = self.volts(k, t)
+        val codes = 1 << bits
+        val code = int((v / self.drive_of(k).volts * real(codes)).round())
+
+        if code < 0 then 0 elif code > codes - 1 then codes - 1 else code
+
+    // The current pin `k` gives the circuit at `t`, in amps: positive while it drives current out.
+    amps(*self, k: int, t: real) -> real
+        self.run_to(t)
+        -self.sim.current(self.parts[usize(k)])
+
+    private drive_of(self, k: int) -> PinDrive = self.sim.circuit.parts[usize(self.parts[usize(k)])].kind match
+        Pin(d) -> d
+        _ -> RP2040_PIN
+end Cosim
+
+// A co-simulation of `c`, its pins every `Pin` part it has, in their order, not yet switched on.
+cosim(c: Circuit) -> Cosim
+    var parts: Buf[int] = buf()
+    var names: Buf[string] = buf()
+    var levels: Buf[bool] = buf()
+
+    for i in 0..<c.parts.len()
+        if c.parts[i].kind is Pin(_)
+            parts.push(int(i))
+            names.push(c.parts[i].name)
+            levels.push(false)
+
+    Cosim(sim(c), parts, names, levels, 0, "")

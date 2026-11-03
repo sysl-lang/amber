@@ -147,6 +147,45 @@ val OPAMP_741 = OpAmpModel(2e5, 1e6, 0.5e6, 2e6, 75.0, 25e-3, 1.5, 1.7e-3)
 // A JFET-input op-amp, the TL072's: the same gain, 3 MHz, 13 V a microsecond, a teraohm in, and 1.4 mA.
 val OPAMP_TL072 = OpAmpModel(2e5, 3e6, 13e6, 1e12, 75.0, 25e-3, 1.5, 1.4e-3)
 
+// What a pin is doing: driving high, driving low, or listening.
+enum PinMode
+    High
+    Low
+    Input
+
+// A pin's resistor to one of its rails, on while it is an input.
+enum Pull
+    Floating
+    Up
+    Down
+
+// A microcontroller's pin as the circuit sees it.
+//
+// **Driving, it is its rail behind `ohms`**: `volts` above the chip's ground when high, the ground
+// when low, so a pin driving an LED's current droops as a real one does.
+//
+// **Listening, it is `pull_ohms` to `volts` or to ground if a pull is on**, and otherwise nothing but
+// its leakage. What the chip reads is the pin's voltage against `low_volts` and `high_volts`, as a
+// Schmitt trigger reads it: below the one a 0, above the other a 1, and between them whatever it
+// read last.
+struct PinDrive derives Eq
+    mode: PinMode
+    pull: Pull
+    volts: real
+    ohms: real
+    pull_ohms: real
+    low_volts: real
+    high_volts: real
+
+    // The same pin doing `mode` with its pull `pull`.
+    set(self, mode: PinMode, pull: Pull) -> PinDrive =
+        PinDrive(mode, pull, self.volts, self.ohms, self.pull_ohms, self.low_volts, self.high_volts)
+
+// An RP2040's pin, as its datasheet gives one: 3.3 V, about 50 Ω driving at its default strength,
+// 50 kΩ pulls, and reading a 0 below 0.8 V and a 1 above 2 V. It starts as an input, floating, as the
+// chip's pins come out of reset.
+val RP2040_PIN = PinDrive(PinMode.Input, Pull.Floating, 3.3, 50.0, 50e3, 0.8, 2.0)
+
 // A bench power supply's settings.
 //
 // **Regulated, it is a constant-voltage, constant-current supply.** It holds `volts` across its
@@ -232,6 +271,10 @@ enum Kind derives Eq
     // output, and its positive and negative supplies, in that order. It is its behaviour rather than its
     // transistors, as `OpAmpModel` says.
     OpAmp(model: OpAmpModel)
+    // A microcontroller's pin, between the pin and the chip's ground: driven high or low behind its
+    // output resistance, or an input, with its pull-up or pull-down if one is on. A program running on
+    // the chip sets it as it runs, as `PinDrive` says.
+    Pin(drive: PinDrive)
 
     // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor, 2 for the rest.
     terminals(self) -> int = self match

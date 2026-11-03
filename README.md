@@ -78,7 +78,8 @@ about 1% of it, against the phase-shift oscillator's 9%), `opamp` (a TL072 ampli
 generator's sine eleven times into a speaker through a push-pull pair, its feedback taken after the
 pair so the op-amp jumps the pair's crossover gap and the speaker gets a clean sine), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
-of a rippling 15 V, the ripple cut two-hundredfold) and `wallwart` (a 5 V supply that plugs into the
+of a rippling 15 V, the ripple cut two-hundredfold), `pins` (three of a microcontroller's pins: one
+lighting an LED, one reading a button, one an ADC on a divider; click them) and `wallwart` (a 5 V supply that plugs into the
 wall: 120 V at 60 Hz through a 120:9 transformer, a diode bridge and a 1000 µF reservoir, then a
 series regulator with an error amplifier, holding 5.13 V while the reservoir ripples by 0.4 V; flip
 S1 to unplug it).
@@ -108,9 +109,9 @@ Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `curre
 `closed`), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
-`TL072`). Also `wire`,
-`ground`, `label` (names a node), `meter` and `speaker` (its voice coil's resistance, 8 Ω unless it
-says; the viewer plays the voltage across it). Waves: `dc 5`, `sine 5 1k [offset]`,
+`TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).
+Also `wire`, `ground`, `label` (names a node), `meter` and `speaker` (its voice coil's resistance,
+8 Ω unless it says; the viewer plays the voltage across it). Waves: `dc 5`, `sine 5 1k [offset]`,
 `square 0 5 1k [duty]`, `triangle -1 1 1k` (low, high, frequency), `pulse low high delay rise fall
 width period` (SPICE's), and `pwl t v t v …`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg`
 (and `1m` is a milliohm).
@@ -207,6 +208,39 @@ transformer to regulated output, switched on from empty, agrees through its firs
 gate of the transistor full adder agrees along a sweep of one input through the gates' thresholds. Across
 frequency, an RLC band-pass, a transformer and three amplifiers, a bipolar stage, a MOSFET stage and
 the two-stage amplifier, agree to a few parts in ten million.
+
+## A microcontroller's pins
+
+A `pin` is a microcontroller's pin as the circuit sees it: driving high, its 3.3 V rail behind about
+50 Ω; driving low, ground behind the same; or listening, its 50 kΩ pull-up or pull-down if one is on
+and nothing else. What the chip reads is the pin's voltage as a Schmitt trigger reads it, a 1 above
+2 V and a 0 below 0.8 V, and its ADC's 12-bit code. Those are an RP2040's figures. In the viewer,
+clicking a pin sets it going round its modes and its status line says what the chip would read:
+
+```
+pin       GP26  20 4  20 10                 # the pin, then the chip's ground
+```
+
+**`Cosim` connects a circuit to a program running on the chip** — an emulator of it, or a test playing
+its part. The program's time is the master: it drives, releases, reads and converts pins at its own
+instants, and the circuit is run up to each and no further, so every change lands exactly when the
+program made it and nothing depends on how often the two meet.
+
+```
+var board = cosim(parse_schematic(text)?.circuit)
+val led = board.pin("GP2").unwrap()
+val adc = board.pin("GP26").unwrap()
+
+board.start(true)
+board.drive(led, true, 1.25e-3)               // at 1.25 ms of the program's time
+val code = board.convert(adc, 1.30e-3)        // its 12-bit reading at 1.30 ms
+board.listen(led, Pull.Up, 2e-3)
+val pressed = !board.read(led, 2.1e-3)
+```
+
+A stretch the solver cannot follow does not stop the program: the circuit is held as it last stood
+across it and solved afresh after, and `held` and `trouble` say how often and why. A 10 kHz PWM filtered
+into an ADC runs about nine times faster than real time.
 
 ## The library
 
