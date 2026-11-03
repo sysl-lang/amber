@@ -1,0 +1,94 @@
+# A pure tone: a Wien-bridge oscillator, the circuit of Hewlett-Packard's first product, playing a sine
+# through a speaker. Compare `oscillator`, whose transistor runs out of room to swing and buzzes.
+#
+# Q1, an NPN, and Q2, a PNP straight off its collector, each turn their input upside down, so together
+# they gain a great deal the right way up; Q3 follows Q2 to drive what comes after. Two paths feed the
+# output back to Q1:
+#
+#   * The Wien network, R1 and C1 in series then R2 and C2 to the bias, into Q1's base: at
+#     1 / (2π · 10k · 22n), about 720 Hz, it passes a third of the output back exactly in step, and
+#     at any other frequency less, and out of step.
+#   * RF back to Q1's emitter, against RE1, holds the amplifier's gain to 1 + RF / RE1, about 3.08,
+#     and its DC too: there is no capacitor in this loop but Q2's bypass, so it cannot motorboat.
+#
+# A loop gaining a third of 3.08 grows a little each cycle at 720 Hz and dies away at every other
+# frequency, so switching it on is enough to start it. As it grows, D1 and D2 start to conduct
+# through RD across RF on the peaks, lowering the gain until it is exactly 3 averaged over a cycle,
+# where the swing holds, about 0.85 V, within a second or two. Nothing clips, so what settles is a
+# sine, its harmonics together about 1% of it; the phase-shift oscillator's are about 9%. The closer
+# the gain starts to 3 the purer the sine and the longer it takes to grow. CD keeps RF's DC out of the
+# diodes.
+#
+# The speaker hangs off the output through CS and RV, which keep the follower's DC and most of its
+# current out of it. The speaker plays while the clock runs at a second a second; `m` mutes it, and
+# `r` starts it again from nothing.
+
+speed 1
+
+battery   B1    38 0  38 16  12V
+wire            2 0   38 0
+wire            2 16  38 16
+ground          2 16
+
+# The bias Q1's base sits at, held still by CB, and the Wien network's shunt arm to it.
+resistor  RB1   2 0   2 6    33k
+resistor  RB2   2 6   2 16   10k
+wire            2 6   7 6
+capacitor CB    4 6   4 16   10u
+resistor  R2    6 6   6 8    10k
+capacitor C2    7 6   7 8    22n
+wire            6 8   8 8
+
+# Q1, with RE1 setting its gain against RF.
+resistor  RC1   10 0  10 4   4.7k
+npn       Q1    10 4  8 8    10 10  2N3904
+resistor  RE1   10 10 10 16  480
+
+# Q2, a PNP straight off Q1's collector, its emitter resistor bypassed.
+wire            10 4  12 4
+wire            12 4  12 6
+wire            12 6  14 6
+resistor  RE2   16 0  16 3   1k
+wire            16 3  18 3
+capacitor CE2   18 0  18 3   100u
+pnp       Q2    16 9  14 6   16 3   2N3906
+resistor  RC2   16 9  16 16  2.4k
+
+# Q3, the follower: the output is its emitter.
+wire            16 9  19 9
+wire            21 0  21 6
+npn       Q3    21 6  19 9   21 12  2N3904
+resistor  RE3   21 12 21 16  1k
+wire            21 12 30 12
+
+# The Wien network's series arm, from the output round underneath to Q1's base.
+wire            6 8   6 18
+wire            6 18  9 18
+resistor  R1    9 18  12 18  10k
+capacitor C1    12 18 15 18  22n
+wire            15 18 28 18
+wire            28 18 28 12
+
+# RF from the output to Q1's emitter, and the diodes that level the swing across it.
+wire            10 10 8 10
+wire            8 10  8 20
+resistor  RF    8 20  12 20  1k
+wire            12 20 29 20
+wire            29 20 29 12
+wire            8 20  8 22
+resistor  RD    8 22  10 22  4.7k
+capacitor CD    10 22 13 22  10u
+diode     D1    13 22 15 22
+diode     D2    15 24 13 24
+wire            13 22 13 24
+wire            15 22 15 24
+wire            15 22 15 20
+
+# The speaker.
+capacitor CS    30 12 32 12  220u
+resistor  RV    32 12 35 12  1k
+speaker   SPK   35 12 35 16  8
+
+label     sine  24 12
+meter     SINE  24 12 24 16
+meter     SPKR  35 12 35 16

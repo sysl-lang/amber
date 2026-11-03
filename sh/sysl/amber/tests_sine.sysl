@@ -1,0 +1,99 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.math.tau
+import sysl.raw.str_cast
+
+// The Wien-bridge example: it starts itself, settles, and what it settles to is a sine — its harmonics
+// small beside its fundamental, where the phase-shift oscillator's are not.
+
+// The amplitude of the component of `v`, sampled every `dt` seconds, at `hz`: twice the magnitude of
+// its correlation with a sine and a cosine there, over whole cycles of the samples given.
+private component(v: Buf[real], dt: real, hz: real) -> real
+    var re = 0.0
+    var im = 0.0
+    val n = real(v.len())
+
+    for k in 0..<v.len()
+        val a = tau * hz * real(k) * dt
+
+        re += v[k] * a.cos()
+        im += v[k] * a.sin()
+
+    2.0 * (re * re + im * im).sqrt() / n
+
+// `node`'s voltage, switched on from empty, after `settle` seconds: `count` samples `dt` apart, and the
+// frequency their rising zero crossings (about their mean) give.
+//
+// **It is run a sample at a time from the start, as the viewer runs it while its speaker plays.** An
+// oscillation growing from the jolt of switching on is microvolts for its first few hundred cycles,
+// far below what the step's error is judged against, so left to choose its own steps the solver takes
+// ones longer than a cycle and steps clean over it.
+private settled_tone(text: string, node: string, settle: real, count: int, dt: real) -> (Buf[real], real)
+    var s = sim(parse_schematic(text).unwrap().circuit)
+    var v: Buf[real] = buf()
+    var mean = 0.0
+
+    s.power_on().unwrap()
+
+    for k in 1..int(settle / dt)
+        s.advance_to(real(k) * dt).unwrap()
+
+    s.advance_to(settle).unwrap()
+
+    for k in 1..count
+        s.advance_to(settle + real(k) * dt).unwrap()
+        v.push(s.voltage_at(node))
+        mean += s.voltage_at(node)
+
+    mean /= real(v.len())
+
+    var first = -1
+    var last = -1
+    var rises = 0
+
+    for k in 1..<v.len()
+        if v[k - 1] < mean && v[k] >= mean
+            if first < 0 then first = int(k)
+
+            last = int(k)
+            rises += 1
+
+    for k in 0..<v.len()
+        v[k] -= mean
+
+    (v, real(rises - 1) / (real(last - first) * dt))
+
+// The total harmonic distortion of `v` at `hz`: its second to fifth harmonics against its fundamental.
+private distortion(v: Buf[real], dt: real, hz: real) -> real
+    var sum = 0.0
+
+    for h in 2..5
+        val a = component(v, dt, hz * real(h))
+
+        sum += a * a
+
+    sum.sqrt() / component(v, dt, hz)
+
+@test("the Wien-bridge example starts itself and by two seconds is a sine at 1/(2πRC), its harmonics under 2%")
+wien_sine()
+    val (v, hz) = settled_tone(str_cast(embed("../../../examples/sine.amber")), "sine", 2.0, 4800, 1.0 / 48000.0)
+    val swing = component(v, 1.0 / 48000.0, hz)
+
+    // 1 / (2π · 10k · 22n) is 723 Hz.
+    assert(hz > 710.0 && hz < 735.0)
+    assert(swing > 0.6 && swing < 1.2)
+    assert(distortion(v, 1.0 / 48000.0, hz) < 0.02)
+
+    // And it has stopped growing: a second later it swings the same.
+    val (later, _) = settled_tone(str_cast(embed("../../../examples/sine.amber")), "sine", 3.0, 4800, 1.0 / 48000.0)
+
+    assert((component(later, 1.0 / 48000.0, hz) - swing).abs() < 0.02 * swing)
+
+@test("the phase-shift example, beside it, is far from a sine: its transistor runs out of room to swing")
+phase_shift_buzzes()
+    val (v, hz) = settled_tone(str_cast(embed("../../../examples/oscillator.amber")), "osc", 1.0, 4800, 1.0 / 48000.0)
+
+    assert(hz > 480.0 && hz < 580.0)
+    assert(distortion(v, 1.0 / 48000.0, hz) > 0.06)

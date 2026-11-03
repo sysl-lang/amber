@@ -54,5 +54,6 @@ wire            20 7  23 7
 capacitor CS    23 7  26 7   220u
 speaker   SPK   26 7  26 14  8
 
+label     osc   14 4
 meter     OSC   12 4  12 14
 meter     OUT   26 7  26 14

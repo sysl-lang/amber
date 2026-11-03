@@ -72,7 +72,9 @@ showing each one's gain), `adder` (a full adder of nine NOR gates in resistor–
 transistor each, adding switches A, B and C into a sum and a carry, each lighting an LED; a drawing
 this large keeps only the switches', LEDs' and nodes' labels), `oscillator` (a one-transistor
 phase-shift oscillator that starts itself from the jolt of switching on and plays about 530 Hz
-through a speaker; `r` to hear it start again), `zener` (a raw supply's 2 V of ripple
+through a speaker; `r` to hear it start again), `sine` (a Wien-bridge oscillator, three transistors
+and two diodes holding its gain at exactly 3, playing a sine of about 720 Hz whose harmonics are
+about 1% of it, against the phase-shift oscillator's 9%), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
 of a rippling 15 V, the ripple cut two-hundredfold) and `wallwart` (a 5 V supply that plugs into the
 wall: 120 V at 60 Hz through a 120:9 transformer, a diode bridge and a 1000 µF reservoir, then a
