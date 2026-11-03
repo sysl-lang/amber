@@ -124,6 +124,9 @@ struct Sim
     across(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
 
+        // An op-amp's is its output's voltage.
+        if p.kind.terminals() == 5 then return self.voltage(p.c)
+
         if p.kind.terminals() == 3 then return self.voltage(p.a) - self.voltage(p.c)
 
         self.voltage(p.a) - self.voltage(p.b)
@@ -152,6 +155,8 @@ struct Sim
                 diode_current(m, v) + GMIN * v + (diode_conductance(m, v) + GMIN) * (self.junction_now(i) - v)
             Switch(closed) -> if closed then self.across(i) / CLOSED_OHMS else 0.0
             Transistor(_) | Mosfet(_, _, _) -> self.terminal_current(i, 0)
+            // An op-amp's is the current out of its output.
+            OpAmp(_) -> -self.terminal_current(i, 2)
 
     // The current flowing into part `i` at terminal `k`, counting from 0. The currents into a part's
     // terminals sum to zero: a two-terminal part's second is the first's negative, a transistor's
@@ -177,6 +182,17 @@ struct Sim
                 1 -> 0.0
                 _ -> -id
 
+        if p.kind is OpAmp(m)
+            val l = self.opamp_now(i, m)
+            val vin = self.voltage(p.a) - self.voltage(p.b)
+
+            return k match
+                0 -> vin / m.rin
+                1 -> -vin / m.rin
+                2 -> -l.io
+                3 -> l.from_positive + l.iq
+                _ -> l.io - l.from_positive - l.iq
+
         if p.kind is Transistor(m)
             val t = if m.pnp then -1.0 else 1.0
             val vbe = self.junction[usize(2 * i)]
@@ -198,15 +214,28 @@ struct Sim
     power(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
 
-        if p.kind.terminals() == 3
+        if p.kind.terminals() > 2
             var w = 0.0
 
-            for k in 0..<3
+            for k in 0..<p.kind.terminals()
                 w += self.voltage(p.terminal(k)) * self.terminal_current(i, k)
 
             return w
 
         self.across(i) * self.current(i)
+
+    // Op-amp `i`'s currents and their slopes at the present solution.
+    private opamp_now(self, i: int, m: OpAmpModel) -> OpAmpLine
+        val p = self.circuit.parts[usize(i)]
+
+        opamp_line(m, self.voltage(p.a) - self.voltage(p.b), self.x[usize(self.extra[usize(i)])], self.voltage(p.c),
+                   self.voltage(p.d), self.voltage(p.e))
+
+    // Where op-amp `i`'s inputs' difference is kept among the junctions: after every part's two.
+    private difference_slot(self, i: int) -> usize = usize(2 * int(self.circuit.parts.len()) + i)
+
+    // The voltage on op-amp `i`'s inner node in the solution `x`.
+    private inner(self, i: int) -> real = self.x[usize(self.extra[usize(i)])]
 
     // The voltage across diode `i`'s junction in the present solution.
     private junction_now(self, i: int) -> real
@@ -301,6 +330,8 @@ struct Sim
                     sys.at(a, b, -y)
                     sys.at(b, a, -y)
                 Inductor(henries) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, -w * henries))
+                // An op-amp's dominant pole: the capacitance on its inner node.
+                OpAmp(m) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, w * m.inner_farads()))
                 _ -> ()
 
         for j in 0..<self.circuit.couplings.len()
@@ -359,7 +390,8 @@ struct Sim
             self.newton()?
 
         for i in 0..<self.circuit.parts.len()
-            self.held_v[i] = self.across(int(i))
+            // An op-amp holds its inner node's voltage on the capacitor there.
+            self.held_v[i] = if self.circuit.parts[i].kind is OpAmp(_) then self.inner(int(i)) else self.across(int(i))
             self.held_i[i] = self.circuit.parts[i].kind match
                 Inductor(_) -> self.x[usize(self.extra[i])]
                 _ -> 0.0
@@ -402,6 +434,11 @@ struct Sim
 
                     self.held_i[i] = g * self.across(int(i)) - owed
                     self.held_v[i] = self.initial[i]
+                OpAmp(m) ->
+                    val (g, owed) = self.capacitor_companion(m.inner_farads(), int(i))
+
+                    self.held_i[i] = g * self.inner(int(i)) - owed
+                    self.held_v[i] = 0.0
                 _ -> ()
 
         self.started = true
@@ -566,6 +603,12 @@ struct Sim
                 Inductor(_) ->
                     self.held_i[i] = self.x[usize(self.extra[i])]
                     self.held_v[i] = self.across(int(i))
+                OpAmp(m) ->
+                    val v = self.inner(int(i))
+                    val (g, owed) = self.capacitor_companion(m.inner_farads(), int(i))
+
+                    self.held_i[i] = g * v - owed
+                    self.held_v[i] = v
                 _ -> ()
 
         copy(&self.back1, &self.back2)
@@ -672,6 +715,17 @@ struct Sim
                         val (be, bc) = self.transistor_now(int(i))
 
                         if !close(self.junction[2 * i], be) || !close(self.junction[2 * i + 1], bc) then settled = false
+                    // An op-amp is linearised at its inner node's voltage and the output's drive, the
+                    // inner node's voltage less the output's.
+                    OpAmp(_) ->
+                        val p = self.circuit.parts[i]
+                        val inner = self.inner(int(i))
+                        val drive = inner - self.voltage(p.c)
+                        val vd = self.voltage(p.a) - self.voltage(p.b)
+
+                        if !close(self.junction[2 * i], inner) || !close(self.junction[2 * i + 1], drive) then settled = false
+
+                        if !close(self.junction[self.difference_slot(int(i))], vd) then settled = false
                     Mosfet(_, _, _) ->
                         val (gs, ds) = self.mosfet_now(int(i))
 
@@ -705,6 +759,26 @@ struct Sim
 
                     self.junction[2 * i] = limit(now, was, nvt, vcrit)
                 Supply(_) -> self.junction[2 * i] = self.across(int(i))
+                OpAmp(m) ->
+                    // The inner node goes where the solution puts it, but no further past a rail than
+                    // `INNER_PAST`, where the hold's exponential is already steep; the output's drive
+                    // moves at most the width of its output's linear range, past which the current
+                    // limit's slope is nearly flat and a step taken on a flat line goes anywhere.
+                    val p = self.circuit.parts[i]
+                    val inner = self.inner(int(i))
+                    val drive = inner - self.voltage(p.c)
+                    val reach = m.rout * m.ilim
+                    val highest = self.voltage(p.d) - m.headroom + INNER_PAST
+                    val lowest = self.voltage(p.e) + m.headroom - INNER_PAST
+
+                    self.junction[2 * i] = if highest > lowest then max(lowest, min(highest, inner)) else inner
+                    self.junction[2 * i + 1] += max(-reach, min(reach, drive - self.junction[2 * i + 1]))
+
+                    // The inputs' difference moves at most across the input stage's linear range.
+                    val k = self.difference_slot(int(i))
+                    val span = m.islew() / m.gm()
+
+                    self.junction[k] += max(-span, min(span, self.voltage(p.a) - self.voltage(p.b) - self.junction[k]))
                 Transistor(m) ->
                     // SPICE limits a transistor's junctions on the bare thermal voltage, whatever their
                     // emission coefficients.
@@ -858,6 +932,56 @@ struct Sim
                         self.sys.at(row, g, sign * line.gm)
                         self.sys.at(row, s, -sign * (line.gm + line.gds))
                         self.sys.rhs(row, -sign * owed)
+                OpAmp(m) ->
+                    // Each current on the line touching it at the present solution: a current `I` out
+                    // of a node, `I0 + Σ slope · (v − v0)`, is its slopes in the node's row and
+                    // `slope · v0 − I0` on its right-hand side.
+                    val x = self.extra[i]
+                    val o = p.c - 1
+                    val pos = p.d - 1
+                    val neg = p.e - 1
+                    // The inputs' difference, the inner node and the output's drive are where the last
+                    // pass left them, their steps limited as a junction's are; the supplies are as
+                    // solved.
+                    val vd = self.junction[self.difference_slot(int(i))]
+                    val inner = self.junction[2 * i]
+                    val drive = self.junction[2 * i + 1]
+                    val vo = inner - drive
+                    val vp = self.voltage(p.d)
+                    val vn = self.voltage(p.e)
+                    val l = opamp_line(m, vd, inner, vo, vp, vn)
+                    val (g, owed) = self.capacitor_companion(m.inner_farads(), int(i))
+                    val rails = vp - vn
+
+                    self.conductance(a, b, 1.0 / m.rin)
+
+                    // The inner node: its resistance and capacitance to ground, the input stage's
+                    // current into it, and the hold within the rails.
+                    self.sys.at(x, x, 1.0 / INNER_OHMS + g + l.clamp_inner)
+                    self.sys.rhs(x, owed)
+                    self.sys.at(x, a, -l.g1)
+                    self.sys.at(x, b, l.g1)
+                    self.sys.rhs(x, l.i1 - l.g1 * vd)
+                    self.sys.at(x, pos, l.clamp_positive)
+                    self.sys.at(x, neg, l.clamp_negative)
+                    self.sys.rhs(x, l.clamp_inner * inner + l.clamp_positive * vp + l.clamp_negative * vn - l.clamp)
+
+                    // The output, and where its current comes from.
+                    self.sys.at(o, x, -l.go)
+                    self.sys.at(o, o, l.go)
+                    self.sys.rhs(o, l.io - l.go * drive)
+
+                    self.sys.at(pos, x, l.share * l.go)
+                    self.sys.at(pos, o, -l.share * l.go)
+                    self.sys.at(pos, pos, l.giq)
+                    self.sys.at(pos, neg, -l.giq)
+                    self.sys.rhs(pos, l.share * l.go * drive - l.from_positive + l.giq * rails - l.iq)
+
+                    self.sys.at(neg, x, (1.0 - l.share) * l.go)
+                    self.sys.at(neg, o, -(1.0 - l.share) * l.go)
+                    self.sys.at(neg, pos, -l.giq)
+                    self.sys.at(neg, neg, l.giq)
+                    self.sys.rhs(neg, (1.0 - l.share) * l.go * drive - (l.io - l.from_positive - l.iq) - l.giq * rails)
 
         // Each coupling adds to each winding's branch equation the voltage the other's change of current
         // puts across it, `M · di/dt` written as the inductor's own is, a resistance `r` against the
@@ -962,12 +1086,17 @@ sim(given: Circuit) -> Sim
                     size += 1
                 else
                     extra.push(-1)
+            // An op-amp's inner node.
+            OpAmp(_) ->
+                extra.push(size)
+                size += 1
             _ -> extra.push(-1)
 
     val parts = int(c.parts.len())
 
-    Sim(c, extra, zeros(2 * parts), size, zeros(size), system(size), 0.0, 0.0, Steady, 0.0, FIRST_STEP, 1e300,
-        zeros(parts), zeros(parts), zeros(size), zeros(size), 0.0, 0.0, 0, false, zeros(size), zeros(2 * parts), 0, 0, zeros(parts))
+    // Two junction voltages a part, and after them an op-amp's input difference, one a part.
+    Sim(c, extra, zeros(3 * parts), size, zeros(size), system(size), 0.0, 0.0, Steady, 0.0, FIRST_STEP, 1e300,
+        zeros(parts), zeros(parts), zeros(size), zeros(size), 0.0, 0.0, 0, false, zeros(size), zeros(3 * parts), 0, 0, zeros(parts))
 
 private zeros(n: int) -> Buf[real]
     var b: Buf[real] = buf()
@@ -1063,6 +1192,65 @@ private line_holds(now: real, was: real, slope: real, dv: real) -> bool
     val line = was + slope * dv
 
     (now - line).abs() <= 1e-6 * max(now.abs(), line.abs()) + 1e-12
+
+// How hard an op-amp's inner node is held inside its rails: the conductance it meets past one, which
+// lets it overshoot by its slew current over this, a few millivolts; and how softly the hold comes on,
+// in volts.
+const CLAMP_SIEMENS: real = 1e4
+const CLAMP_SOFT: real = 0.01
+
+// How far past a rail an op-amp's inner node may be linearised: ten of the hold's softness, where it
+// already conducts e^10 times what it does at the rail.
+const INNER_PAST: real = 0.1
+
+// The current around zero over which an op-amp's output current passes from being drawn from its
+// negative supply to its positive one.
+const SPLIT_AMPS: real = 1e-6
+
+// An op-amp's currents at one set of voltages, and their slopes against them.
+private struct OpAmpLine
+    // Into the inner node from the input stage, and its slope against the inputs' difference.
+    i1: real
+    g1: real
+    // Out of the inner node to ground where it would pass a rail, and its slopes against the inner
+    // node and each supply.
+    clamp: real
+    clamp_inner: real
+    clamp_positive: real
+    clamp_negative: real
+    // Out of the output, and its slope against the inner node less the output.
+    io: real
+    go: real
+    // The part of the output's current drawn from the positive supply, and its slope against `io`.
+    from_positive: real
+    share: real
+    // From the positive supply to the negative one, and its slope against the voltage between them.
+    iq: real
+    giq: real
+
+// `ln(1 + e^u)`, a ramp with its corner rounded, kept finite for large `u`.
+private softplus(u: real) -> real = if u > 30.0 then u elif u < -30.0 then u.exp() else (1.0 + u.exp()).ln()
+
+// Its slope, the logistic function.
+private logistic(u: real) -> real = if u > 30.0 then 1.0 elif u < -30.0 then u.exp() else 1.0 / (1.0 + (-u).exp())
+
+// Op-amp `m`'s currents with `vd` between its inputs, its inner node at `inner`, its output at `out` and
+// its supplies at `positive` and `negative`, as `OpAmpModel` describes them.
+private opamp_line(m: OpAmpModel, vd: real, inner: real, out: real, positive: real, negative: real) -> OpAmpLine
+    val islew = m.islew()
+    val t1 = (m.gm() * vd / islew).tanh()
+    val over = (inner - positive + m.headroom) / CLAMP_SOFT
+    val under = (negative + m.headroom - inner) / CLAMP_SOFT
+    val to = ((inner - out) / (m.rout * m.ilim)).tanh()
+    val io = m.ilim * to
+    val tq = (positive - negative).tanh()
+
+    OpAmpLine(islew * t1, m.gm() * (1.0 - t1 * t1),
+              CLAMP_SIEMENS * CLAMP_SOFT * (softplus(over) - softplus(under)),
+              CLAMP_SIEMENS * (logistic(over) + logistic(under)), -CLAMP_SIEMENS * logistic(over), -CLAMP_SIEMENS * logistic(under),
+              io, (1.0 - to * to) / m.rout,
+              SPLIT_AMPS * softplus(io / SPLIT_AMPS), logistic(io / SPLIT_AMPS),
+              m.iq * tq, m.iq * (1.0 - tq * tq))
 
 // A transistor's collector and base currents on the lines touching their curves at one pair of
 // junction voltages: the currents there, and their slopes against each junction's voltage. Both flow

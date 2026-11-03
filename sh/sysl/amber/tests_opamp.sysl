@@ -1,0 +1,180 @@
+module sh.sysl.amber
+@tests
+
+import sysl.math.{max, min}
+
+// The op-amp macromodel against what an op-amp does: the gain feedback sets, the rails it stops short
+// of, its bandwidth shrinking as its gain grows, how fast its output can move, the current it can give,
+// and the supply current it takes.
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// An op-amp on ±15 V, `input` at its non-inverting input, its output fed back to its inverting input
+// through `rf` with `rg` from there to ground — a gain of 1 + rf / rg — and `load` from its output to
+// ground. `rg` of 0 makes it a follower.
+private non_inverting(m: OpAmpModel, input: Wave, rf: real, rg: real, load: real) -> Circuit
+    var c = circuit()
+
+    c.connect("VP", VoltageSource(Dc(15.0)), "vp", "0")
+    c.connect("VN", VoltageSource(Dc(-15.0)), "vn", "0")
+    c.connect("VIN", VoltageSource(input), "in", "0")
+
+    val (a, b, o, p, n) = (c.node("in"), c.node("minus"), c.node("out"), c.node("vp"), c.node("vn"))
+
+    c.add5("U1", OpAmp(m), a, b, o, p, n)
+
+    if rg > 0.0
+        c.connect("RF", Resistor(rf), "out", "minus")
+        c.connect("RG", Resistor(rg), "minus", "0")
+    else
+        c.connect("RF", Resistor(1.0), "out", "minus")
+
+    c.connect("RL", Resistor(load), "out", "0")
+    c
+
+@test("feedback sets an op-amp's gain: 1 + rf / rg the right way up, and −rf / rin upside down")
+opamp_gain()
+    var s = sim(non_inverting(OPAMP_741, Dc(0.1), 10e3, 1e3, 10e3))
+
+    s.operating_point().unwrap()
+
+    // The loop's own gain, 200,000 over 11, leaves the closed loop short by a part in 18,000.
+    assert(near(s.voltage_at("out"), 1.1, 1.1 / 10000.0))
+    assert(near(s.voltage_at("minus"), 0.1, 1e-4))
+
+    // Inverting: the input through 1k to the inverting input, 10k back from the output.
+    var c = circuit()
+
+    c.connect("VP", VoltageSource(Dc(15.0)), "vp", "0")
+    c.connect("VN", VoltageSource(Dc(-15.0)), "vn", "0")
+    c.connect("VIN", VoltageSource(Dc(0.3)), "in", "0")
+    c.connect("RIN", Resistor(1e3), "in", "minus")
+    c.connect("RF", Resistor(10e3), "minus", "out")
+    c.add5("U1", OpAmp(OPAMP_741), 0, c.node("minus"), c.node("out"), c.node("vp"), c.node("vn"))
+
+    var t = sim(c)
+
+    t.operating_point().unwrap()
+    assert(near(t.voltage_at("out"), -3.0, 3.0 / 10000.0))
+    assert(t.voltage_at("minus").abs() < 1e-3)
+
+@test("an op-amp asked for more than its supplies allow stops a volt and a half short of each")
+opamp_rails()
+    // Short by its headroom, and by what its load's 2.5 mA drops across its 75 Ω besides.
+    for (input, want) in [(2.0, 13.5 - 0.19), (-2.0, -13.5 + 0.19)]
+        var s = sim(non_inverting(OPAMP_741, Dc(input), 10e3, 1e3, 10e3))
+
+        s.operating_point().unwrap()
+        assert(near(s.voltage_at("out"), want, 0.05))
+
+    // On a single 5 V supply, it reaches neither 0 nor 5.
+    var c = circuit()
+
+    c.connect("VP", VoltageSource(Dc(5.0)), "vp", "0")
+    c.connect("VIN", VoltageSource(Dc(1.0)), "in", "0")
+    c.add5("U1", OpAmp(OPAMP_741), c.node("in"), 0, c.node("out"), c.node("vp"), 0)
+    c.connect("RL", Resistor(10e3), "out", "0")
+
+    var s = sim(c)
+
+    s.operating_point().unwrap()
+    assert(near(s.voltage_at("out"), 3.5, 0.05))
+
+@test("an op-amp's gain falls as its gain-bandwidth over the frequency: a gain of 11 is 3 dB down at GBW / 11")
+opamp_bandwidth()
+    for m in [OPAMP_741, OPAMP_TL072]
+        val c = non_inverting(m, Dc(0.0), 10e3, 1e3, 10e3)
+        var s = sim(c)
+        val out = c.find_node("out").unwrap()
+
+        for (hz, want) in [(m.gbw / 1000.0, 11.0), (m.gbw / 11.0, 11.0 / 2.0.sqrt()), (m.gbw, 1.0)]
+            val r = s.response(hz, [drive(2, 1.0, 0.0)]).unwrap()
+
+            assert((r.voltage(out).abs() - want).abs() < 0.03 * want)
+
+    // Open loop, its own gain, and its corner at GBW / gain.
+    var c = circuit()
+
+    c.connect("VP", VoltageSource(Dc(15.0)), "vp", "0")
+    c.connect("VN", VoltageSource(Dc(-15.0)), "vn", "0")
+    c.connect("VIN", VoltageSource(Dc(0.0)), "in", "0")
+    c.add5("U1", OpAmp(OPAMP_741), c.node("in"), 0, c.node("out"), c.node("vp"), c.node("vn"))
+
+    var s = sim(c)
+    val out = c.find_node("out").unwrap()
+
+    assert((s.response(0.1, [drive(2, 1.0, 0.0)]).unwrap().voltage(out).abs() - 2e5).abs() < 0.01 * 2e5)
+    assert((s.response(5.0, [drive(2, 1.0, 0.0)]).unwrap().voltage(out).abs() - 2e5 / 2.0.sqrt()).abs() < 0.02 * 2e5)
+
+@test("a follower given a step moves at its slew rate: half a volt a microsecond for the 741, 13 for the TL072")
+opamp_slew()
+    for m in [OPAMP_741, OPAMP_TL072]
+        var s = sim(non_inverting(m, Pulse(-5.0, 5.0, 1e-6, 1e-9, 1e-9, 1.0, 2.0), 0.0, 0.0, 10e3))
+
+        s.operating_point().unwrap()
+
+        // When it passes −2.5 V and +2.5 V on its way up.
+        var t_lo = 0.0
+        var t_hi = 0.0
+        var t = 1e-6
+
+        while t < 1e-6 + 40e-6 && t_hi == 0.0
+            t += 2e-9
+            s.advance_to(t).unwrap()
+
+            val v = s.voltage_at("out")
+
+            if t_lo == 0.0 && v > -2.5 then t_lo = t
+            if v > 2.5 then t_hi = t
+
+        val rate = 5.0 / (t_hi - t_lo)
+
+        assert(rate > 0.9 * m.slew && rate < 1.1 * m.slew)
+
+@test("an op-amp gives no more than 25 mA: into 8 Ω its output stops near 0.2 V, and it says so by clipping")
+opamp_current_limit()
+    var s = sim(non_inverting(OPAMP_741, Dc(1.0), 0.0, 0.0, 8.0))
+
+    s.operating_point().unwrap()
+
+    val out = s.voltage_at("out")
+
+    // 25 mA into 8 Ω, and the few microvolts the input's 0.4 µA through its 2 MΩ adds.
+    assert(out > 0.15 && out < 0.2 + 1e-5)
+    // The load, RL, the sixth part, carries what the op-amp gives: no more than its 25 mA.
+    assert(near(s.current(5), out / 8.0, 1e-9))
+    assert(s.current(5) < 25e-3 && near(-s.current(3), s.current(5), 1e-6))
+
+    // A light load is no trouble: 1 V into 1k is 1 V.
+    var light = sim(non_inverting(OPAMP_741, Dc(1.0), 0.0, 0.0, 1e3))
+
+    light.operating_point().unwrap()
+    assert(near(light.voltage_at("out"), 1.0, 1e-3))
+
+@test("an op-amp's supplies carry its own current and its load's: sourced from the positive, sunk to the negative")
+opamp_supply_current()
+    for (input, sourcing) in [(1.0, true), (-1.0, false)]
+        var s = sim(non_inverting(OPAMP_741, Dc(input), 0.0, 0.0, 100.0))
+
+        s.operating_point().unwrap()
+
+        // 10 mA into the load.
+        val load = s.voltage_at("out") / 100.0
+        // A battery's current is negative while it delivers.
+        val positive = -s.current(0)
+        val negative = s.current(1)
+
+        assert(near(load.abs(), 10e-3, 1e-4))
+
+        if sourcing
+            assert(near(positive, 1.7e-3 + load, 1e-5) && near(negative, 1.7e-3, 1e-5))
+        else
+            assert(near(positive, 1.7e-3, 1e-5) && near(negative, 1.7e-3 - load, 1e-5))
+
+        // And every terminal's current sums to nothing.
+        var sum = 0.0
+
+        for k in 0..<5
+            sum += s.terminal_current(3, k)
+
+        assert(sum.abs() < 1e-12)

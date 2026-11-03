@@ -101,6 +101,52 @@ val PMOS_BS250 = MosfetModel(true, -2.0, 0.01, 0.02)
 const DEFAULT_W: real = 100e-6
 const DEFAULT_L: real = 100e-6
 
+// An operational amplifier as it behaves, rather than the twenty-odd transistors inside one: a
+// macromodel, as op-amp makers publish for SPICE.
+//
+// **The input** is `rin` ohms between the two inputs, and nothing else draws on them.
+//
+// **The gain** is made on a node inside: the difference between the inputs, `vd`, pushes a current
+// `islew · tanh(gm · vd / islew)` into it, against `INNER_OHMS` and a capacitor to ground. Below its
+// corner, `gbw / gain` hertz, the op-amp gains `gain`; above it the gain falls as `gbw / f`, so a
+// circuit gaining 10 with feedback has a bandwidth of `gbw / 10`, as a real one does. The current is
+// limited, so the inner node can change no faster than `slew` volts a second: the slew rate.
+//
+// **The inner node is held within the rails**: its swing stops `headroom` volts inside each supply,
+// where the output's would.
+//
+// **The output** follows the inner node behind `rout`, its current smoothly limited to `ilim` either
+// way, as the short-circuit protection of a real one limits it: into a load too heavy for it, the
+// peaks flatten. It is drawn from the positive supply when it flows out and from the negative one when
+// it flows in, and `iq` flows from one supply to the other whatever the output does.
+struct OpAmpModel derives Eq
+    gain: real
+    gbw: real
+    slew: real
+    rin: real
+    rout: real
+    ilim: real
+    headroom: real
+    iq: real
+
+    // The input stage's transconductance, and the current that limits it, for the inner node's
+    // resistance and capacitance.
+    gm(self) -> real = self.gain / INNER_OHMS
+    islew(self) -> real = self.slew * self.inner_farads()
+    inner_farads(self) -> real = self.gain / (2.0 * 3.141592653589793 * self.gbw * INNER_OHMS)
+
+// The inner node's resistance to ground. Its value only scales the inner node's currents; the
+// behaviour is set by the gain, the bandwidth and the slew rate.
+const INNER_OHMS: real = 1e3
+
+// A general-purpose op-amp, the 741's figures: a gain of 200,000, 1 MHz of gain-bandwidth, half a volt
+// a microsecond, 2 MΩ in, 75 Ω out, 25 mA at most, its output a volt and a half short of each supply,
+// and 1.7 mA of its own.
+val OPAMP_741 = OpAmpModel(2e5, 1e6, 0.5e6, 2e6, 75.0, 25e-3, 1.5, 1.7e-3)
+
+// A JFET-input op-amp, the TL072's: the same gain, 3 MHz, 13 V a microsecond, a teraohm in, and 1.4 mA.
+val OPAMP_TL072 = OpAmpModel(2e5, 3e6, 13e6, 1e12, 75.0, 25e-3, 1.5, 1.4e-3)
+
 // A bench power supply's settings.
 //
 // **Regulated, it is a constant-voltage, constant-current supply.** It holds `volts` across its
@@ -182,9 +228,14 @@ enum Kind derives Eq
     // A MOSFET with a channel `w` wide and `l` long, in metres, with three terminals: drain, gate and
     // source, in that order. Its bulk is its source.
     Mosfet(model: MosfetModel, w: real, l: real)
+    // An operational amplifier, with five terminals: its non-inverting input, its inverting input, its
+    // output, and its positive and negative supplies, in that order. It is its behaviour rather than its
+    // transistors, as `OpAmpModel` says.
+    OpAmp(model: OpAmpModel)
 
-    // How many terminals a part of this kind has: 3 for a transistor, 2 for the rest.
+    // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor, 2 for the rest.
     terminals(self) -> int = self match
+        OpAmp(_) -> 5
         Transistor(_) | Mosfet(_, _, _) -> 3
         _ -> 2
 
@@ -197,20 +248,25 @@ enum Kind derives Eq
         _ -> None
 
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and
-// `b` and has `c` at -1; a transistor's collector, base and emitter are `a`, `b` and `c`, and a
-// MOSFET's drain, gate and source.
+// `b` and has the rest at -1; a transistor's collector, base and emitter are `a`, `b` and `c`, and a
+// MOSFET's drain, gate and source; an op-amp's non-inverting input, inverting input, output, positive
+// supply and negative supply are `a` to `e`.
 struct Part
     name: string
     kind: Kind
     a: int
     b: int
     c: int
+    d: int
+    e: int
 
     // The node terminal `k` is on, counting from 0.
     terminal(self, k: int) -> int = k match
         0 -> self.a
         1 -> self.b
-        _ -> self.c
+        2 -> self.c
+        3 -> self.d
+        _ -> self.e
 
 // Two inductors wound on one core, SPICE's `K`: parts `first` and `second`, coupled by `k`, more than 0
 // and at most 1, so that their mutual inductance is `k · √(L1 · L2)`. A change of current in either
@@ -261,10 +317,13 @@ struct Circuit
         None
 
     // Add a two-terminal part between nodes `a` and `b`.
-    add(*self, name: string, kind: Kind, a: int, b: int) = self.parts.push(Part(name, kind, a, b, -1))
+    add(*self, name: string, kind: Kind, a: int, b: int) = self.parts.push(Part(name, kind, a, b, -1, -1, -1))
 
     // Add a three-terminal part on nodes `a`, `b` and `c`.
-    add3(*self, name: string, kind: Kind, a: int, b: int, c: int) = self.parts.push(Part(name, kind, a, b, c))
+    add3(*self, name: string, kind: Kind, a: int, b: int, c: int) = self.parts.push(Part(name, kind, a, b, c, -1, -1))
+
+    // Add a five-terminal part, an op-amp, on nodes `a` to `e`.
+    add5(*self, name: string, kind: Kind, a: int, b: int, c: int, d: int, e: int) = self.parts.push(Part(name, kind, a, b, c, d, e))
 
     // Add a part between two nodes named rather than numbered.
     connect(*self, name: string, kind: Kind, a: string, b: string)
