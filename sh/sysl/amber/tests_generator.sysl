@@ -275,8 +275,8 @@ amplifier_example()
 
     val (vin, pin) = tone(ins)
     val (vout, pout) = tone(outs)
-    // RC ∥ RL over RE1 and the emitter's own resistance at about 1.3 mA.
-    val estimate = (3.9e3 * 10e3 / 13.9e3) / (100.0 + 0.02585 / 1.3e-3)
+    // RC ∥ RL over RE1 and the emitter's own resistance at about 1.4 mA.
+    val estimate = (3.9e3 * 10e3 / 13.9e3) / (22.0 + 0.02585 / 1.4e-3)
     val gain = vout / vin
     var shift = (pout - pin) * 360.0 / tau
 
@@ -286,7 +286,7 @@ amplifier_example()
     assert(near(vin, 10e-3, 0.3e-3))
     assert(gain > 0.85 * estimate && gain < 1.15 * estimate)
     // Inverted, less what the capacitors lead by at 1 kHz: about 3° for each coupling capacitor and
-    // 7° for CE, whose 16 Ω stands beside RE1's 100 Ω rather than shorting it.
+    // 2° for CE, whose 1.6 Ω stands beside RE1's 22 Ω rather than shorting it.
     assert(shift > 160.0 && shift < 175.0)
 
 @test("the amplifier's output clips when the generator is turned up")
@@ -309,9 +309,9 @@ amplifier_clips()
         lo = min(lo, v)
         hi = max(hi, v)
 
-    // Undistorted, half a volt in would be more than eleven volts out each way; the supply allows
-    // nothing like it, and the two sides clip differently.
-    assert(hi - lo < 10.0)
+    // Undistorted, half a volt in would be more than thirty volts out each way; the supply allows
+    // no more than its own 12 V from top to bottom, and the two sides clip differently.
+    assert(hi - lo < 12.0)
     assert(hi < 5.0 && lo > -8.0)
     assert((hi + lo).abs() > 0.3)
 
@@ -342,10 +342,10 @@ amplifier_starts_settled()
     val (lo, hi) = first_cycle(&settled)
     val swing = (hi - lo) / 2.0
 
-    // About 23 times the generator's 10 mV, and centred to within the little the capacitors lean while
+    // About 66 times the generator's 10 mV, and centred to within the little the capacitors lean while
     // the sine's first half-cycle has nothing before it to balance: about a seventh of the swing,
     // mostly CE's, whose time constant is barely a cycle.
-    assert(swing > 0.18 && swing < 0.28)
+    assert(swing > 0.55 && swing < 0.8)
     assert((hi + lo).abs() / 2.0 < 0.2 * swing)
 
     cold.power_on().unwrap()

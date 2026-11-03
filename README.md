@@ -24,8 +24,9 @@ so a small signal beside a large bias still rocks where it can be seen.
   second; it reads the first point's voltage less the second's. **The scope** under the circuit draws
   what every meter has read over the last five seconds, each in its meter's colour and on a vertical
   scale of its own, as a bench oscilloscope's channels are: each trace is centred on what it read and
-  fills most of the height, the legend gives its volts a division (1, 2 or 5 times a power of ten),
-  and a mark at the left edge in its colour shows where its zero is.
+  fills most of the height, the legend gives its volts a division (1, 2 or 5 times a power of ten)
+  and how far it swings from top to bottom (`19.7mV p-p` in, `1.32V p-p` out: a gain of 67), and a
+  mark at the left edge in its colour shows where its zero is.
 - **Click a switch** to flip it; click any part for the voltage across it, the current through it and
   the power it takes or delivers.
 - **Click a signal generator** to open its panel beside the scope: a waveform (sine, square,
@@ -48,7 +49,7 @@ so a small signal beside a large bias still rocks where it can be seen.
   transistor is its gain there. A dim line marks the generator's own frequency, and the legend gives
   each meter's gain and phase at it.
 
-![The common-emitter amplifier's Bode plot: 27 dB from about 300 Hz up, rolling off below through its coupling capacitors](bode.png)
+![The common-emitter amplifier's Bode plot: 36 dB from about 100 Hz up, rolling off below through its coupling capacitors](bode.png)
 
 `--shot out.png --time 10m` runs the circuit for ten milliseconds of its own time and draws that frame
 to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command line,
@@ -59,8 +60,8 @@ The examples: `led` (a battery, a resistor and an LED), `rc` (a capacitor chargi
 switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
-(a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 230 mV, upside down;
-turn the generator up past about 150 mV and the output clips), `zener` (a raw supply's 2 V of ripple
+(a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
+turn the generator up past about 50 mV and the output clips), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener) and `regulator` (a zener-referenced emitter follower: 4.87 V out
 of a rippling 15 V, the ripple cut two-hundredfold).
 

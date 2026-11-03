@@ -15,6 +15,10 @@ const GMIN: real = 1e-12
 
 const MOST_ITERATIONS: int = 150
 
+// How many passes running every junction must stay where it was linearised before the solution is
+// taken however much it still moves, which by then is only rounding.
+const CALM_PASSES: int = 3
+
 // A closed switch's resistance. An open one is no connection at all: each side is held to ground by
 // GMIN alone, so a node the switch was the only way to is left at nothing rather than floating, and
 // nothing leaks across it.
@@ -581,21 +585,35 @@ struct Sim
         for i in 0..<self.junction.len()
             self.junction[i] = 0.0
 
+    // Solve the system, relinearising every junction at the last solution, until a pass puts every
+    // junction where it was linearised and moves no voltage or current by more than a millionth of
+    // itself and a nanovolt or nanoamp.
+    //
+    // **Or until the junctions have stayed put for `CALM_PASSES` passes running**, whatever the solution
+    // moved by. A pass then solves the same system again, and moves only by its rounding, which is not
+    // small beside a node's own voltage everywhere: a coupling capacitor over a step of a nanosecond is
+    // a conductance of thousands of siemens between a node at volts and one at microvolts, and the
+    // microvolt node is found as the difference of the two to within a hundred nanovolts at worst. A
+    // step made shorter only makes the capacitor's conductance, and so the rounding, larger.
     private newton(*self) -> Result[unit, string]
+        var calm = 0
+
         for _ in 0..<MOST_ITERATIONS
             self.stamp()
 
             if self.sys.solve().is_none() then return Err(self.singular())
 
-            var settled = true
+            var still = true
 
             for i in 0..<self.size
                 val was = self.x[usize(i)]
                 val now = self.sys.z[usize(i)]
 
-                if (now - was).abs() > 1e-6 * max(now.abs(), was.abs()) + 1e-9 then settled = false
+                if (now - was).abs() > 1e-6 * max(now.abs(), was.abs()) + 1e-9 then still = false
 
                 self.x[usize(i)] = now
+
+            var settled = true
 
             // A junction is settled when the solution puts it where it was linearised. It is then left
             // at that voltage, so a diode's current is read off the same line the system obeyed and the
@@ -616,7 +634,9 @@ struct Sim
                         if !close(self.junction[2 * i], gs) || !close(self.junction[2 * i + 1], ds) then settled = false
                     _ -> ()
 
-            if settled then return Ok(())
+            calm = if settled then calm + 1 else 0
+
+            if settled && still || calm >= CALM_PASSES then return Ok(())
 
             self.limit_junctions()
 

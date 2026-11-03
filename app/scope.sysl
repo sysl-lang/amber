@@ -4,7 +4,8 @@
 // **Each channel has a vertical scale of its own**, as a bench oscilloscope's do: a trace is centred
 // on what it has read in the window and scaled so that it nearly fills the height, at a number of
 // volts a division from the 1-2-5 sequence. A 10 mV input beside a 2.5 V output is two waves of a size,
-// and the legend says what a division is worth for each. A mark at the left edge, in the trace's
+// and the legend says what a division is worth for each and how far each swings, so the two sizes can
+// still be compared. A mark at the left edge, in the trace's
 // colour, shows where its zero volts is when that is in view.
 
 import sh.sysl.amber.engineering
@@ -66,8 +67,15 @@ impl View for Scope
             c.text(Rect(plot.right() + 36, y, 130, 18), s"${mt.name}  ${volts(per_div)}/div")
             c.unink()
             c.ink(DIM)
-            c.text(Rect(plot.right() + 170, y, 76, 18), volts(m.reading(mt)))
+            c.text(Rect(plot.right() + 170, y, 80, 18), legend_value(lo, hi, m.reading(mt)))
             c.unink()
+
+// What the legend says of a channel whose readings ran from `lo` to `hi` and read `now` last: how far
+// it swings from top to bottom, so that an amplifier's gain is the ratio of two figures side by side,
+// since each trace is scaled to fill the plot whatever its size. A channel that hardly moves, by less
+// than a millivolt or a twentieth of its voltage, has no swing worth reading, and gives its voltage.
+legend_value(lo: real, hi: real, now: real) -> string
+    if hi - lo < max(1e-3, 0.05 * max(lo.abs(), hi.abs())) then volts(now) else s"${volts(hi - lo)} p-p"
 
 // The lowest and highest reading meter `mt` has made since `from`, or zero for both if it has made none.
 reach(mt: Meter, from: real) -> (real, real)

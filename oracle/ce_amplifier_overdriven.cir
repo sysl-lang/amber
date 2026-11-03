@@ -1,0 +1,26 @@
+Common-emitter amplifier driven fifty times too hard, clipping on both sides
+* examples/amplifier.amber as a netlist, with its generator turned up to half a volt. Its coupling
+* capacitors are thousands of siemens over the first nanosecond's step, and the microvolts at its input
+* are found to within the rounding of the volts beside them.
+VG g 0 SIN(0 0.5 1k)
+RG g in 50
+CIN in b 1u
+VCC vcc 0 12
+R1 vcc b 47k
+R2 b 0 10k
+RC vcc c 3.9k
+Q1 c b e q2n3904
+RE1 e x 22
+RE2 x 0 1k
+CE x 0 100u
+COUT c out 220n
+RL out 0 10k
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.tran 10u 3m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 10u 3m 0 0.1u
+linearize v(b) v(c) v(out)
+wrdata ce_amplifier_overdriven.data v(b) v(c) v(out)
+.endc
+.end

@@ -738,6 +738,20 @@ channels_scale_alone()
     // A steady 9 V is a flat line in the middle rather than its rounding errors blown up.
     assert(close(channel_scale(9.0, 9.0).1, 0.1))
 
+@test("the legend gives a swinging channel's swing from top to bottom, so two channels' sizes compare, and a steady one's voltage")
+legend_swing()
+    // The amplifier's input and output: drawn the same size, told apart by the legend.
+    assert(legend_value(-10e-3, 10e-3, 3e-3) == "20mV p-p")
+    assert(legend_value(-0.68, 0.66, -0.2) == "1.34V p-p")
+    // A swing on a bias is still a swing.
+    assert(legend_value(6.0, 7.3, 6.5) == "1.3V p-p")
+    // A steady 9 V, its rounding, and a channel reading nothing give the voltage.
+    assert(legend_value(9.0, 9.0, 9.0) == "9V")
+    assert(legend_value(8.99, 9.01, 9.0) == "9V")
+    assert(legend_value(0.0, 0.5e-3, 0.2e-3) == "200µV")
+    // A millivolt's swing about zero is the least that counts.
+    assert(legend_value(-0.5e-3, 0.6e-3, 0.0) == "1.1mV p-p")
+
 @test("a channel's reach is what its meter read within the window")
 channel_reach()
     val m = bench()

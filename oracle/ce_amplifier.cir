@@ -2,15 +2,15 @@ Common-emitter amplifier driven by a 10 mV sine from a 50 ohm generator
 * examples/amplifier.amber as a netlist: the generator is its sine behind its output resistance.
 VG g 0 SIN(0 10m 1k)
 RG g in 50
-CIN in b 470n
+CIN in b 1u
 VCC vcc 0 12
 R1 vcc b 47k
 R2 b 0 10k
 RC vcc c 3.9k
 Q1 c b e q2n3904
-RE1 e x 100
+RE1 e x 22
 RE2 x 0 1k
-CE x 0 10u
+CE x 0 100u
 COUT c out 220n
 RL out 0 10k
 .model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
