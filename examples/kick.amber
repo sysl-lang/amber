@@ -1,0 +1,64 @@
+# A kick drum: press the button and it booms, the way the Roland TR-808's bass drum does.
+#
+# U1 is a resonator. In its feedback is a bridged-T: C1 and C2 in series from its output to its
+# inverting input, R1 from between them to ground, and R2 across the pair. At one frequency,
+# 1 / (2π · C · √(R1 · R2)), about 55 Hz, the network hands back almost all of what it is given, and
+# U1 rings there when struck: a low sine dying away over about half a second, its quality
+# ½ · √(R2 / R1), about 26, saying how slowly.
+#
+# The strike is the button. Pressing it puts BT's 9 V on CT, whose edge comes through D1 and RIN as a
+# spike into U1's input: a thump with every frequency in it, which the resonator answers only at its
+# own. D1 lets the press through and not the release, so one tap is one beat; RP and RQ empty CT
+# again ready for the next.
+#
+# The speaker plays while the clock runs at a second a second; the status line says how fast the sound
+# is being worked out, and whether it has ever had to stop and wait. Tap out a rhythm.
+
+speed 1
+start settled
+
+battery   BP    40 9  40 12  9V
+battery   BN    40 12 40 17  9V
+ground          40 12
+wire            20 9  40 9
+wire            20 17 40 17
+
+opamp     U1    20 12 TL072
+wire            20 10 20 9
+wire            20 14 20 17
+wire            18 13 16 13
+ground          16 13
+
+# The bridged-T, from the output back to the inverting input.
+wire            18 11 18 4
+wire            22 12 24 12
+wire            24 12 24 4
+capacitor C2    18 4  21 4   100n
+capacitor C1    21 4  24 4   100n
+resistor  R1    21 4  21 7   560
+ground          21 7
+wire            18 4  18 1
+resistor  R2    18 1  24 1   1.5meg
+wire            24 1  24 4
+
+# The strike.
+battery   BT    4 8   4 12   9V
+ground          4 12
+button    S1    4 8   8 8
+wire            8 8   10 8
+resistor  RP    10 8  10 12  10k
+ground          10 12
+capacitor CT    10 8  12 8   10n
+resistor  RQ    12 8  12 12  100k
+ground          12 12
+diode     D1    12 8  14 8
+resistor  RIN   14 8  18 8   47k
+
+# The speaker.
+wire            24 12 28 12
+resistor  RS    28 12 32 12  1k
+speaker   SPK   32 12 32 14  8
+ground          32 14
+
+label     drum  26 12
+meter     DRUM  28 12 32 14

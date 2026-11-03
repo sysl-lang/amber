@@ -9,6 +9,7 @@ import sh.sysl.ui.Rect
 import sysl.buf.{Buf, buf}
 import sysl.math.{max, min}
 import sysl.text.fields
+import sysl.time.monotonic
 
 // Seconds of the circuit's time a second of the window's may show, slowest first; `+` and `-` move
 // along them.
@@ -17,6 +18,9 @@ val SPEEDS = [1e-6, 2e-6, 5e-6, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 
 
 // How many solutions a frame samples for the meters: the scope's resolution.
 const SAMPLES_PER_FRAME: int = 8
+
+// How long a click holds a push button down, in the circuit's time: a finger's tap.
+const PRESS_SECONDS: real = 10e-3
 
 // How many seconds of the window's time the scope shows.
 const SCOPE_SECONDS: real = 5.0
@@ -133,6 +137,8 @@ struct Model
     bode_stale: bool
     // What the circuit's speaker plays, if it has one.
     ear: Ear
+    // The push buttons pressed and not yet let go: each one's part, and the circuit's time it is let go.
+    pressed: Buf[(int, real)]
 
     // Whether the speaker is sounding: there is one, it is not muted, and the clock runs at a second a
     // second, the only speed its sound is the right pitch at.
@@ -248,11 +254,37 @@ struct Model
 
             return
 
+        // A push button is pressed now and let go `PRESS_SECONDS` of the circuit's time later, as a
+        // finger taps it.
+        if e.shape == Shape.Button
+            self.s.set_switch(e.part, true)
+            self.pressed.push((e.part, self.s.time + PRESS_SECONDS))
+            return
+
         if e.shape != Shape.Switch then return
 
         val closed = self.s.circuit.parts[usize(e.part)].kind == Switch(true)
 
         self.s.set_switch(e.part, !closed)
+
+    // Run the circuit to `t`, letting go each push button on the way at the moment it is due.
+    private advance(*self, t: real) -> Result[unit, string]
+        loop
+            var soonest = -1
+
+            for k in 0..<self.pressed.len()
+                if self.pressed[k].1 <= t && (soonest < 0 || self.pressed[k].1 < self.pressed[usize(soonest)].1)
+                    soonest = int(k)
+
+            if soonest < 0 then break
+
+            val (part, at) = self.pressed[usize(soonest)]
+
+            self.s.advance_to(at)?
+            self.s.set_switch(part, false)
+            self.pressed.remove(usize(soonest))
+
+        self.s.advance_to(t)
 
     // Start the circuit again the way its file says, forgetting what the meters read.
     restart(*self) = self.start(self.sch.settled)
@@ -274,6 +306,7 @@ struct Model
             self.meters[k].forget()
 
         self.ear.restart(0.0)
+        self.pressed.clear()
 
         // The instruments keep their settings: the circuit is started again with them as they are.
         for k in 0..<self.panels.len()
@@ -293,11 +326,14 @@ struct Model
         val start = self.s.time
 
         if self.hearing()
+            val began = monotonic()
+
             self.listen(start + span, samples)
+            self.ear.account(real((monotonic() - began).us) * 1e-6, self.s.time - start)
             return
 
         for k in 1..samples
-            if self.s.advance_to(start + span * real(k) / real(samples)) is Err(why)
+            if self.advance(start + span * real(k) / real(samples)) is Err(why)
                 self.trouble = why
                 self.running = false
                 return
@@ -316,7 +352,7 @@ struct Model
         if self.ear.next < self.s.time - each then self.ear.restart(self.s.time)
 
         while self.ear.next <= end
-            if self.s.advance_to(self.ear.next) is Err(why)
+            if self.advance(self.ear.next) is Err(why)
                 self.trouble = why
                 self.running = false
                 return
@@ -327,7 +363,7 @@ struct Model
 
             if n % every == 0 then self.sample()
 
-        if self.s.advance_to(end) is Err(why)
+        if self.advance(end) is Err(why)
             self.trouble = why
             self.running = false
             return
@@ -459,7 +495,7 @@ model(file: string, sch: Schematic) -> &Model
     val m: &Model = Model(file, sch, sim(sch.circuit), "", buf(), false, 0, 0, -1, true, true, speed_index(sch.speed), flows,
                   parts, bases, emitters, held_segments, held_parts, held_bases, held_emitters, 0.0, 0.0,
                   Picture(None, None), Picture(None, None), panels(sch), false, Bode(buf(), buf(), "", 0.0, ""), true,
-                  ear(first_speaker(sch)))
+                  ear(first_speaker(sch)), buf())
 
     // The meters the file places are the first ones.
     for i in 0..<sch.elements.len()
@@ -498,6 +534,15 @@ private speed_index(seconds: real) -> int
         if (SPEEDS[k] / want).ln().abs() < (SPEEDS[usize(best)] / want).ln().abs() then best = int(k)
 
     best
+
+// How the speaker's sound is keeping up: how many times faster than it plays it is being worked out,
+// and how many times the sound has stopped for want of it.
+hearing_line(e: Ear) -> string
+    if e.headroom() == 0.0 then return ""
+
+    val pace = (e.headroom() * 10.0).round() / 10.0
+
+    s" · sound ${pace}× real time, ${e.dropouts} dropout${if e.dropouts == 1 then "" else "s"}"
 
 // What a pin is doing, as its chip's program set it.
 pin_doing(d: PinDrive) -> string = d.mode match
@@ -566,7 +611,7 @@ press(m: &Model, key: i32) -> bool
 
 // The line under the board: the clock, and what was clicked or why nothing could be solved.
 status(m: &Model) -> string
-    val sound = if m.ear.speaker < 0 then "" elif m.ear.muted then " · speaker muted" elif m.pace() != 1.0 then " · speaker plays at 1s a second" else ""
+    val sound = if m.ear.speaker < 0 then "" elif m.ear.muted then " · speaker muted" elif m.pace() != 1.0 then " · speaker plays at 1s a second" else hearing_line(m.ear)
     val clock = s"t = ${engineering(m.s.time)}s · ${engineering(m.pace())}s a second · ${if m.running then "running" else "paused"}${sound}"
 
     if m.trouble != "" then return s"${clock} · cannot solve: ${m.trouble}"
@@ -617,6 +662,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Capacitor -> s"${e.value}F capacitor"
     Inductor -> s"${e.value}H inductor"
     Speaker -> s"${e.value}Ω speaker"
+    Button -> "push button"
     OpAmp -> s"${e.value} op-amp"
     Pin -> s"${e.value} pin"
     Winding -> if e.value == "" then "transformer's secondary" else s"${e.value} transformer's primary"

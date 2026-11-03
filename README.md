@@ -47,7 +47,11 @@ so a small signal beside a large bias still rocks where it can be seen.
   computer's sound output, sampled 48,000 times a second of the circuit's time, whenever the clock runs
   at a second a second — the only speed its sound is the right pitch at; `m` mutes it. Its DC is
   taken off and its level set the way a listener would turn the knob, so a whisper of a signal and a
-  9 V swing both play at a comfortable volume, and a circuit's rounding is silence.
+  9 V swing both play at a comfortable volume, and a circuit's rounding is silence. The status line
+  says how many times faster than it plays the sound is being worked out, over the last second or
+  so, and how many times it has run dry and stopped: `sound 9.1× real time, 0 dropouts`.
+- **Click a push button** to tap it: closed for 10 ms of the circuit's time and let go at that very
+  moment, as a finger would.
 - `b` swaps the scope for **a Bode plot**: each meter's gain (in decibels, the thick line) and phase
   (the thin one) from 1 Hz to 10 MHz, for a small sine from the signal generator. It is the circuit as
   it stands — the panels' settings are the ones it uses — linearised at its operating point, so a
@@ -76,7 +80,9 @@ through a speaker; `r` to hear it start again), `sine` (a Wien-bridge oscillator
 and two diodes holding its gain at exactly 3, playing a sine of about 720 Hz whose harmonics are
 about 1% of it, against the phase-shift oscillator's 9%), `opamp` (a TL072 amplifying the signal
 generator's sine eleven times into a speaker through a push-pull pair, its feedback taken after the
-pair so the op-amp jumps the pair's crossover gap and the speaker gets a clean sine), `zener` (a raw supply's 2 V of ripple
+pair so the op-amp jumps the pair's crossover gap and the speaker gets a clean sine), `kick` (a
+TR-808-style kick drum: a push button strikes an op-amp bridged-T resonator, which booms at 55 Hz and
+dies away over half a second; tap out a rhythm), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
 of a rippling 15 V, the ripple cut two-hundredfold), `pins` (three of a microcontroller's pins: one
 lighting an LED, one reading a button, one an ADC on a divider; click them) and `wallwart` (a 5 V supply that plugs into the
@@ -106,7 +112,7 @@ meter     OUT 6 0  6 6                     # red lead first
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
 `gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
-`closed`), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
+`closed`), `button` (a push button, open but while pressed), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
 `TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).

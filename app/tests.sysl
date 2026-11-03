@@ -1018,3 +1018,61 @@ pin_status()
     m.run(1e-3, 8)
     m.selected = m.sch.find("GP1").unwrap()
     assert(status(m).contains("reads 0"))
+
+// --- A push button, and how the sound keeps up ------------------------------------------------------
+
+private kick() -> &Model = model("kick.amber", parse_schematic(str_cast(embed("../examples/kick.amber"))).unwrap())
+
+@test("a click presses a push button for 10 ms of the circuit's time and lets it go at that very moment")
+button_taps()
+    val m = kick()
+    val s1 = m.sch.find("S1").unwrap()
+    val part = m.sch.elements[usize(s1)].part
+
+    m.run(0.05, 8)
+    m.select(s1)
+    assert(m.s.circuit.parts[usize(part)].kind == Switch(true))
+    assert(status(m).contains("S1 push button"))
+
+    // Still down 9 ms on, up by 11, and let go exactly at 10 ms: the frame's own steps do not decide it.
+    m.run(9e-3, 8)
+    assert(m.s.circuit.parts[usize(part)].kind == Switch(true))
+    m.run(2e-3, 8)
+    assert(m.s.circuit.parts[usize(part)].kind == Switch(false))
+    assert(m.pressed.len() == 0)
+
+    // Restarting forgets a press not yet let go.
+    m.select(s1)
+    m.restart()
+    assert(m.pressed.len() == 0 && m.s.circuit.parts[usize(part)].kind == Switch(false))
+
+@test("the status line says how many times faster than it plays the sound is worked out, and its dropouts")
+sound_headroom()
+    val m = kick()
+
+    assert(!status(m).contains("real time"))
+
+    for _ in 0..<30
+        m.run(1.0 / 60.0, 8)
+
+    assert(m.ear.headroom() > 1.0)
+    assert(status(m).contains("× real time, 0 dropouts"))
+
+    // Muted, it says so instead.
+    press(m, SCANCODE_M)
+    assert(status(m).contains("speaker muted") && !status(m).contains("real time"))
+
+@test("the headroom's tallies fade, telling of the last second or so rather than of all time")
+headroom_fades()
+    var e = ear(0)
+
+    // A slow second, then a fast one: the fast one is what it tells of.
+    for _ in 0..<60
+        e.account(0.02, 1.0 / 60.0)
+
+    assert(e.headroom() < 1.0)
+
+    for _ in 0..<300
+        e.account(0.002, 1.0 / 60.0)
+
+    assert(e.headroom() > 7.0)

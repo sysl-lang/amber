@@ -1,0 +1,63 @@
+module sh.sysl.amber
+@tests
+
+import sysl.math.{max, min}
+import sysl.raw.str_cast
+
+// The kick drum example: struck, its resonator rings at 1 / (2π · C · √(R1 · R2)) and dies away at
+// the rate its quality says; the release of the button strikes nothing.
+
+@test("the kick drum rings at about 55 Hz when struck, dies away over about half a second, and only the press strikes it")
+kick_rings()
+    val sch = parse_schematic(str_cast(embed("../../../examples/kick.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val button = sch.elements[usize(sch.find("S1").unwrap())].part
+    val dt = 1.0 / 48000.0
+
+    s.operating_point().unwrap()
+
+    // Quiet before it is struck.
+    for k in 1..4800
+        s.advance_to(real(k) * dt).unwrap()
+
+    assert(s.voltage_at("drum").abs() < 1e-3)
+
+    // A 10 ms tap at 0.1 s.
+    s.set_switch(button, true)
+
+    var crossings = 0
+    var first = 0.0
+    var last = 0.0
+    var was = 0.0
+    var peak_early = 0.0
+    var peak_late = 0.0
+
+    for k in 4801..62400
+        val t = real(k) * dt
+
+        if k == 5281 then s.set_switch(button, false)
+
+        s.advance_to(t).unwrap()
+
+        val v = s.voltage_at("drum")
+
+        // Rising through zero after the strike's own first swing.
+        if t > 0.12 && was < 0.0 && v >= 0.0
+            if crossings == 0 then first = t
+
+            last = t
+            crossings += 1
+
+        if t > 0.12 && t < 0.2 then peak_early = max(peak_early, v.abs())
+        if t > 0.5 && t < 0.6 then peak_late = max(peak_late, v.abs())
+
+        was = v
+
+    val hz = real(crossings - 1) / (last - first)
+
+    // 1 / (2π · 100n · √(560 · 1.5M)) is 54.9 Hz.
+    assert(hz > 50.0 && hz < 60.0)
+    // A strong strike, well inside the rails.
+    assert(peak_early > 1.0 && peak_early < 7.5)
+    // Q of 26 at 55 Hz is a time constant of 0.15 s: 0.4 s on, a fourteenth of the swing.
+    assert(peak_late < peak_early / 6.0 && peak_late > peak_early / 40.0)

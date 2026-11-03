@@ -522,6 +522,19 @@ private struct Pen
                     f.to(mid - half, -half)
 
                 self.vg.stroke()
+            Button ->
+                // Two contacts, and over them a bar on a plunger: raised while the button is up, down
+                // on the contacts while it is pressed.
+                val pressed = m.s.circuit.parts[usize(e.part)].kind == Switch(true)
+                val lift = if pressed then 0.0 else 0.3
+
+                f.line(s0, 0.0, s0 + 0.15, 0.0)
+                f.line(s1 - 0.15, 0.0, s1, 0.0)
+                self.dot(f.gx(s0 + 0.15, 0.0), f.gy(s0 + 0.15, 0.0), 3.5)
+                self.dot(f.gx(s1 - 0.15, 0.0), f.gy(s1 - 0.15, 0.0), 3.5)
+                f.line(s0 + 0.05, lift + 0.08, s1 - 0.05, lift + 0.08)
+                f.line((s0 + s1) / 2.0, lift + 0.08, (s0 + s1) / 2.0, lift + 0.5)
+                f.line((s0 + s1) / 2.0 - 0.2, lift + 0.5, (s0 + s1) / 2.0 + 0.2, lift + 0.5)
             Switch ->
                 val closed = m.s.circuit.parts[usize(e.part)].kind == Switch(true)
 
@@ -1123,7 +1136,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button -> true
     _ -> false
 
 // The text over the picture: each part's name and value, the voltage across it when values are on,
@@ -1187,7 +1200,7 @@ private labels(m: &Model, c: *Canvas, at: Place)
                     Input -> "in"
                 _ -> ""
             Led -> colour_name(e.colour)
-            Switch -> ""
+            Switch | Button -> ""
             // What it is set to now, which its panel may have changed.
             Generator | Supply -> m.panel_of(int(i)) match
                 Some(k) -> m.panels[k].summary()

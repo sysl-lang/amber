@@ -45,6 +45,23 @@ struct Ear
     // been attempted, so a machine with no sound output is not asked again every frame.
     voice: Option[&AudioStream]
     tried: bool
+    // How fast the circuit is being heard against how fast it plays: the seconds of the computer's own
+    // time spent working the sound out, and the seconds of the circuit's that covered, both fading so
+    // they tell of the last second or so.
+    busy: real
+    covered: real
+    // How many times the sound output ran dry while it was playing, which is a gap the listener hears;
+    // and whether it is playing, so a pause or a mute is not counted as one.
+    dropouts: int
+    playing: bool
+
+    // How many times faster than it plays the sound is being worked out lately; 0 before any has been.
+    headroom(self) -> real = if self.busy > 0.0 then self.covered / self.busy else 0.0
+
+    // Count `busy` seconds of the computer's time spent working out `covered` seconds of the circuit's.
+    account(*self, busy: real, covered: real)
+        self.busy = self.busy * FADE + busy
+        self.covered = self.covered * FADE + covered
 
     // Start again from the circuit's time `t`: nothing heard yet.
     restart(*self, t: real)
@@ -76,7 +93,12 @@ struct Ear
             if init_audio() then self.voice = open_audio_stream(i32(RATE))
 
         if self.voice is Some(v)
+            // Found empty while it was playing: the sound stopped for a moment before this arrived.
+            if self.playing && v.queued() == 0 && self.heard.len() > 0 then self.dropouts += 1
+
             if real(v.queued()) < MOST_QUEUED * real(RATE) * 4.0 then v.put(self.heard.view())
+
+            self.playing = true
 
         self.heard.clear()
 
@@ -85,10 +107,15 @@ struct Ear
         if self.voice is Some(v) then v.clear()
 
         self.heard.clear()
+        self.playing = false
 end Ear
 
+// How much of the headroom's tallies is kept from one frame to the next: at 60 frames a second, they
+// tell of about the last second.
+const FADE: real = 0.98
+
 // An ear for the speaker that element `speaker` is, or for none at -1.
-ear(speaker: int) -> Ear = Ear(speaker, false, 0.0, false, 0.0, 0.0, buf(), None, false)
+ear(speaker: int) -> Ear = Ear(speaker, false, 0.0, false, 0.0, 0.0, buf(), None, false, 0.0, 0.0, 0, false)
 
 // How long a sample is, in seconds.
 sample_seconds() -> real = 1.0 / real(RATE)
