@@ -1,0 +1,44 @@
+A 5 V supply from the wall: transformer, bridge, reservoir and a series regulator
+* examples/wallwart.amber as a netlist. 120 V at 60 Hz stepped down to 9 V by a transformer, rectified
+* by a bridge of four diodes into a 1000 uF reservoir, and held at 5 V by a pass transistor whose base
+* an error amplifier steers, comparing a share of the output with a 3.3 V zener. Switched on at a zero
+* crossing with every capacitor empty.
+*
+* RI is the transformer's insulation, which a schematic's transformer has built in: without it the
+* secondary has nothing to say where it stands while all four diodes are off, and ngspice and amber
+* both give up at about 6.4 ms.
+VM line 0 SIN(0 170 60)
+RP line p 12
+LP p 0 10
+LS s1 s2 56.25m
+K1 LP LS 0.999
+RI s2 0 1g
+RW s1 a 0.3
+D1 a raw d1n4148
+D2 s2 raw d1n4148
+D3 0 a d1n4148
+D4 0 s2 d1n4148
+CF raw 0 1000u
+RB raw base 1k
+Q1 raw base out q2n3904
+Q2 base fb ref q2n3904
+RZ out ref 1k
+DZ 0 ref dz3v3
+R1 out fb 2.7k
+R2 fb 0 10k
+CO out 0 10u
+RL out 0 100
+RLED out led 1k
+DLED led 0 dred
+.model d1n4148 D (IS=2.52n N=1.752 RS=0.568)
+.model dz3v3 D (IS=1e-14 N=1 RS=2 BV=3.3 IBV=5m)
+.model dred D (IS=1e-17 N=2 RS=2)
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.tran 0.2m 100m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 0.2m 100m 0 10u
+linearize v(s1) v(raw) v(out)
+wrdata wall_supply.data v(s1) v(raw) v(out)
+.endc
+.end

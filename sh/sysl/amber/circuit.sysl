@@ -212,10 +212,27 @@ struct Part
         1 -> self.b
         _ -> self.c
 
+// Two inductors wound on one core, SPICE's `K`: parts `first` and `second`, coupled by `k`, more than 0
+// and at most 1, so that their mutual inductance is `k · √(L1 · L2)`. A change of current in either
+// puts a voltage across the other as well as across itself:
+//
+//     v1 = L1 · di1/dt + M · di2/dt
+//     v2 = M · di1/dt + L2 · di2/dt
+//
+// With both currents flowing in at their first terminals, the two first terminals are the windings'
+// dotted ends. A transformer is two windings coupled almost perfectly; what `k` falls short of 1 is the
+// flux one winding makes that misses the other, its leakage.
+struct Coupling derives Eq
+    name: string
+    first: int
+    second: int
+    k: real
+
 struct Circuit
     // Node names by number; `nodes[0]` is ground, `"0"`.
     nodes: Buf[string]
     parts: Buf[Part]
+    couplings: Buf[Coupling]
 
     // The node called `name`, numbered now if it has not been seen. `0`, `gnd` and `GND` are ground.
     node(*self, name: string) -> int
@@ -265,6 +282,19 @@ struct Circuit
 
         self.add3(name, kind, na, nb, nc)
 
+    // Couple inductors `first` and `second` by `k`. Either not an inductor, the two the same part, or a
+    // `k` outside (0, 1] is refused.
+    couple(*self, name: string, first: int, second: int, k: real) -> Result[unit, string]
+        if first == second then return Err(s"'${name}' couples '${self.parts[usize(first)].name}' to itself")
+
+        for i in [first, second]
+            if !(self.parts[usize(i)].kind is Inductor(_)) then return Err(s"'${name}' couples '${self.parts[usize(i)].name}', which is not an inductor")
+
+        if !(k > 0.0 && k <= 1.0) then return Err(s"'${name}' couples by more than 0 and at most 1, not ${k}")
+
+        self.couplings.push(Coupling(name, first, second, k))
+        Ok(())
+
     node_count(self) -> int = int(self.nodes.len())
 end Circuit
 
@@ -273,4 +303,4 @@ circuit() -> Circuit
     var nodes: Buf[string] = buf()
 
     nodes.push("0")
-    Circuit(nodes, buf())
+    Circuit(nodes, buf(), buf())

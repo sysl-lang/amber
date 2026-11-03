@@ -1,0 +1,18 @@
+Step-down transformer driving a resistor from the mains
+* 120 V at 60 Hz into a 10 H primary; the secondary is a hundredth of its inductance, ten times fewer
+* turns, so about 12 V reaches the load, less what the leakage and the windings' resistance drop.
+VM line 0 SIN(0 170 60)
+RP line p 2
+LP p 0 10
+LS s 0 0.1
+K1 LP LS 0.999
+RS s out 0.5
+RL out 0 47
+.tran 0.2m 50m
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+tran 0.2m 50m 0 10u
+linearize v(p) v(s) v(out)
+wrdata transformer.data v(p) v(s) v(out)
+.endc
+.end

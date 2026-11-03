@@ -1,0 +1,17 @@
+Step-down transformer's response from 1 Hz to 100 kHz
+* Ten turns to one with a little leakage: flat at a tenth from where the primary's inductance stops
+* shorting the line, about 10 Hz here, until the leakage starts to drop the load's current.
+VM line 0 DC 0 AC 1
+RP line p 2
+LP p 0 10
+LS s 0 0.1
+K1 LP LS 0.999
+RS s out 0.5
+RL out 0 47
+.ac dec 5 1 100k
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+ac dec 5 1 100k
+wrdata ac_transformer.data vr(out) vi(out) vr(p) vi(p)
+.endc
+.end

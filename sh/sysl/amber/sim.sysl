@@ -15,9 +15,9 @@ const GMIN: real = 1e-12
 
 const MOST_ITERATIONS: int = 150
 
-// How many passes running every junction must stay where it was linearised before the solution is
-// taken however much it still moves, which by then is only rounding.
-const CALM_PASSES: int = 3
+// How far a pass of Newton–Raphson may move the solution by rounding alone, as a part of its largest
+// value: a solve of a circuit's system loses about this much to the spread of its conductances.
+const ROUNDING: real = 1e-7
 
 // A closed switch's resistance. An open one is no connection at all: each side is held to ground by
 // GMIN alone, so a node the switch was the only way to is left at nothing rather than floating, and
@@ -268,7 +268,8 @@ struct Sim
     // as a phasor, its size the sine's amplitude and its angle the sine's phase. The circuit is the
     // straight line touching it at the solution it has now — the operating point, found first if it
     // has not been — so a diode is its conductance there, a transistor its gains, a capacitor
-    // `jωC` and an inductor `jωL`, and a source not driven holds still.
+    // `jωC` and an inductor `jωL`, with `jωM` between coupled windings, and a source not driven holds
+    // still.
     response(*self, hertz: real, drives: []const Drive) -> Result[Response, string]
         if !self.started then self.operating_point()?
 
@@ -301,6 +302,15 @@ struct Sim
                     sys.at(b, a, -y)
                 Inductor(henries) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, -w * henries))
                 _ -> ()
+
+        for j in 0..<self.circuit.couplings.len()
+            val k = self.circuit.couplings[j]
+            val z = Complex(0.0, -w * self.mutual(k))
+            val first = self.extra[usize(k.first)]
+            val second = self.extra[usize(k.second)]
+
+            sys.at(first, second, z)
+            sys.at(second, first, z)
 
         for d in drives
             val p = self.circuit.parts[usize(d.part)]
@@ -487,9 +497,16 @@ struct Sim
         self.time = now
         result
 
-    // How far the step's solution strayed from where the last three solutions point, as a multiple of
-    // what the tolerances allow. Until three solutions since the last corner are known, nothing can be
-    // judged and the step is taken as good.
+    // How far the step strayed from where the last three solutions point, as a multiple of what the
+    // tolerances allow. Until three solutions since the last corner are known, nothing can be judged
+    // and the step is taken as good.
+    //
+    // **Every node's voltage and every inductor's current is judged, and no voltage source's current.**
+    // A source's current is not something a step integrates: it is whatever the rest of the circuit
+    // draws at that moment, and once steps are short it is mostly rounding. Found as a node's volts over
+    // a few ohms against an inductor's resistance of `2L / h` — ten million million ohms for 10 H over a
+    // picosecond — it wobbles by parts in ten thousand, and a step judged by that wobble is cut shorter
+    // still and never recovers.
     private step_error(self, end: real) -> real
         if self.history < 2 || self.method != Trapezoid then return 0.5
 
@@ -499,6 +516,8 @@ struct Sim
         var worst = 0.0
 
         for k in 0..<self.size
+            if self.is_source_current(k) then continue
+
             val x0 = self.saved_x[usize(k)]
             val x1 = self.back1[usize(k)]
             val x2 = self.back2[usize(k)]
@@ -513,6 +532,13 @@ struct Sim
             worst = max(worst, err)
 
         worst
+
+    // Whether unknown `k` is the current through a voltage source.
+    private is_source_current(self, k: int) -> bool
+        for i in 0..<self.circuit.parts.len()
+            if self.extra[i] == k && self.circuit.parts[i].kind is VoltageSource(_) then return true
+
+        false
 
     // Make the step to `end` the present: remember what the capacitors and inductors now hold, shift
     // the history, and choose the next step's length from how well this one went.
@@ -589,27 +615,32 @@ struct Sim
     // junction where it was linearised and moves no voltage or current by more than a millionth of
     // itself and a nanovolt or nanoamp.
     //
-    // **Or until the junctions have stayed put for `CALM_PASSES` passes running**, whatever the solution
-    // moved by. A pass then solves the same system again, and moves only by its rounding, which is not
-    // small beside a node's own voltage everywhere: a coupling capacitor over a step of a nanosecond is
-    // a conductance of thousands of siemens between a node at volts and one at microvolts, and the
-    // microvolt node is found as the difference of the two to within a hundred nanovolts at worst. A
-    // step made shorter only makes the capacitor's conductance, and so the rounding, larger.
+    // **Or by no more than `ROUNDING` of the largest value in the solution**, which is what a pass that
+    // solves the same system again moves by. That is not small beside a node's own voltage everywhere:
+    // a coupling capacitor over a step of a nanosecond is a conductance of thousands of siemens between
+    // a node at volts and one at microvolts, and the microvolt node is found as the difference of the
+    // two to within a hundred nanovolts at worst. A step made shorter only makes the capacitor's
+    // conductance, and so the rounding, larger.
     private newton(*self) -> Result[unit, string]
-        var calm = 0
-
         for _ in 0..<MOST_ITERATIONS
             self.stamp()
 
             if self.sys.solve().is_none() then return Err(self.singular())
+
+            val nodes = self.circuit.node_count() - 1
+            var largest = 0.0
+
+            for i in 0..<nodes
+                largest = max(largest, self.sys.z[usize(i)].abs())
 
             var still = true
 
             for i in 0..<self.size
                 val was = self.x[usize(i)]
                 val now = self.sys.z[usize(i)]
+                val floor = if i < nodes then ROUNDING * largest else 0.0
 
-                if (now - was).abs() > 1e-6 * max(now.abs(), was.abs()) + 1e-9 then still = false
+                if (now - was).abs() > max(1e-6 * max(now.abs(), was.abs()) + 1e-9, floor) then still = false
 
                 self.x[usize(i)] = now
 
@@ -620,8 +651,12 @@ struct Sim
             // currents at every node sum to zero exactly.
             for i in 0..<self.circuit.parts.len()
                 self.circuit.parts[i].kind match
-                    Diode(_) ->
-                        if !close(self.junction[2 * i], self.junction_now(int(i))) then settled = false
+                    Diode(m) ->
+                        val was = self.junction[2 * i]
+                        val now = self.junction_now(int(i))
+                        val on_line = line_holds(diode_current(m, now), diode_current(m, was), diode_conductance(m, was), now - was)
+
+                        if !close(was, now) && !on_line then settled = false
                     Supply(_) ->
                         if !close(self.junction[2 * i], self.across(int(i))) then settled = false
                     Transistor(_) ->
@@ -634,9 +669,7 @@ struct Sim
                         if !close(self.junction[2 * i], gs) || !close(self.junction[2 * i + 1], ds) then settled = false
                     _ -> ()
 
-            calm = if settled then calm + 1 else 0
-
-            if settled && still || calm >= CALM_PASSES then return Ok(())
+            if settled && still then return Ok(())
 
             self.limit_junctions()
 
@@ -817,6 +850,35 @@ struct Sim
                         self.sys.at(row, s, -sign * (line.gm + line.gds))
                         self.sys.rhs(row, -sign * owed)
 
+        // Each coupling adds to each winding's branch equation the voltage the other's change of current
+        // puts across it, `M · di/dt` written as the inductor's own is, a resistance `r` against the
+        // other's current now and a voltage from its current at the step's start. At DC there is no
+        // change of current, and nothing to add.
+        for j in 0..<self.circuit.couplings.len()
+            val k = self.circuit.couplings[j]
+            val mutual = self.mutual(k)
+            val r = self.method match
+                Steady -> 0.0
+                Euler -> mutual / self.step
+                Trapezoid -> 2.0 * mutual / self.step
+
+            if r == 0.0 then continue
+
+            for (mine, other) in [(k.first, k.second), (k.second, k.first)]
+                self.sys.at(self.extra[usize(mine)], self.extra[usize(other)], -r)
+                self.sys.rhs(self.extra[usize(mine)], -r * self.held_i[usize(other)])
+
+    // Coupling `k`'s mutual inductance, `k · √(L1 · L2)`.
+    private mutual(self, k: Coupling) -> real
+        val l1 = self.circuit.parts[usize(k.first)].kind match
+            Inductor(h) -> h
+            _ -> 0.0
+        val l2 = self.circuit.parts[usize(k.second)].kind match
+            Inductor(h) -> h
+            _ -> 0.0
+
+        k.k * (l1 * l2).sqrt()
+
     // Into the equation of unknown `row`, `s` times a current into transistor `p` of
     // `t · (i0 + gbe · (vbe − vbe0) + gbc · (vbc − vbc0))`, where `vbe = t · (v(base) − v(emitter))` and
     // `vbc = t · (v(base) − v(collector))`: one terminal's current on the line touching its curve at
@@ -876,7 +938,7 @@ sim(given: Circuit) -> Sim
     for i in 0..<given.parts.len()
         own.push(given.parts[i])
 
-    val c = Circuit(given.nodes, own)
+    val c = Circuit(given.nodes, own, given.couplings)
     var extra: Buf[int] = buf()
     var size = c.node_count() - 1
 
@@ -979,6 +1041,19 @@ const SUPPLY_ROUNDING: real = 1e-3
 
 // Whether a junction voltage moved so little between linearising and solving that it is settled.
 private close(was: real, now: real) -> bool = (now - was).abs() <= 1e-6 * max(now.abs(), was.abs()) + 1e-9
+
+// Whether a diode's current at the voltage it was solved at is what the line it was solved on says, to
+// a millionth and a picoamp, as SPICE judges a junction: `now` is the curve's current there, and the
+// line touched it at a voltage `dv` back, with current `was` and slope `slope`.
+//
+// **This settles a diode turned off that `close` would not.** Reversed, its current is the same
+// whatever its voltage, and a diode on a node held only weakly — a transformer's secondary while its
+// rectifier's four diodes are all off — has a voltage that wobbles by its rounding, a few tenths of a
+// microvolt, more than `close` allows a tenth of a volt.
+private line_holds(now: real, was: real, slope: real, dv: real) -> bool
+    val line = was + slope * dv
+
+    (now - line).abs() <= 1e-6 * max(now.abs(), line.abs()) + 1e-12
 
 // A transistor's collector and base currents on the lines touching their curves at one pair of
 // junction voltages: the currents there, and their slopes against each junction's voltage. Both flow

@@ -23,6 +23,7 @@ import sysl.text.{Search, fields, split, to_lower}
 // | `R<name> n1 n2 value` | resistor |
 // | `C<name> n1 n2 value [IC=v]` | capacitor, holding `v` volts when switched on with `uic` |
 // | `L<name> n1 n2 value [IC=i]` | inductor, carrying `i` amps likewise |
+// | `K<name> L<first> L<second> k` | two inductors wound together, coupled by `k` (0 < k ≤ 1): a transformer |
 // | `V<name> n+ n- [DC] value` or a wave | voltage source |
 // | `I<name> n+ n- [DC] value` or a wave | current source, flowing from n+ through it to n- |
 // | `D<name> anode cathode model [area]` | diode |
@@ -167,10 +168,17 @@ parse_netlist(text: string) -> Result[Netlist, string]
     var initial: Buf[real] = buf()
     var drives: Buf[Drive] = buf()
 
+    // Couplings name inductors that may come after them, so they are read once every part is in.
+    var couplings: Buf[(int, Buf[string])] = buf()
+
     for k in 1..<lines.len()
         val (line_no, words) = lines[k]
 
         if words[0].starts_with(".") then continue
+
+        if words[0].bytes[0] == u8('k')
+            couplings.push((line_no, words))
+            continue
 
         val e = element_card(words, &models, tstep, tstop, &notes).map_err(why -> s"line ${line_no}: ${why}")?
 
@@ -185,6 +193,11 @@ parse_netlist(text: string) -> Result[Netlist, string]
         if e.kind.wave().is_some()
             if source_ac(words.view()[3..<words.len()]) is Some((mag, phase))
                 drives.push(drive(int(c.parts.len()) - 1, mag, phase))
+
+    for k in 0..<couplings.len()
+        val (line_no, words) = couplings[k]
+
+        coupling_card(&c, words).map_err(why -> s"line ${line_no}: ${why}")?
 
     for k in 0..<analyses.len()
         if analyses[k] is Sweep(source, _, _, _)
@@ -473,6 +486,22 @@ private element_card(words: Buf[string], models: *Buf[ModelCard], tstep: real, t
         'j' -> Err(s"'${name}' is a junction field-effect transistor, which amber does not have yet")
         'x' -> Err(s"'${name}' is a subcircuit, which amber does not read")
         _ -> Err(s"'${name}' is not an element amber reads")
+
+// `K<name> L<first> L<second> k`: two inductors wound together, coupled by `k`.
+private coupling_card(c: *Circuit, words: Buf[string]) -> Result[unit, string]
+    val name = words[0]
+
+    if words.len() != 4 then return Err(s"'${name}' takes two inductors and a coupling")
+
+    if c.find_part(name).is_some() then return Err(s"'${name}' is already the name of another element")
+
+    for other in c.couplings
+        if other.name == name then return Err(s"'${name}' is already the name of another element")
+
+    val first = c.find_part(words[1]).ok_or(s"'${name}' couples '${words[1]}', which is not in the netlist")?
+    val second = c.find_part(words[2]).ok_or(s"'${name}' couples '${words[2]}', which is not in the netlist")?
+
+    c.couple(name, first, second, parse_value(words[3])?)
 
 // `Q<name> collector base emitter [substrate] model [area]`. The substrate is read and left
 // unconnected: its junction has no capacitance and no current in the model amber has, as in SPICE's
