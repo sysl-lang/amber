@@ -995,9 +995,23 @@ private distance(x1: real, y1: real, x2: real, y2: real) -> real = ((x2 - x1) * 
 
 // --- Labels -----------------------------------------------------------------------------------------
 
+// Grid squares smaller than this, in points, are too small for every part's name and value to fit
+// beside it without running into its neighbours'.
+const CROWDED_UNIT: real = 22.0
+
+// Whether a part is still labelled, by its name alone, when the drawing is too crowded for every
+// label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
+// the many resistors and transistors between them.
+labelled_when_crowded(shape: Shape) -> bool = shape match
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding -> true
+    _ -> false
+
 // The text over the picture: each part's name and value, the voltage across it when values are on,
-// each label, and each meter's reading.
+// each label, and each meter's reading. A drawing too large to fit at a readable size keeps only the
+// labels `labelled_when_crowded` names, and its node labels and meters.
 private labels(m: &Model, c: *Canvas, at: Place)
+    val crowded = at.unit < CROWDED_UNIT
+
     for i in 0..<m.sch.elements.len()
         val e = m.sch.elements[i]
 
@@ -1006,6 +1020,8 @@ private labels(m: &Model, c: *Canvas, at: Place)
             continue
 
         if !e.shape.is_part() then continue
+
+        if crowded && !labelled_when_crowded(e.shape) then continue
 
         if e.shape.points() == 3
             transistor_label(m, c, at, e)
@@ -1039,7 +1055,9 @@ private labels(m: &Model, c: *Canvas, at: Place)
             Zener -> s"${e.value}V"
             _ -> e.value
 
-        put(c, lx, ly, s"${e.name} ${value}", INK, across)
+        put(c, lx, ly, if crowded then e.name else s"${e.name} ${value}", INK, across)
+
+        if crowded then continue
 
         if e.shape == Supply
             readout(m, c, lx, ly + 18.0, e.part, across)

@@ -1,0 +1,170 @@
+# A full adder built from nothing but transistors, resistors and LEDs: it adds three bits, A, B and a
+# carry in C, into a sum S and a carry out, as each column of a binary adder does.
+#
+# It is nine NOR gates in resistor–transistor logic, the logic of the Apollo guidance computer. Each
+# gate is one transistor whose collector is pulled up to 5 V through 1 kΩ: either input high pushes
+# current through its 10 kΩ into the base, the transistor saturates, and the output falls to a tenth
+# of a volt; both inputs low, the transistor is off and the output sits high.
+#
+#     n1 = A nor B                         the carry when both are 1, inverted, and more
+#     n2 = A nor n1,  n3 = B nor n1
+#     n4 = n2 nor n3                       A xnor B
+#     n5 = n4 nor C
+#     n6 = n4 nor n5,  n7 = C nor n5
+#     S  = n6 nor n7                       (A xnor B) xnor C, which is A xor B xor C
+#     Co = n1 nor n5                       A and B, or C and (A xor B)
+#
+# The signals run along the bus at the top; each gate takes its two inputs down from it and sends its
+# output back up. Flip the switches: the LEDs light for S and for the carry out.
+
+speed 1m
+start settled
+
+battery   B1    0 12  0 21  5V
+wire            0 12  72 12
+wire            0 21  73 21
+ground          0 21
+
+# The inputs: a switch to 5 V, and a pulldown that holds the input low while the switch is open.
+switch    A     2 12  2 14  open
+resistor  RA    2 14  2 21  10k
+wire            2 14  3 14
+wire            3 14  3 1
+switch    B     5 12  5 14  open
+resistor  RB    5 14  5 21  10k
+wire            5 14  6 14
+wire            6 14  6 2
+switch    C     8 12  8 14  open
+resistor  RCI   8 14  8 21  10k
+wire            8 14  9 14
+wire            9 14  9 3
+
+# The bus: A, B, C and the gates' outputs n1 to n7, each from its source to its last reader.
+wire            3 1   19 1
+wire            6 2   26 2
+wire            9 3   54 3
+wire            17 4  68 4
+wire            24 5  33 5
+wire            31 6  34 6
+wire            38 7  47 7
+wire            45 8  69 8
+wire            52 9  61 9
+wire            59 10 62 10
+
+# n1 = A nor B
+resistor  RC1   16 12 16 15  1k
+npn       Q1    16 15 14 17  16 19
+wire            16 19 16 21
+resistor  R1A   13 14 13 17  10k
+resistor  R1B   12 14 12 17  10k
+wire            12 17 14 17
+wire            13 1  13 14
+wire            12 2  12 14
+wire            16 15 17 15
+wire            17 15 17 4
+
+# n2 = A nor n1
+resistor  RC2   23 12 23 15  1k
+npn       Q2    23 15 21 17  23 19
+wire            23 19 23 21
+resistor  R2A   20 14 20 17  10k
+resistor  R2B   19 14 19 17  10k
+wire            19 17 21 17
+wire            20 4  20 14
+wire            19 1  19 14
+wire            23 15 24 15
+wire            24 15 24 5
+
+# n3 = B nor n1
+resistor  RC3   30 12 30 15  1k
+npn       Q3    30 15 28 17  30 19
+wire            30 19 30 21
+resistor  R3A   27 14 27 17  10k
+resistor  R3B   26 14 26 17  10k
+wire            26 17 28 17
+wire            27 4  27 14
+wire            26 2  26 14
+wire            30 15 31 15
+wire            31 15 31 6
+
+# n4 = n2 nor n3
+resistor  RC4   37 12 37 15  1k
+npn       Q4    37 15 35 17  37 19
+wire            37 19 37 21
+resistor  R4A   34 14 34 17  10k
+resistor  R4B   33 14 33 17  10k
+wire            33 17 35 17
+wire            34 6  34 14
+wire            33 5  33 14
+wire            37 15 38 15
+wire            38 15 38 7
+
+# n5 = n4 nor C
+resistor  RC5   44 12 44 15  1k
+npn       Q5    44 15 42 17  44 19
+wire            44 19 44 21
+resistor  R5A   41 14 41 17  10k
+resistor  R5B   40 14 40 17  10k
+wire            40 17 42 17
+wire            41 3  41 14
+wire            40 7  40 14
+wire            44 15 45 15
+wire            45 15 45 8
+
+# n6 = n4 nor n5
+resistor  RC6   51 12 51 15  1k
+npn       Q6    51 15 49 17  51 19
+wire            51 19 51 21
+resistor  R6A   48 14 48 17  10k
+resistor  R6B   47 14 47 17  10k
+wire            47 17 49 17
+wire            48 8  48 14
+wire            47 7  47 14
+wire            51 15 52 15
+wire            52 15 52 9
+
+# n7 = C nor n5
+resistor  RC7   58 12 58 15  1k
+npn       Q7    58 15 56 17  58 19
+wire            58 19 58 21
+resistor  R7A   55 14 55 17  10k
+resistor  R7B   54 14 54 17  10k
+wire            54 17 56 17
+wire            55 8  55 14
+wire            54 3  54 14
+wire            58 15 59 15
+wire            59 15 59 10
+
+# S = n6 nor n7, lighting its LED when high
+resistor  RC8   65 12 65 15  1k
+npn       Q8    65 15 63 17  65 19
+wire            65 19 65 21
+resistor  R8A   62 14 62 17  10k
+resistor  R8B   61 14 61 17  10k
+wire            61 17 63 17
+wire            62 10 62 14
+wire            61 9  61 14
+wire            65 15 66 15
+led       S     66 15 66 21  green
+
+# Co = n1 nor n5, lighting its LED when high
+resistor  RC9   72 12 72 15  1k
+npn       Q9    72 15 70 17  72 19
+wire            72 19 72 21
+resistor  R9A   69 14 69 17  10k
+resistor  R9B   68 14 68 17  10k
+wire            68 17 70 17
+wire            69 8  69 14
+wire            68 4  68 14
+wire            72 15 73 15
+led       CO    73 15 73 21  yellow
+
+label     n1    17 15
+label     n2    24 15
+label     n3    31 15
+label     n4    38 15
+label     n5    45 15
+label     n6    52 15
+label     n7    59 15
+label     sum   66 15
+label     carry 73 15

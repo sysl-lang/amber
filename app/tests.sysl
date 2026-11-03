@@ -1,6 +1,6 @@
 @tests
 
-import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator}
+import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator, Shape}
 import sh.sysl.sdl3.{SCANCODE_B, SCANCODE_C, SCANCODE_R, SCANCODE_S}
 import sysl.buf.{Buf, buf}
 import sysl.math.max
@@ -737,6 +737,14 @@ channels_scale_alone()
 
     // A steady 9 V is a flat line in the middle rather than its rounding errors blown up.
     assert(close(channel_scale(9.0, 9.0).1, 0.1))
+
+@test("a drawing too crowded for every label keeps the names of what a person clicks or looks for")
+crowded_labels()
+    for shape in [Shape.Switch, Shape.Led, Shape.Battery, Shape.Source, Shape.Generator, Shape.Supply, Shape.Winding]
+        assert(labelled_when_crowded(shape))
+
+    for shape in [Shape.Resistor, Shape.Capacitor, Shape.Inductor, Shape.Diode, Shape.Zener, Shape.Npn, Shape.Pmos]
+        assert(!labelled_when_crowded(shape))
 
 @test("the legend gives a swinging channel's swing from top to bottom, so two channels' sizes compare, and a steady one's voltage")
 legend_swing()

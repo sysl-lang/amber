@@ -1,0 +1,66 @@
+module sh.sysl.amber
+@tests
+
+import sysl.raw.str_cast
+
+// The full adder example, nine RTL NOR gates: every one of its eight inputs gives the sum and carry
+// binary addition does, at logic levels a gate after it would read without doubt.
+
+@test("the transistor full adder adds: all eight rows of its truth table, at clean logic levels")
+adder_truth_table()
+    val sch = parse_schematic(str_cast(embed("../../../examples/adder.amber"))).unwrap()
+    val a = sch.elements[usize(sch.find("A").unwrap())].part
+    val b = sch.elements[usize(sch.find("B").unwrap())].part
+    val c = sch.elements[usize(sch.find("C").unwrap())].part
+
+    for row in 0..<8
+        val (x, y, z) = (row & 1, (row >> 1) & 1, (row >> 2) & 1)
+        var s = sim(sch.circuit)
+
+        s.set_switch(a, x == 1)
+        s.set_switch(b, y == 1)
+        s.set_switch(c, z == 1)
+        s.operating_point().unwrap()
+
+        val total = x + y + z
+        val sum = s.voltage_at("sum")
+        val carry = s.voltage_at("carry")
+
+        // A 1 is an LED lit from 5 V through 1 kΩ, a 0 a saturated transistor.
+        if total % 2 == 1 then assert(sum > 1.5) else assert(sum < 0.3)
+
+        if total >= 2 then assert(carry > 1.5) else assert(carry < 0.3)
+
+        // Every gate inside is cleanly one or the other, never between, as a chain of gates needs.
+        for node in ["n1", "n2", "n3", "n4", "n5", "n6", "n7"]
+            val v = s.voltage_at(node)
+
+            assert(v < 0.3 || v > 3.0)
+
+        // And each is the gate its label says, n1 = A nor B and so on.
+        val high = (name: string) -> s.voltage_at(name) > 3.0
+        val n1 = x == 0 && y == 0
+        val n2 = x == 0 && !n1
+        val n3 = y == 0 && !n1
+        val n4 = !n2 && !n3
+        val n5 = !n4 && z == 0
+
+        assert(high("n1") == n1 && high("n2") == n2 && high("n3") == n3)
+        assert(high("n4") == n4 && high("n5") == n5)
+        assert(high("n6") == (!n4 && !n5) && high("n7") == (z == 0 && !n5))
+
+@test("the full adder's carry follows a switch flipped while it runs")
+adder_switched()
+    val sch = parse_schematic(str_cast(embed("../../../examples/adder.amber"))).unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+    assert(s.voltage_at("carry") < 0.3 && s.voltage_at("sum") < 0.3)
+
+    s.set_switch(sch.elements[usize(sch.find("A").unwrap())].part, true)
+    s.advance_to(1e-3).unwrap()
+    assert(s.voltage_at("carry") < 0.3 && s.voltage_at("sum") > 1.5)
+
+    s.set_switch(sch.elements[usize(sch.find("B").unwrap())].part, true)
+    s.advance_to(2e-3).unwrap()
+    assert(s.voltage_at("carry") > 1.5 && s.voltage_at("sum") < 0.3)

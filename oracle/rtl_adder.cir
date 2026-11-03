@@ -1,0 +1,66 @@
+Full adder of nine RTL NOR gates, input A swept from 0 to 5 V with B high and C low
+* examples/adder.amber as a netlist, its switches set: A a source swept through the gates' thresholds,
+* B closed onto 5 V, C open on its pulldown. Every gate's output is held to ngspice's along the sweep,
+* through the region where the first gates are neither on nor off.
+VCC vcc 0 5
+VA a 0 0
+RB vcc b 0.01
+RPB b 0 10k
+RPC c 0 10k
+* n1 = A nor B
+RC1 vcc n1 1k
+Q1 n1 g1 0 q2n3904
+R1A a g1 10k
+R1B b g1 10k
+* n2 = A nor n1
+RC2 vcc n2 1k
+Q2 n2 g2 0 q2n3904
+R2A n1 g2 10k
+R2B a g2 10k
+* n3 = B nor n1
+RC3 vcc n3 1k
+Q3 n3 g3 0 q2n3904
+R3A n1 g3 10k
+R3B b g3 10k
+* n4 = n2 nor n3
+RC4 vcc n4 1k
+Q4 n4 g4 0 q2n3904
+R4A n3 g4 10k
+R4B n2 g4 10k
+* n5 = n4 nor C
+RC5 vcc n5 1k
+Q5 n5 g5 0 q2n3904
+R5A c g5 10k
+R5B n4 g5 10k
+* n6 = n4 nor n5
+RC6 vcc n6 1k
+Q6 n6 g6 0 q2n3904
+R6A n5 g6 10k
+R6B n4 g6 10k
+* n7 = C nor n5
+RC7 vcc n7 1k
+Q7 n7 g7 0 q2n3904
+R7A n5 g7 10k
+R7B c g7 10k
+* sum = n6 nor n7, with its LED
+RC8 vcc sum 1k
+Q8 sum g8 0 q2n3904
+R8A n7 g8 10k
+R8B n6 g8 10k
+DS sum 0 dgreen
+* carry = n1 nor n5, with its LED
+RC9 vcc carry 1k
+Q9 carry g9 0 q2n3904
+R9A n5 g9 10k
+R9B n1 g9 10k
+DC carry 0 dyellow
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.model dgreen D (IS=3.5e-20 N=2 RS=2)
+.model dyellow D (IS=2e-19 N=2 RS=2)
+.dc VA 0 5 0.05
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+dc VA 0 5 0.05
+wrdata rtl_adder.data v(n1) v(n2) v(n4) v(n5) v(sum) v(carry)
+.endc
+.end
