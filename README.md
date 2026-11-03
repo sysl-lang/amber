@@ -43,6 +43,11 @@ so a small signal beside a large bias still rocks where it can be seen.
   says (from empty, or settled where it says `start settled`), `s` starts it again settled at its DC
   operating point with every capacitor already charged, `v`
   toggles the voltage beside every part, `c` clears the meters, Escape quits.
+- **A speaker is heard.** A circuit with a `speaker` plays the voltage across it through the
+  computer's sound output, sampled 48,000 times a second of the circuit's time, whenever the clock runs
+  at a second a second — the only speed its sound is the right pitch at; `m` mutes it. Its DC is
+  taken off and its level set the way a listener would turn the knob, so a whisper of a signal and a
+  9 V swing both play at a comfortable volume, and a circuit's rounding is silence.
 - `b` swaps the scope for **a Bode plot**: each meter's gain (in decibels, the thick line) and phase
   (the thin one) from 1 Hz to 10 MHz, for a small sine from the signal generator. It is the circuit as
   it stands — the panels' settings are the ones it uses — linearised at its operating point, so a
@@ -65,7 +70,9 @@ turn the generator up past about 50 mV and the output clips), `two_stage` (two s
 through a capacitor: 2 mV in, about 1 V out the right way up, 54 dB, with a meter between the stages
 showing each one's gain), `adder` (a full adder of nine NOR gates in resistor–transistor logic, one
 transistor each, adding switches A, B and C into a sum and a carry, each lighting an LED; a drawing
-this large keeps only the switches', LEDs' and nodes' labels), `zener` (a raw supply's 2 V of ripple
+this large keeps only the switches', LEDs' and nodes' labels), `oscillator` (a one-transistor
+phase-shift oscillator that starts itself from the jolt of switching on and plays about 530 Hz
+through a speaker; `r` to hear it start again), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
 of a rippling 15 V, the ripple cut two-hundredfold) and `wallwart` (a 5 V supply that plugs into the
 wall: 120 V at 60 Hz through a 120:9 transformer, a diode bridge and a 1000 µF reservoir, then a
@@ -97,7 +104,8 @@ Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `curre
 `closed`), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default). Also `wire`,
-`ground`, `label` (names a node) and `meter`. Waves: `dc 5`, `sine 5 1k [offset]`,
+`ground`, `label` (names a node), `meter` and `speaker` (its voice coil's resistance, 8 Ω unless it
+says; the viewer plays the voltage across it). Waves: `dc 5`, `sine 5 1k [offset]`,
 `square 0 5 1k [duty]`, `triangle -1 1 1k` (low, high, frequency), `pulse low high delay rise fall
 width period` (SPICE's), and `pwl t v t v …`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg`
 (and `1m` is a milliohm).

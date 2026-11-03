@@ -1,9 +1,10 @@
 @tests
 
 import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator, Shape}
-import sh.sysl.sdl3.{SCANCODE_B, SCANCODE_C, SCANCODE_R, SCANCODE_S}
+import sh.sysl.sdl3.{SCANCODE_B, SCANCODE_C, SCANCODE_R, SCANCODE_S, SCANCODE_M, SCANCODE_SPACE, SCANCODE_MINUS, SCANCODE_EQUALS}
 import sysl.buf.{Buf, buf}
-import sysl.math.max
+import sysl.math.{max, min, tau}
+import sysl.raw.str_cast
 import sysl.text.Search
 
 val LED = """
@@ -886,3 +887,92 @@ bode_axis_and_figures()
     assert(figure(-166.83) == "−166.8")
     assert(figure(-40.0, whole = true) == "−40")
     assert(figure(180.0, whole = true) == "180")
+
+// --- The speaker ------------------------------------------------------------------------------------
+
+private phase_shift() -> &Model = model("oscillator.amber", parse_schematic(str_cast(embed("../examples/oscillator.amber"))).unwrap())
+
+// How many times the samples `heard` cross from below zero to above it, from sample `from` on.
+private rises(heard: Buf[f32], from: usize) -> int
+    var n = 0
+
+    for k in from + 1..<heard.len()
+        if heard[k - 1] < 0.0 && heard[k] >= 0.0 then n += 1
+
+    n
+
+@test("the oscillator example starts from nothing and plays about 530 Hz through its speaker, a sample every 1/48000 s")
+oscillator_sounds()
+    val m = phase_shift()
+
+    assert(m.ear.speaker >= 0 && m.hearing())
+
+    // Three seconds, a frame at a time: the thump of switching on has faded from the levelling by then.
+    for _ in 0..<180
+        m.run(1.0 / 60.0, 8)
+
+    // Three seconds at 48 kHz.
+    assert(m.ear.heard.len() >= 143990 && m.ear.heard.len() <= 144010)
+
+    // Over its last quarter second, settled: a tone of about 530 Hz, filling the levelled range.
+    val from = m.ear.heard.len() - 12000
+    val hz = real(rises(m.ear.heard, from)) * 4.0
+    var loudest = 0.0
+
+    for k in from..<m.ear.heard.len()
+        loudest = max(loudest, real(m.ear.heard[k]).abs())
+
+    assert(hz > 480.0 && hz < 580.0)
+    assert(loudest > 0.4 && loudest <= 1.0)
+
+@test("the speaker is silent at any speed but a second a second, when muted, and when paused")
+speaker_only_in_real_time()
+    val m = phase_shift()
+
+    press(m, SCANCODE_M)
+    assert(!m.hearing() && m.ear.muted)
+    m.run(0.01, 8)
+    assert(m.ear.heard.len() == 0)
+    assert(status(m).contains("speaker muted"))
+
+    press(m, SCANCODE_M)
+    assert(m.hearing())
+    press(m, SCANCODE_MINUS)
+    assert(!m.hearing())
+    assert(status(m).contains("speaker plays at 1s a second"))
+    m.run(0.01, 8)
+    assert(m.ear.heard.len() == 0)
+
+    press(m, SCANCODE_EQUALS)
+    press(m, SCANCODE_SPACE)
+    assert(!m.hearing())
+
+    // A circuit with no speaker has nothing to hear.
+    assert(!led_model().hearing() && led_model().ear.speaker == -1)
+
+@test("the speaker's levelling: DC taken off, a swing scaled to half of full scale, and rounding left silent")
+speaker_levels()
+    var e = ear(0)
+
+    // A 1 kHz sine of 2 V on 5 V of DC, a second of it: its last cycle swings about ±0.5.
+    var hi = -1.0
+    var lo = 1.0
+
+    for k in 0..<48000
+        val v = 5.0 + 2.0 * (tau * 1000.0 * real(k) / 48000.0).sin()
+        val x = real(e.hear(v))
+
+        if k >= 47952
+            hi = max(hi, x)
+            lo = min(lo, x)
+
+    assert(hi > 0.45 && hi < 0.55 && lo < -0.45 && lo > -0.55)
+
+    // A wobble of a microvolt is all but silent.
+    var quiet = ear(0)
+    var most = 0.0
+
+    for k in 0..<4800
+        most = max(most, real(quiet.hear(1.0 + 1e-6 * (tau * 440.0 * real(k) / 48000.0).sin())).abs())
+
+    assert(most < 1e-4)

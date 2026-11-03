@@ -1,0 +1,58 @@
+# A tone from nothing: a one-transistor phase-shift oscillator playing through a speaker.
+#
+# Q1 is an amplifier like `amplifier`'s, but its input is its own output fed back through three
+# capacitor–resistor sections, along the bottom. Each section turns a sine by up to 90°, and at one
+# frequency the three together turn it by 180°, which Q1 turns by another 180°: the signal comes back
+# to the base the way it left, and if Q1 gains more than the sections lose, a ripple at that frequency
+# grows each time round. Three equal sections of 10 kΩ and 10 nF would ring at 1 / (2π · 10k · 10n ·
+# √6), about 650 Hz; the third section's resistor here is the base's divider and Q1's own input
+# together, nearer 6 kΩ, which brings it down to about 530 Hz.
+#
+# Nothing starts it but switching it on: the jolt as the capacitors charge has a little of every
+# frequency in it, and the loop picks out its own and grows it until Q1 runs out of room to swing,
+# which is what holds it there — and why it sounds a little buzzy rather than a pure sine.
+#
+# Q2 is an emitter follower, buffering the oscillator from the speaker's 8 Ω; CS keeps its DC out of
+# the speaker. The speaker plays while the clock runs at a second a second, and `m` mutes it. Press
+# `r` to hear it start again from nothing.
+
+speed 1
+
+battery   B1    30 0  30 14  9V
+wire            6 0   30 0
+wire            4 14  30 14
+ground          4 14
+
+# Q1 and its bias.
+resistor  RB1   6 0   6 7    100k
+resistor  RB2   6 7   6 14   22k
+wire            6 7   10 7
+resistor  RC    12 0  12 4   4.7k
+npn       Q1    12 4  10 7   12 9   2N3904
+resistor  RE    12 9  12 14  1k
+wire            12 9  9 9
+capacitor CE    9 9   9 14   100u
+
+# The phase-shift network, from the collector round underneath to the base.
+wire            12 4  14 4
+wire            14 4  14 16
+capacitor C1    14 16 11 16  10n
+resistor  RA    11 16 11 14  10k
+capacitor C2    11 16 8 16   10n
+resistor  RB    8 16  8 14   10k
+capacitor C3    8 16  5 16   10n
+wire            5 16  3 16
+wire            3 16  3 7
+wire            3 7   6 7
+
+# The follower and the speaker.
+wire            14 4  18 4
+wire            20 0  20 1
+npn       Q2    20 1  18 4  20 7   2N3904
+resistor  RF    20 7  20 14  220
+wire            20 7  23 7
+capacitor CS    23 7  26 7   220u
+speaker   SPK   26 7  26 14  8
+
+meter     OSC   12 4  12 14
+meter     OUT   26 7  26 14

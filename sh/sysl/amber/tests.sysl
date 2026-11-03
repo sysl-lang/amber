@@ -263,6 +263,25 @@ wave_refusals()
     assert(parse_schematic("speed 0").unwrap_err() == "line 1: a speed is more than zero")
     assert(parse_schematic("diode D1 0 0 1 0 1N4148").unwrap_err() == "line 1: '1N4148' is more than a diode takes")
 
+@test("a speaker is its voice coil to the circuit: 8 Ω unless its line says, and it takes the current through it")
+speaker_part()
+    val sch = parse_schematic("battery B1 0 0 0 4 4V\nspeaker SPK 0 0 2 0\nwire 2 0 2 4\nwire 2 4 0 4\nground 0 4").unwrap()
+    val spk = sch.elements[1]
+    val four = parse_schematic("speaker S4 4 0 4 4 4").unwrap()
+
+    assert(spk.shape == Speaker && spk.value == "8")
+    assert(sch.circuit.parts[usize(spk.part)].kind == Resistor(8.0))
+    assert(four.elements[0].value == "4" && four.circuit.parts[0].kind == Resistor(4.0))
+
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+    assert((s.current(spk.part) - 0.5).abs() < 1e-9)
+
+    assert(parse_schematic("speaker SPK 0 0 2 0 0").unwrap_err() == "line 1: a speaker's resistance is more than zero")
+    assert(parse_schematic("speaker SPK 0 0 2 0 8 loud").unwrap_err() == "line 1: 'loud' is more than a speaker takes")
+    assert(parse_schematic("speaker SPK 0 0").unwrap_err() == "line 1: a speaker is placed by 2 points")
+
 @test("a schematic starts from empty unless a start line says settled")
 start_settled()
     assert(!parse_schematic("resistor R1 0 0 1 0 1k").unwrap().settled)

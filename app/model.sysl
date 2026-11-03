@@ -2,7 +2,7 @@
 
 import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, Supply, Waveform, sim, engineering, parse_generator}
 import sh.sysl.ui_sdl.stop
-import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_B, SCANCODE_C, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
+import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_B, SCANCODE_C, SCANCODE_M, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
 import sh.sysl.plutovg
 import sh.sysl.ui.Rect
@@ -131,6 +131,12 @@ struct Model
     showing_bode: bool
     bode: Bode
     bode_stale: bool
+    // What the circuit's speaker plays, if it has one.
+    ear: Ear
+
+    // Whether the speaker is sounding: there is one, it is not muted, and the clock runs at a second a
+    // second, the only speed its sound is the right pitch at.
+    hearing(self) -> bool = self.ear.speaker >= 0 && !self.ear.muted && self.running && self.trouble == "" && self.pace() == 1.0
 
     // The Bode plot of the circuit as it stands, worked out again if anything has changed.
     refresh_bode(*self)
@@ -254,6 +260,8 @@ struct Model
         for k in 0..<self.meters.len()
             self.meters[k].forget()
 
+        self.ear.restart(0.0)
+
         // The instruments keep their settings: the circuit is started again with them as they are.
         for k in 0..<self.panels.len()
             self.panels[k].apply(&self.s, true)
@@ -264,11 +272,16 @@ struct Model
 
         self.sample()
 
-    // Run the circuit's clock forward by `span`, sampling the meters `samples` times on the way.
+    // Run the circuit's clock forward by `span`, sampling the meters `samples` times on the way, and
+    // the speaker every sample of its sound while it is sounding.
     run(*self, span: real, samples: int)
         if self.trouble != "" then return
 
         val start = self.s.time
+
+        if self.hearing()
+            self.listen(start + span, samples)
+            return
 
         for k in 1..samples
             if self.s.advance_to(start + span * real(k) / real(samples)) is Err(why)
@@ -277,6 +290,36 @@ struct Model
                 return
 
             self.sample()
+
+    // Run the clock to `end` a sample of the speaker's sound at a time, hearing the voltage across it at
+    // each, and the meters `samples` times on the way. A sound that stopped — paused, muted, at another
+    // speed — starts again from now.
+    private listen(*self, end: real, samples: int)
+        val each = sample_seconds()
+        val e = self.sch.elements[usize(self.ear.speaker)]
+        val every = max(1, int((end - self.s.time) / each) / max(1, samples))
+        var n = 0
+
+        if self.ear.next < self.s.time - each then self.ear.restart(self.s.time)
+
+        while self.ear.next <= end
+            if self.s.advance_to(self.ear.next) is Err(why)
+                self.trouble = why
+                self.running = false
+                return
+
+            self.ear.heard.push(self.ear.hear(self.s.across(e.part)))
+            self.ear.next += each
+            n += 1
+
+            if n % every == 0 then self.sample()
+
+        if self.s.advance_to(end) is Err(why)
+            self.trouble = why
+            self.running = false
+            return
+
+        self.sample()
 
     // Record every meter's reading now.
     private sample(*self)
@@ -402,7 +445,8 @@ model(file: string, sch: Schematic) -> &Model
 
     val m: &Model = Model(file, sch, sim(sch.circuit), "", buf(), false, 0, 0, -1, true, true, speed_index(sch.speed), flows,
                   parts, bases, emitters, held_segments, held_parts, held_bases, held_emitters, 0.0, 0.0,
-                  Picture(None, None), Picture(None, None), panels(sch), false, Bode(buf(), buf(), "", 0.0, ""), true)
+                  Picture(None, None), Picture(None, None), panels(sch), false, Bode(buf(), buf(), "", 0.0, ""), true,
+                  ear(first_speaker(sch)))
 
     // The meters the file places are the first ones.
     for i in 0..<sch.elements.len()
@@ -442,6 +486,13 @@ private speed_index(seconds: real) -> int
 
     best
 
+// The element that is the schematic's first speaker, or -1; the first is the one that is heard.
+first_speaker(sch: Schematic) -> int
+    for i in 0..<sch.elements.len()
+        if sch.elements[i].shape == Shape.Speaker then return int(i)
+
+    -1
+
 // What a frame does on its own: run the clock by the frame's share of the speed.
 tick(m: &Model, dt: real)
     m.sync()
@@ -453,6 +504,8 @@ tick(m: &Model, dt: real)
 
     m.run(step * m.pace(), SAMPLES_PER_FRAME)
     m.flow(step)
+
+    if m.hearing() then m.ear.play() else m.ear.hush()
 
 // The keyboard's shortcuts.
 shortcut(m: &Model, e: Event) -> bool
@@ -474,6 +527,8 @@ press(m: &Model, key: i32) -> bool
         m.values = !m.values
     elif key == SCANCODE_SPACE
         m.running = !m.running
+    elif key == SCANCODE_M
+        m.ear.muted = !m.ear.muted
     elif key == SCANCODE_R
         m.restart()
     elif key == SCANCODE_S
@@ -489,7 +544,8 @@ press(m: &Model, key: i32) -> bool
 
 // The line under the board: the clock, and what was clicked or why nothing could be solved.
 status(m: &Model) -> string
-    val clock = s"t = ${engineering(m.s.time)}s · ${engineering(m.pace())}s a second · ${if m.running then "running" else "paused"}"
+    val sound = if m.ear.speaker < 0 then "" elif m.ear.muted then " · speaker muted" elif m.pace() != 1.0 then " · speaker plays at 1s a second" else ""
+    val clock = s"t = ${engineering(m.s.time)}s · ${engineering(m.pace())}s a second · ${if m.running then "running" else "paused"}${sound}"
 
     if m.trouble != "" then return s"${clock} · cannot solve: ${m.trouble}"
 
@@ -524,6 +580,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Resistor -> s"${e.value}Ω resistor"
     Capacitor -> s"${e.value}F capacitor"
     Inductor -> s"${e.value}H inductor"
+    Speaker -> s"${e.value}Ω speaker"
     Winding -> if e.value == "" then "transformer's secondary" else s"${e.value} transformer's primary"
     Battery -> s"${e.value} battery"
     Source -> s"${e.value} source"

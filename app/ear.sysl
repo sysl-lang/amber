@@ -1,0 +1,94 @@
+// The speaker's sound: the voltage across a `speaker`, sampled in the circuit's own time and played
+// through the computer's sound output.
+//
+// **It plays only while the clock runs at a second a second.** A sample is taken every 1/48000 of a
+// second of the circuit's time and played every 1/48000 of a second of ours, so at any other speed the
+// pitch would be wrong by the ratio, and a circuit slowed to watch would be heard as a growl.
+//
+// **What reaches the speaker is levelled the way a listener would turn the knob.** Its slow average, the
+// DC a coupling capacitor would block, is taken off, and the rest is scaled so its peaks play at half
+// of full scale, with the gain following a sound that grows at once and one that fades over a couple
+// of seconds. Below `QUIETEST` volts the gain stops rising, so a circuit's rounding is silence rather
+// than hiss turned up to fill the room, and an oscillator starting from nothing is heard to grow.
+
+import sh.sysl.sdl3.{AudioStream, init_audio, open_audio_stream}
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, min}
+
+// Samples a second.
+const RATE: int = 48000
+
+// How long the DC average takes to follow a change, and the levelled peak to fall back, in seconds.
+const DC_SECONDS: real = 0.2
+const RELEASE_SECONDS: real = 2.0
+
+// The swing that plays at the level a loud one does; anything quieter plays quieter.
+const QUIETEST: real = 0.05
+
+// How much may be queued for the sound output before more is dropped rather than queued: a frame
+// arriving late should not leave the sound ever further behind.
+const MOST_QUEUED: real = 0.25
+
+struct Ear
+    // The element the speaker is, or -1 when the circuit has none.
+    speaker: int
+    muted: bool
+    // The circuit's time of the next sample, and whether one has been taken since the clock was
+    // started, which the levelling starts from.
+    next: real
+    started: bool
+    dc: real
+    peak: real
+    // The samples taken and not yet handed to the sound output.
+    heard: Buf[f32]
+    // The sound output, opened the first time there is something to play; `tried` once the opening has
+    // been attempted, so a machine with no sound output is not asked again every frame.
+    voice: Option[&AudioStream]
+    tried: bool
+
+    // Start again from the circuit's time `t`: nothing heard yet.
+    restart(*self, t: real)
+        self.next = t
+        self.started = false
+        self.heard.clear()
+
+    // The sample the speaker's voltage `v` plays as.
+    hear(*self, v: real) -> f32
+        if !self.started
+            self.dc = v
+            self.peak = 0.0
+            self.started = true
+
+        self.dc += (v - self.dc) / (DC_SECONDS * real(RATE))
+
+        val a = v - self.dc
+
+        self.peak = max(a.abs(), self.peak * (1.0 - 1.0 / (RELEASE_SECONDS * real(RATE))))
+
+        f32(max(-1.0, min(1.0, 0.5 * a / max(self.peak, QUIETEST))))
+
+    // Hand what has been heard to the sound output, opening it if it has not been, unless too much is
+    // already waiting to be played. With no sound output, what was heard is let go.
+    play(*self)
+        if !self.tried
+            self.tried = true
+
+            if init_audio() then self.voice = open_audio_stream(i32(RATE))
+
+        if self.voice is Some(v)
+            if real(v.queued()) < MOST_QUEUED * real(RATE) * 4.0 then v.put(self.heard.view())
+
+        self.heard.clear()
+
+    // Stop whatever is queued, as a pause or a mute does.
+    hush(*self)
+        if self.voice is Some(v) then v.clear()
+
+        self.heard.clear()
+end Ear
+
+// An ear for the speaker that element `speaker` is, or for none at -1.
+ear(speaker: int) -> Ear = Ear(speaker, false, 0.0, false, 0.0, 0.0, buf(), None, false)
+
+// How long a sample is, in seconds.
+sample_seconds() -> real = 1.0 / real(RATE)

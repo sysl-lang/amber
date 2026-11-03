@@ -62,6 +62,7 @@ private plot(m: &Model) -> &View = if m.showing_bode then bode_view(m) else scop
 
 const HINT: string = "two points: a meter · a switch: flip it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
 const INSTRUMENT_HINT: string = "two points: a meter · a generator: tune it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
+const SPEAKER_HINT: string = "two points: a meter · space pause · +/- speed · r restart · s settle · m mute · b bode · v values · c clear"
 const SUPPLY_HINT: string = "two points: a meter · a supply: set it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
 
 // The line of hints under the board, naming the instrument there is to click.
@@ -74,7 +75,7 @@ private hint(m: &Model) -> string
             SignalGenerator(_) -> generator = true
             BenchSupply(_) -> supply = true
 
-    if generator then INSTRUMENT_HINT elif supply then SUPPLY_HINT else HINT
+    if m.ear.speaker >= 0 then SPEAKER_HINT elif generator then INSTRUMENT_HINT elif supply then SUPPLY_HINT else HINT
 
 // --- The board --------------------------------------------------------------------------------------
 
@@ -428,6 +429,40 @@ private struct Pen
                 f.line(mid - 0.1, -0.4, mid - 0.1, 0.4)
                 f.line(mid + 0.1, -0.4, mid + 0.1, 0.4)
             Inductor -> coil(f, s0, body, 1.0)
+            Speaker ->
+                // Its magnet a box on the line, its cone flaring from the box to the left, and while
+                // it sounds, two arcs of sound beyond the cone.
+                val mid = (s0 + s1) / 2.0
+
+                f.line(s0, 0.0, mid - 0.2, 0.0)
+                f.line(mid + 0.2, 0.0, s1, 0.0)
+                self.vg.begin()
+                f.move(mid - 0.2, -0.15)
+                f.to(mid + 0.2, -0.15)
+                f.to(mid + 0.2, 0.25)
+                f.to(mid - 0.2, 0.25)
+                f.to(mid - 0.2, -0.15)
+                f.to(mid - 0.2, 0.25)
+                f.to(mid - 0.55, 0.65)
+                f.to(mid + 0.55, 0.65)
+                f.to(mid + 0.2, 0.25)
+                self.vg.stroke()
+
+                if m.hearing()
+                    self.width(2.0)
+
+                    for k in 1..2
+                        val r = 0.2 * real(k)
+
+                        self.vg.begin()
+
+                        for j in 0..12
+                            val a = pi * (0.25 + 0.5 * real(j) / 12.0)
+                            val (s, t) = (mid + (0.4 + r) * a.cos(), 0.65 + r * a.sin())
+
+                            if j == 0 then f.move(s, t) else f.to(s, t)
+
+                        self.vg.stroke()
             Winding ->
                 // A transformer's winding is a coil whose loops face away from the other winding, with
                 // the core's two bars on the side toward it and a dot at the winding's first end.
@@ -1003,7 +1038,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker -> true
     _ -> false
 
 // The text over the picture: each part's name and value, the voltage across it when values are on,
@@ -1046,6 +1081,7 @@ private labels(m: &Model, c: *Canvas, at: Place)
             Capacitor -> s"${e.value}F"
             Inductor -> s"${e.value}H"
             Winding -> e.value
+            Speaker -> s"${e.value}Ω"
             Led -> colour_name(e.colour)
             Switch -> ""
             // What it is set to now, which its panel may have changed.
