@@ -526,7 +526,7 @@ private panels(sch: Schematic) -> Buf[Panel]
     out
 
 // The speed nearest `seconds` a second, real time if the file does not say.
-private speed_index(seconds: real) -> int
+speed_index(seconds: real) -> int
     val want = if seconds > 0.0 then seconds else 1.0
     var best = 0
 

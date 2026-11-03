@@ -16,15 +16,16 @@
 // clicked, and the Bode plot showing for `--bode`, so the picture a person would see is one a machine
 // can check.
 
-import sh.sysl.amber.{parse_schematic, parse_value}
+import sh.sysl.amber.{parse_schematic, parse_value, engineering}
 import sh.sysl.ui.{Rect, render, pluto_canvas, fraction}
 import sh.sysl.ui_sdl.{app, run, system_font}
 import sh.sysl.plutovg
 import sysl.buf.{Buf, buf}
 import sysl.fs.read_text
 import sysl.text.{parse_int, split}
+import sysl.time.monotonic
 
-const USAGE: string = "amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]... [--select <name>] [--bode]"
+const USAGE: string = "amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]... [--select <name>] [--bode] [--bench <seconds>]"
 
 const WIDTH: int = 1000
 const HEIGHT: int = 720
@@ -35,6 +36,7 @@ main(args: []string) -> Result[unit, string]
     var time = 0.0
     var chosen = ""
     var bode = false
+    var bench = 0.0
     var placed: Buf[(int, int, int, int)] = buf()
     var i: usize = 1
 
@@ -56,6 +58,9 @@ main(args: []string) -> Result[unit, string]
         elif a == "--bode"
             bode = true
             i += 1
+        elif a == "--bench" && i + 1 < args.len
+            bench = parse_value(args[i + 1]).map_err(e -> s"--bench: ${e}")?
+            i += 2
         elif file == "" && !a.starts_with("--")
             file = a
             i += 1
@@ -77,6 +82,28 @@ main(args: []string) -> Result[unit, string]
         m.select(sch.find(chosen).ok_or(s"--select: ${file} has no element called '${chosen}'")?)
 
     m.showing_bode = bode
+
+    // Work out `bench` seconds of the circuit as the viewer does a frame at a time at a second a
+    // second, its speaker heard, and say how many times faster than it plays that went: no window and
+    // no sound, so nothing but the circuit is measured.
+    if bench > 0.0
+        val began = monotonic()
+        var frames = 0
+
+        m.speed = speed_index(1.0)
+        m.running = true
+
+        while m.s.time < bench && m.trouble == ""
+            m.run(1.0 / 60.0, 8)
+            frames += 1
+
+        val took = real((monotonic() - began).us) * 1e-6
+
+        print(s"${file}: ${engineering(m.s.time)}s of its sound in ${engineering(took)}s, ${m.s.time / took}× real time; ${m.s.size} unknowns, ${m.s.accepted} steps")
+
+        if m.trouble != "" then print(s"cannot solve: ${m.trouble}")
+
+        return Ok(())
 
     if shot == "" then return run(app(s"amber — ${file}", () -> screen(m), () -> GROUND, WIDTH, HEIGHT,
                                       on_event = e -> shortcut(m, e), on_frame = dt -> tick(m, dt)))

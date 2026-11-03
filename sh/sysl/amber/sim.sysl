@@ -337,8 +337,10 @@ struct Sim
         val w = 2.0 * real.pi() * hertz
         var sys: System[Complex[real]] = system(self.size)
 
-        for k in 0..<self.sys.a.len()
-            sys.a[k] = Complex.from_real(self.sys.a[k])
+        // The real system's stamped entries, as complex ones, through `at` so the complex system learns
+        // its shape.
+        for k in self.sys.touched
+            sys.at(k / self.size, k % self.size, Complex.from_real(self.sys.a[usize(k)]))
 
         for i in 0..<self.circuit.parts.len()
             val p = self.circuit.parts[i]

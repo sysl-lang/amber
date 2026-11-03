@@ -901,9 +901,10 @@ private rises(heard: Buf[f32], from: usize) -> int
 
     n
 
-@test("the oscillator example starts from nothing and plays about 530 Hz through its speaker, a sample every 1/48000 s")
+@test("the oscillator example starts from nothing and plays about 530 Hz through its speaker, a sample at the speaker's rate")
 oscillator_sounds()
     val m = phase_shift()
+    val rate = (1.0 / sample_seconds()).round()
 
     assert(m.ear.speaker >= 0 && m.hearing())
 
@@ -911,11 +912,11 @@ oscillator_sounds()
     for _ in 0..<180
         m.run(1.0 / 60.0, 8)
 
-    // Three seconds at 48 kHz.
-    assert(m.ear.heard.len() >= 143990 && m.ear.heard.len() <= 144010)
+    // Three seconds of samples.
+    assert((real(m.ear.heard.len()) - 3.0 * rate).abs() <= 10.0)
 
     // Over its last quarter second, settled: a tone of about 530 Hz, filling the levelled range.
-    val from = m.ear.heard.len() - 12000
+    val from = m.ear.heard.len() - usize(rate / 4.0)
     val hz = real(rises(m.ear.heard, from)) * 4.0
     var loudest = 0.0
 
@@ -958,11 +959,13 @@ speaker_levels()
     var hi = -1.0
     var lo = 1.0
 
-    for k in 0..<48000
-        val v = 5.0 + 2.0 * (tau * 1000.0 * real(k) / 48000.0).sin()
+    val rate = (1.0 / sample_seconds()).round()
+
+    for k in 0..<int(rate)
+        val v = 5.0 + 2.0 * (tau * 1000.0 * real(k) / rate).sin()
         val x = real(e.hear(v))
 
-        if k >= 47952
+        if real(k) >= rate - rate / 1000.0
             hi = max(hi, x)
             lo = min(lo, x)
 
@@ -973,7 +976,7 @@ speaker_levels()
     var most = 0.0
 
     for k in 0..<4800
-        most = max(most, real(quiet.hear(1.0 + 1e-6 * (tau * 440.0 * real(k) / 48000.0).sin())).abs())
+        most = max(most, real(quiet.hear(1.0 + 1e-6 * (tau * 440.0 * real(k) / rate).sin())).abs())
 
     assert(most < 1e-4)
 
@@ -1022,6 +1025,7 @@ pin_status()
 // --- A push button, and how the sound keeps up ------------------------------------------------------
 
 private kick() -> &Model = model("kick.amber", parse_schematic(str_cast(embed("../examples/kick.amber"))).unwrap())
+
 @test("a click presses a push button for 10 ms of the circuit's time and lets it go at that very moment")
 button_taps()
     val m = kick()

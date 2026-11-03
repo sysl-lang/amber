@@ -12,19 +12,35 @@ impl Entry for real
 
 impl[F: Float] Entry for Complex[F]
 
-// A dense square system `A · x = z`, solved by LU factorisation with partial pivoting.
+// A square system `A · x = z`, solved by LU factorisation with partial pivoting.
 //
-// A circuit's matrix is mostly zeros, and a large one wants a sparse factorisation; the circuits a
-// person draws on a screen have tens of unknowns, where the dense one is simpler and fast enough.
+// **It is kept dense and eliminated sparse.** A circuit's matrix is mostly zeros, a handful of
+// entries a row — a node's own conductances and its neighbours' — and so are its factors, filled in
+// only where elimination joins neighbours of neighbours. Each step of the elimination looks once at
+// the pivot's row for the entries that are not zero, and updates only the rows with something under
+// the pivot, only in those columns: the work is the factors' entries rather than `n³`. Leaving out a
+// product with zero changes no sum, so the answer is the dense elimination's to the last bit.
+//
+// **Only the entries ever written are cleared** for the next writing: those `at` has stamped and
+// those elimination has filled in, which `touched` lists, rather than all `n²`.
 struct System[T: Entry]
     n: int
     // Row-major, `n × n`.
     a: Buf[T]
     z: Buf[T]
+    // Whether each entry has ever been written, and those entries' places.
+    written: Buf[bool]
+    touched: Buf[int]
+    // Each pivot row's columns right of the diagonal that are not zero, the rows of U, one after
+    // another: row `k`'s are `cols[starts[k]..<starts[k + 1]]`. Made afresh by each `solve`.
+    cols: Buf[int]
+    starts: Buf[int]
+    // The rows below the pivot with something to eliminate, for the step at hand.
+    below: Buf[int]
 
     clear(*self)
-        for i in 0..<self.a.len()
-            self.a[i] = T.zero()
+        for k in self.touched
+            self.a[usize(k)] = T.zero()
 
         for i in 0..<self.z.len()
             self.z[i] = T.zero()
@@ -34,7 +50,10 @@ struct System[T: Entry]
     at(*self, r: int, c: int, v: T)
         if r < 0 || c < 0 then return
 
-        self.a[usize(r * self.n + c)] += v
+        val k = r * self.n + c
+
+        self.mark(k)
+        self.a[usize(k)] += v
 
     // Add `v` to the right-hand side at row `r`.
     rhs(*self, r: int, v: T)
@@ -47,6 +66,10 @@ struct System[T: Entry]
     solve(*self) -> Option[unit]
         val n = self.n
         val nothing = T.zero().magnitude()
+        val zero = T.zero()
+
+        self.cols.clear()
+        self.starts.clear()
 
         for k in 0..<n
             var p = k
@@ -61,9 +84,16 @@ struct System[T: Entry]
 
             if best <= nothing then return None
 
+            // Only the columns still to be eliminated: those left of the diagonal are never read
+            // again.
             if p != k
-                for c in 0..<n
+                for c in k..<n
                     val t = self.a[usize(k * n + c)]
+
+                    // A value moved into an entry never written makes it one to clear.
+                    if t != zero then self.mark(p * n + c)
+
+                    if self.a[usize(p * n + c)] != zero then self.mark(k * n + c)
 
                     self.a[usize(k * n + c)] = self.a[usize(p * n + c)]
                     self.a[usize(p * n + c)] = t
@@ -73,39 +103,65 @@ struct System[T: Entry]
                 self.z[usize(k)] = self.z[usize(p)]
                 self.z[usize(p)] = t
 
-            val pivot = self.a[usize(k * n + k)]
+            self.starts.push(int(self.cols.len()))
+
+            for c in k + 1..<n
+                if self.a[usize(k * n + c)] != zero then self.cols.push(c)
+
+            self.below.clear()
 
             for r in k + 1..<n
+                if self.a[usize(r * n + k)] != zero then self.below.push(r)
+
+            val pivot = self.a[usize(k * n + k)]
+            val first = usize(self.starts[usize(k)])
+            val last = self.cols.len()
+
+            for r in self.below
                 val f = self.a[usize(r * n + k)] / pivot
 
-                if f != T.zero()
-                    for c in k + 1..<n
-                        self.a[usize(r * n + c)] -= f * self.a[usize(k * n + c)]
+                for j in first..<last
+                    val at = r * n + self.cols[j]
 
-                    self.z[usize(r)] -= f * self.z[usize(k)]
+                    self.mark(at)
+                    self.a[usize(at)] -= f * self.a[usize(k * n + self.cols[j])]
+
+                self.z[usize(r)] -= f * self.z[usize(k)]
+
+        self.starts.push(int(self.cols.len()))
 
         var r = n - 1
 
         while r >= 0
             var s = self.z[usize(r)]
 
-            for c in r + 1..<n
+            for j in usize(self.starts[usize(r)])..<usize(self.starts[usize(r + 1)])
+                val c = self.cols[j]
+
                 s -= self.a[usize(r * n + c)] * self.z[usize(c)]
 
             self.z[usize(r)] = s / self.a[usize(r * n + r)]
             r -= 1
 
         Some(())
+
+    // Note entry `k` as written, so the next clearing clears it.
+    private mark(*self, k: int)
+        if !self.written[usize(k)]
+            self.written[usize(k)] = true
+            self.touched.push(k)
 end System
 
 system[T: Entry](n: int) -> System[T]
     var a: Buf[T] = buf()
     var z: Buf[T] = buf()
+    var written: Buf[bool] = buf()
 
     for _ in 0..<n * n
         a.push(T.zero())
+        written.push(false)
 
     for _ in 0..<n
         z.push(T.zero())
 
-    System(n, a, z)
+    System(n, a, z, written, buf(), buf(), buf(), buf())

@@ -16,7 +16,7 @@ import sysl.buf.{Buf, buf}
 import sysl.math.{max, min}
 
 // Samples a second.
-const RATE: int = 48000
+const RATE: int = 24000
 
 // How long the DC average takes to follow a change, and the levelled peak to fall back, in seconds.
 const DC_SECONDS: real = 0.2
