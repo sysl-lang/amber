@@ -42,10 +42,18 @@ so a small signal beside a large bias still rocks where it can be seen.
   says (from empty, or settled where it says `start settled`), `s` starts it again settled at its DC
   operating point with every capacitor already charged, `v`
   toggles the voltage beside every part, `c` clears the meters, Escape quits.
+- `b` swaps the scope for **a Bode plot**: each meter's gain (in decibels, the thick line) and phase
+  (the thin one) from 1 Hz to 10 MHz, for a small sine from the signal generator. It is the circuit as
+  it stands — the panels' settings are the ones it uses — linearised at its operating point, so a
+  transistor is its gain there. A dim line marks the generator's own frequency, and the legend gives
+  each meter's gain and phase at it.
+
+![The common-emitter amplifier's Bode plot: 27 dB from about 300 Hz up, rolling off below through its coupling capacitors](bode.png)
 
 `--shot out.png --time 10m` runs the circuit for ten milliseconds of its own time and draws that frame
-to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command line, and
-`--select G1` clicks an element, so a generator's panel can be drawn too.
+to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command line,
+`--select G1` clicks an element, so a generator's panel can be drawn too, and `--bode` draws the Bode
+plot in place of the scope.
 
 The examples: `led` (a battery, a resistor and an LED), `rc` (a capacitor charging when you close the
 switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
@@ -130,13 +138,15 @@ cli/amber-cli oracle/rc_pulse.cir
 
 reads a SPICE netlist — the format published circuits and every other simulator use — runs its
 analyses and prints their tables. The subset: `R`, `C` and `L` (with `IC=`), `V` and `I` sources
-(DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; an `AC` part is set aside; a triangle is a
+(DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; `AC magnitude [phase]` drives it for `.ac`; a triangle is a
 `PULSE` with no top, `PULSE(low high 0 T/2 T/2 0 T)`), `D` with `.model … D`
 (`IS`, `N`, `RS`, `BV` and `IBV` for a zener's breakdown, and an area), `Q` bipolar transistors (collector, base, emitter, an optional
 substrate, a model and an area) with `.model … NPN` or `PNP` (`IS`, `BF`, `BR`, `NF`, `NR`, `VAF`,
 `VAR`), `M` MOSFETs (drain, gate, source, bulk, a model, and `L=`, `W=` and `M=`, SPICE's 100 µm when
 left off) with `.model … NMOS` or `PMOS` at level 1 (`VTO`, `KP`, `LAMBDA`), `.op`, `.tran` (with
-`UIC`), `.dc`, `.end`; a `.control` block is skipped. What a netlist asks for that amber reads but does
+`UIC`), `.dc`, `.ac dec|oct|lin` (each node's `vdb`, `vp`, `vr` and `vi`, SPICE's names for a
+phasor's decibels, phase in radians, and real and imaginary parts), `.end`; a `.control` block is
+skipped. What a netlist asks for that amber reads but does
 not model — a diode's junction capacitance, a transistor's base resistance or high-injection knee, a
 MOSFET's body effect (`GAMMA`, `PHI`, a bulk not on its source) or gate oxide, `.options` — is printed
 as a note rather than dropped, and what would change the circuit and cannot be read (a junction
@@ -146,7 +156,8 @@ field-effect transistor, a MOSFET above level 1, a subcircuit, `.param`) is refu
 hundred times tighter than amber's by `oracle/generate.zsh`, which writes its answers into
 `tests_oracle.sysl`; amber agrees with them to a few parts in ten million at an operating point and
 along a sweep, and to within 0.2% of each waveform's swing through time (0.03% but for a resonant
-circuit rung for twelve cycles and an astable multivibrator's steep edges).
+circuit rung for twelve cycles and an astable multivibrator's steep edges). Across frequency, an RLC
+band-pass and two amplifiers, one bipolar and one MOSFET, agree to a few parts in ten million.
 
 ## The library
 
@@ -188,7 +199,9 @@ incremental shape is what lets a program — an emulated microcontroller, say �
 `Oscillator` (`oscillator(Waveform.Sine, 1000.0, 10e-3)`) makes its wave and, `retuned` at the moment
 of a change, carries its phase across it. `Supply(regulated(12.0, 1.0))` or
 `Supply(raw_supply(15.0, 1.0, 2.0))` is a bench power supply, changed with `set_supply` and read with
-`current_limited`; `zener_model(5.1)` is a zener. It
+`current_limited`; `zener_model(5.1)` is a zener. `response(hertz, drives)` answers a small sine:
+each source in `drives` (`drive(part, amplitude, degrees)`) driven at that frequency, every voltage
+and current comes back as a `Complex[real]` phasor, the circuit linearised at its operating point. It
 needs nothing but an allocator. What is planned is in [DESIGN.md](DESIGN.md).
 
 ```

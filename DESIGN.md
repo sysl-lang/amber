@@ -126,7 +126,11 @@ Each is a piece of work of its own, in this order.
    clock runs, and a common-emitter amplifier held to ngspice; a bench power supply (CV/CC, and raw
    with mains ripple and sag) on the same panel, a zener (BV, IBV) held to ngspice, and a zener shunt
    regulator and an emitter-follower regulator, the latter held to ngspice.~~
-5. **DC sweep and AC analysis** (complex MNA, Bode plot in the viewer).
+5. ~~**DC sweep and AC analysis**: `.dc` sweeps a source; `.ac` and `Sim.response` linearise the
+   circuit at its operating point (the Newton system written there is every part's slope) and solve
+   it with `jωC` and `jωL` added, by the same LU generic over its entry (`real` through time,
+   `Complex[real]` here, pivoting on `Magnitude`), held to ngspice on an RLC band-pass and bipolar and
+   MOSFET amplifiers; the viewer's Bode plot, each meter's gain and phase driven from the generator.~~
 6. **Sparse LU** with a symbolic factorisation reused across iterations and steps.
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save.
 8. **Benchtop's analog layer**, measured against the H747 real-time bar.

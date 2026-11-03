@@ -46,20 +46,23 @@ const REACH: real = 0.5
 const PLATE: real = 0.6
 const PLATE_HALF: real = 0.42
 
-// The whole window: the board, the scope under it with the clicked instrument's panel beside it, and
-// the status line.
+// The whole window: the board, the scope or the Bode plot under it with the clicked instrument's panel
+// beside it, and the status line.
 screen(m: &Model) -> &View =
     column([
         board(m).flex(),
         m.open_panel() match
-            Some(k) -> row([scope(m).flex(), panel_view(m.panels[k], () -> m.select(-1))])
-            None -> scope(m),
+            Some(k) -> row([plot(m).flex(), panel_view(m.panels[k], () -> m.select(-1))])
+            None -> plot(m),
         row([text(status(m)), spacer(), text(hint(m))], 10).padding(8),
     ])
 
-const HINT: string = "click two points: a meter · a switch: flip it · space pause · +/- speed · r restart · s settle · v values · c clear"
-const INSTRUMENT_HINT: string = "click two points: a meter · a generator: tune it · space pause · +/- speed · r restart · s settle · v values · c clear"
-const SUPPLY_HINT: string = "click two points: a meter · a supply: set it · space pause · +/- speed · r restart · s settle · v values · c clear"
+// What is under the board: the scope, or the Bode plot.
+private plot(m: &Model) -> &View = if m.showing_bode then bode_view(m) else scope(m)
+
+const HINT: string = "two points: a meter · a switch: flip it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
+const INSTRUMENT_HINT: string = "two points: a meter · a generator: tune it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
+const SUPPLY_HINT: string = "two points: a meter · a supply: set it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
 
 // The line of hints under the board, naming the instrument there is to click.
 private hint(m: &Model) -> string

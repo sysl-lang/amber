@@ -168,5 +168,5 @@ private trace_all(m: &Model, vg: &plutovg.Canvas, r: Rect, plot: Rect, scale: re
 
         vg.stroke()
 
-private tone(vg: &plutovg.Canvas, colour: u32) =
+tone(vg: &plutovg.Canvas, colour: u32) =
     vg.rgb(f32(int((colour >> 16) & 0xFF)) / 255.0, f32(int((colour >> 8) & 0xFF)) / 255.0, f32(int(colour & 0xFF)) / 255.0)

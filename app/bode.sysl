@@ -1,0 +1,322 @@
+// The Bode plot: how much of a small sine from the signal generator reaches each meter, and how far
+// behind or ahead of it, at every frequency from 1 Hz to 10 MHz. `b` shows it in place of the scope.
+//
+// **It is the circuit as it stands, not as it was drawn.** The panels' settings are the ones it uses:
+// a supply turned down or a generator's offset moved changes the operating point, and with it the
+// transistors' gains. The circuit is solved for that operating point in a copy of its own, so the
+// clock and the scope run on undisturbed, and each meter's curve is the phasor across it with the
+// generator driven at one volt.
+//
+// Gain is a solid line against the decibels on the left; phase is a thinner line in the same colour
+// against the degrees on the right. A dim line marks the frequency the generator is set to, and the
+// legend gives each meter's gain and phase there — what the scope shows, for a signal small enough.
+
+import sh.sysl.amber.{Schematic, Circuit, Shape, Wave, Dc, Sine, Pulse, Pwl, drive, decibels, engineering, sim}
+import sh.sysl.ui.{View, Canvas, Size, Rect, Image}
+import sh.sysl.plutovg
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, min}
+
+// The frequencies the plot runs across, and how many it visits a decade.
+const LOWEST_HZ: real = 1.0
+const HIGHEST_HZ: real = 1e7
+const PER_DECADE: int = 20
+
+// How many divisions high the plot is: a phase of ±180° is 90° a division.
+const BODE_DIVISIONS: int = 4
+
+// How far below the highest gain the plot reaches, in decibels.
+const BODE_DEPTH: real = 60.0
+
+const MARKER: u32 = 0x5A606C
+
+// What one meter reads across the frequencies, its gain in decibels and its phase in degrees, and the
+// two at the generator's frequency.
+struct Curve
+    colour: u32
+    gain: Buf[real]
+    phase: Buf[real]
+    marked_gain: real
+    marked_phase: real
+
+// The Bode plot of a circuit: the frequencies, a curve for each meter, which source drove them and the
+// frequency it is set to (0 for a steady one) — or, if it could not be drawn, why.
+struct Bode
+    hertz: Buf[real]
+    curves: Buf[Curve]
+    source: string
+    marker: real
+    trouble: string
+
+private no_bode(why: string) -> Bode = Bode(buf(), buf(), "", 0.0, why)
+
+// The frequencies the plot visits.
+bode_frequencies() -> Buf[real]
+    var out: Buf[real] = buf()
+    val decades = int((HIGHEST_HZ / LOWEST_HZ).log10().round())
+
+    for k in 0..decades * PER_DECADE
+        out.push(LOWEST_HZ * 10.0.pow(real(k) / real(PER_DECADE)))
+
+    out
+
+// The Bode plot of `circuit`, the circuit `sch` draws as it stands now, at `meters`: driven from its
+// first signal generator, or its first source if it has none.
+bode_of(sch: Schematic, circuit: Circuit, meters: Buf[Meter]) -> Bode
+    var driven = -1
+    var name = ""
+
+    for want in [Shape.Generator, Shape.Source]
+        if driven >= 0 then break
+
+        for e in sch.elements
+            if e.shape == want && e.part >= 0
+                driven = e.part
+                name = e.name
+                break
+
+    if driven < 0 then return no_bode("a Bode plot needs a signal generator or a source to drive the circuit")
+
+    if meters.len() == 0 then return no_bode("put a meter across two points to see its gain and phase here")
+
+    val wave = circuit.parts[usize(driven)].kind.wave().unwrap()
+    var s = sim(circuit)
+
+    // The driven source holds its average while the operating point is found, as it does on average
+    // while it runs.
+    s.set_wave(driven, steady(wave))
+
+    if s.operating_point() is Err(why) then return no_bode(s"cannot solve: ${why}")
+
+    val hertz = bode_frequencies()
+    val marker = frequency_of(wave)
+    var curves: Buf[Curve] = buf()
+
+    for mt in meters
+        curves.push(Curve(mt.colour, buf(), buf(), 0.0, 0.0))
+
+    // Every frequency on the plot, and last the generator's own.
+    for k in 0..hertz.len()
+        val f = if k < hertz.len() then hertz[k] else marker
+
+        if f <= 0.0 then break
+
+        val r = s.response(f, [drive(driven, 1.0, 0.0)][..]) match
+            Ok(r) -> r
+            Err(why) -> return no_bode(s"cannot solve at ${engineering(f)}Hz: ${why}")
+
+        for j in 0..<meters.len()
+            val mt = meters[j]
+            // A lead on a point no wire reaches reads nothing, as ground does.
+            val v = r.voltage(sch.node_at(mt.x1, mt.y1).unwrap_or(0)) - r.voltage(sch.node_at(mt.x2, mt.y2).unwrap_or(0))
+
+            if k < hertz.len()
+                curves[j].gain.push(decibels(v))
+                curves[j].phase.push(v.arg().to_degrees())
+            else
+                curves[j].marked_gain = decibels(v)
+                curves[j].marked_phase = v.arg().to_degrees()
+
+    Bode(hertz, curves, name, marker, "")
+
+// A wave's average over its cycle: a sine's offset, a square's or triangle's middle.
+private steady(w: Wave) -> Wave = w match
+    Dc(v) -> Dc(v)
+    Sine(offset, _, _, _, _, _) -> Dc(offset)
+    Pulse(low, high, _, _, _, _, _) -> Dc((low + high) / 2.0)
+    Pwl(_) -> Dc(w.at(0.0))
+
+// How often a wave repeats, in hertz: 0 for one that does not.
+private frequency_of(w: Wave) -> real = w match
+    Sine(_, _, f, _, _, _) -> f
+    Pulse(_, _, _, _, _, _, period) -> if period > 0.0 && period < 1e299 then 1.0 / period else 0.0
+    _ -> 0.0
+
+// The gain axis: the decibels at the top and the decibels a division, so every curve fits from its
+// highest point down to BODE_DEPTH below that, at 1, 2 or 5 times a power of ten decibels a division.
+bode_scale(curves: []const Curve) -> (real, real)
+    var hi = -1e300
+    var lo = 1e300
+
+    for c in curves
+        for g in c.gain
+            hi = max(hi, g)
+            lo = min(lo, g)
+
+    if hi < lo then return (20.0, 10.0)
+
+    lo = max(lo, hi - BODE_DEPTH)
+
+    val per_div = max(step_125(max(hi - lo, 1.0) * 1.05 / real(BODE_DIVISIONS)), 1.0)
+    // A twentieth of a division of room above the highest point, so a flat curve is not drawn on the
+    // plot's edge.
+    val top = ((hi + 0.05 * per_div) / per_div).ceil() * per_div
+
+    (top, per_div)
+
+// Decibels or degrees as a person writes them: to a tenth, or whole for `whole`, with a true minus
+// sign.
+figure(v: real, whole: bool = false) -> string
+    val tenths = if whole then (v.round() * 10.0) else (v * 10.0).round()
+    val size = tenths.abs() / 10.0
+    val text = if whole then f"${size}%.0f" else f"${size}%.1f"
+
+    if tenths < 0.0 then s"−${text}" else text
+
+private struct BodeView
+    m: &Model
+
+bode_view(m: &Model) -> &View = BodeView(m)
+
+impl View for BodeView
+    measure(&self, c: *Canvas, avail: Size) -> Size = Size(avail.w, SCOPE_HEIGHT)
+
+    paint(&self, c: *Canvas, r: Rect)
+        val m = self.m
+
+        c.fill(r, SCOPE_GROUND)
+        m.refresh_bode()
+
+        val b = m.bode
+
+        if b.trouble != ""
+            c.ink(DIM)
+            c.text(Rect(r.x + 16, r.y + r.h / 2 - 10, r.w - 32, 20), b.trouble)
+            c.unink()
+            return
+
+        // Room on the left for the decibels, on the right for the degrees and then the legend, and below
+        // for the frequencies.
+        val plot = Rect(r.x + 60, r.y + 12, r.w - 60 - 300, r.h - 34)
+        val (top, per_div) = bode_scale(b.curves.view())
+
+        if m.scope.fit(r, c.pixel_scale()) is Some(vg)
+            plot_all(b, vg, r, plot, c.pixel_scale(), top, per_div)
+            c.draw_image(r, Image(m.scope.surface.unwrap()))
+
+        c.ink(DIM)
+
+        for k in 0..BODE_DIVISIONS
+            val y = plot.y + plot.h * k / BODE_DIVISIONS - 8
+
+            c.text(Rect(r.x + 4, y, 52, 16), s"${figure(top - real(k) * per_div, whole = true)} dB")
+            c.text(Rect(plot.right() + 6, y, 44, 16), s"${figure(real(180 - 90 * k), whole = true)}°")
+
+        var decade = LOWEST_HZ
+
+        while decade <= HIGHEST_HZ * 1.000001
+            val x = plot.x + int(real(plot.w) * (decade / LOWEST_HZ).log10() / (HIGHEST_HZ / LOWEST_HZ).log10())
+
+            c.text(Rect(x - 24, plot.bottom() + 4, 48, 18), s"${engineering(decade)}Hz")
+            decade *= 10.0
+
+        c.unink()
+
+        val legend = plot.right() + 56
+        val at = if b.marker > 0.0 then s" at ${engineering(b.marker)}Hz" else ""
+
+        c.ink(DIM)
+        c.text(Rect(legend, r.y + 8, 240, 18), s"from ${b.source}${at}")
+        c.unink()
+
+        for k in 0..<m.meters.len()
+            val mt = m.meters[k]
+            val y = r.y + 32 + int(k) * 22
+
+            if y + 18 > r.bottom() || k >= b.curves.len() then break
+
+            val cv = b.curves[k]
+
+            c.fill(Rect(legend, y + 6, 14, 4), mt.colour)
+            c.ink(INK)
+            c.text(Rect(legend + 20, y, 60, 18), mt.name)
+            c.unink()
+
+            if b.marker > 0.0
+                c.ink(DIM)
+                c.text(Rect(legend + 70, y, 170, 18), s"${figure(cv.marked_gain)} dB  ${figure(cv.marked_phase)}°")
+                c.unink()
+
+// Draw the graticule, the generator's frequency and every curve into the plot's picture.
+private plot_all(b: Bode, vg: &plutovg.Canvas, r: Rect, plot: Rect, scale: real, top: real, per_div: real)
+    val left = real(plot.x - r.x)
+    val y_top = real(plot.y - r.y)
+    val w = real(plot.w)
+    val h = real(plot.h)
+    val decades = (HIGHEST_HZ / LOWEST_HZ).log10()
+    val x_of = (f: real) -> (left + w * (f / LOWEST_HZ).log10() / decades) * scale
+
+    vg.line_width(f32(scale))
+
+    for k in 0..BODE_DIVISIONS
+        tone(vg, if k == 0 || k == BODE_DIVISIONS then AXIS else GRATICULE)
+        vg.begin()
+        vg.move_to(f32(left * scale), f32((y_top + h * real(k) / real(BODE_DIVISIONS)) * scale))
+        vg.line_to(f32((left + w) * scale), f32((y_top + h * real(k) / real(BODE_DIVISIONS)) * scale))
+        vg.stroke()
+
+    var decade = LOWEST_HZ
+
+    while decade <= HIGHEST_HZ * 1.000001
+        tone(vg, if decade == LOWEST_HZ || decade >= HIGHEST_HZ * 0.999999 then AXIS else GRATICULE)
+        vg.begin()
+        vg.move_to(f32(x_of(decade)), f32(y_top * scale))
+        vg.line_to(f32(x_of(decade)), f32((y_top + h) * scale))
+        vg.stroke()
+        decade *= 10.0
+
+    if b.marker >= LOWEST_HZ && b.marker <= HIGHEST_HZ
+        tone(vg, MARKER)
+        vg.line_width(f32(1.5 * scale))
+        vg.begin()
+        vg.move_to(f32(x_of(b.marker)), f32(y_top * scale))
+        vg.line_to(f32(x_of(b.marker)), f32((y_top + h) * scale))
+        vg.stroke()
+
+    vg.line_join(plutovg.LineJoin.Round)
+
+    var xs: Buf[real] = buf()
+
+    for f in b.hertz
+        xs.push(x_of(f))
+
+    for c in b.curves
+        var gains: Buf[real] = buf()
+        var phases: Buf[real] = buf()
+
+        for g in c.gain
+            gains.push(y_top + h * (top - g) / (real(BODE_DIVISIONS) * per_div))
+
+        for p in c.phase
+            phases.push(y_top + h * (180.0 - p) / 360.0)
+
+        tone(vg, c.colour)
+        vg.line_width(f32(1.2 * scale))
+        // A phase wrapping round from -180° to 180° jumps the plot's height, and is not joined.
+        trace(vg, xs, phases, scale, y_top, y_top + h, h / 2.0)
+        vg.line_width(f32(2.2 * scale))
+        trace(vg, xs, gains, scale, y_top, y_top + h, 1e300)
+
+// A line through the points at `xs` and `ys`, `xs` in device pixels and `ys` in the picture's points,
+// broken where it leaves the plot between `top` and `bottom` or where two neighbours are more than
+// `jump` apart.
+private trace(vg: &plutovg.Canvas, xs: Buf[real], ys: Buf[real], scale: real, top: real, bottom: real, jump: real)
+    var started = false
+
+    vg.begin()
+
+    for k in 0..<ys.len()
+        val y = ys[k]
+
+        if y < top - 0.5 || y > bottom + 0.5
+            started = false
+            continue
+
+        if started && (y - ys[k - 1]).abs() <= jump
+            vg.line_to(f32(xs[k]), f32(y * scale))
+        else
+            vg.move_to(f32(xs[k]), f32(y * scale))
+
+        started = true
+
+    vg.stroke()

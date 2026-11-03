@@ -1,7 +1,7 @@
 @tests
 
 import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator}
-import sh.sysl.sdl3.{SCANCODE_R, SCANCODE_S}
+import sh.sysl.sdl3.{SCANCODE_B, SCANCODE_C, SCANCODE_R, SCANCODE_S}
 import sysl.buf.{Buf, buf}
 import sysl.math.max
 import sysl.text.Search
@@ -752,3 +752,111 @@ channel_reach()
 
     for j in 0..<mt.times.len()
         if mt.times[j] >= 1e-3 then assert(mt.readings[j] >= lo && mt.readings[j] <= hi)
+
+// --- The Bode plot ----------------------------------------------------------------------------------
+
+// The bench's R1 and C1 behind the generator's 50 Ω: a low-pass with its corner at 1/(2π · 1050 Ω ·
+// 100 nF), about 1.5 kHz.
+private bench_response(f: real) -> (real, real)
+    val x = 2.0 * real.pi() * f * 1050.0 * 100e-9
+
+    (-10.0 * (1.0 + x * x).log10(), -x.atan().to_degrees())
+
+@test("the Bode plot is each meter's gain and phase from the generator, at every frequency and at its own")
+bode_of_the_bench()
+    val m = bench()
+
+    m.refresh_bode()
+
+    val b = m.bode
+
+    assert(b.trouble == "" && b.source == "G1" && b.marker == 1e3)
+    // From 1 Hz to 10 MHz, twenty a decade, both ends included.
+    assert(b.hertz.len() == 141 && b.hertz[0] == 1.0 && (b.hertz[140] - 1e7).abs() < 1e-3)
+    assert(b.curves.len() == 1)
+
+    val c = b.curves[0]
+
+    for k in [0, 60, 66, 80, 140]
+        val (gain, phase) = bench_response(b.hertz[k])
+
+        assert((c.gain[k] - gain).abs() < 1e-6)
+        assert((c.phase[k] - phase).abs() < 1e-6)
+
+    val (gain, phase) = bench_response(1e3)
+
+    assert((c.marked_gain - gain).abs() < 1e-6 && (c.marked_phase - phase).abs() < 1e-6)
+    assert(c.colour == m.meters[0].colour)
+
+@test("b shows the Bode plot in place of the scope, and it is worked out again when the circuit or its meters change")
+bode_follows_changes()
+    val m = bench()
+
+    assert(!m.showing_bode)
+    assert(press(m, SCANCODE_B))
+    assert(m.showing_bode)
+    m.refresh_bode()
+    assert(!m.bode_stale && m.bode.marker == 1e3)
+
+    // The generator turned to 2 kHz: the plot marks it there.
+    m.panels[0].knobs[0].set(2e3)
+    tick(m, 0.01)
+    assert(m.bode_stale)
+    m.refresh_bode()
+    assert(close(m.bode.marker, 2e3) && m.bode.marker == osc(m).frequency)
+
+    // A second meter, across the resistor, is a second curve: a high-pass, reaching the 1000/1050 of the
+    // generator's volt its 50 Ω leaves, 0.42 dB down.
+    m.add_meter(0, 0, 4, 0)
+    m.refresh_bode()
+    assert(m.bode.curves.len() == 2)
+    assert((m.bode.curves[1].gain[140] - 20.0 * (1000.0 / 1050.0).log10()).abs() < 1e-3)
+    assert(m.bode.curves[1].gain[0] < -60.0)
+
+    // Cleared, there is nothing to plot, and the plot says so.
+    press(m, SCANCODE_C)
+    m.refresh_bode()
+    assert(m.bode.trouble == "put a meter across two points to see its gain and phase here")
+    assert(press(m, SCANCODE_B) && !m.showing_bode)
+
+@test("a square wave's frequency is marked and the operating point is found at its middle; a circuit with nothing to drive it says so")
+bode_square_and_undriven()
+    val m = bench()
+
+    m.panels[0].choices[0].chosen.set(1)
+    m.panels[0].knobs[2].set(1.0)
+    m.sync()
+    m.refresh_bode()
+    assert(m.bode.marker == 1e3 && m.bode.trouble == "")
+    // A dc generator repeats at no frequency: nothing is marked.
+    m.panels[0].choices[0].chosen.set(3)
+    m.sync()
+    m.refresh_bode()
+    assert(m.bode.marker == 0.0 && m.bode.curves.len() == 1)
+
+    val led = led_model()
+
+    led.refresh_bode()
+    assert(led.bode.trouble == "a Bode plot needs a signal generator or a source to drive the circuit")
+
+@test("the gain axis reaches 60 dB below the top at 1-2-5 decibels a division, and figures read as a person writes them")
+bode_axis_and_figures()
+    val flat = Curve(0, buf(), buf(), 0.0, 0.0)
+
+    flat.gain.push(27.1)
+    flat.gain.push(-200.0)
+    // 60 dB below 27.1 needs 20 dB a division over four; the top clears the highest point.
+    assert(bode_scale([flat][..]) == (40.0, 20.0))
+
+    val narrow = Curve(0, buf(), buf(), 0.0, 0.0)
+
+    narrow.gain.push(-0.2)
+    narrow.gain.push(-3.0)
+    assert(bode_scale([narrow][..]) == (0.0, 1.0))
+    assert(bode_scale([][..]) == (20.0, 10.0))
+
+    assert(figure(27.14) == "27.1")
+    assert(figure(-0.04) == "0.0")
+    assert(figure(-166.83) == "−166.8")
+    assert(figure(-40.0, whole = true) == "−40")
+    assert(figure(180.0, whole = true) == "180")

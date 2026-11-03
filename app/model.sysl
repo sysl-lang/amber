@@ -2,7 +2,7 @@
 
 import sh.sysl.amber.{Schematic, Element, Shape, Sim, Colour, Switch, Supply, Waveform, sim, engineering, parse_generator}
 import sh.sysl.ui_sdl.stop
-import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_C, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
+import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_B, SCANCODE_C, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
 import sh.sysl.plutovg
 import sh.sysl.ui.Rect
@@ -126,6 +126,18 @@ struct Model
     // The controls of every part that has settings to turn, one panel each, kept while the circuit
     // runs and across a restart.
     panels: Buf[Panel]
+    // Whether the Bode plot is showing in place of the scope; the plot; and whether the circuit or its
+    // meters have changed since it was worked out.
+    showing_bode: bool
+    bode: Bode
+    bode_stale: bool
+
+    // The Bode plot of the circuit as it stands, worked out again if anything has changed.
+    refresh_bode(*self)
+        if !self.bode_stale then return
+
+        self.bode = bode_of(self.sch, self.s.circuit, self.meters)
+        self.bode_stale = false
 
     // A click on element `i`, or on nothing for -1: it is selected, a switch flips, and a part with
     // settings shows its panel.
@@ -151,6 +163,8 @@ struct Model
 
         for k in 0..<self.panels.len()
             if self.panels[k].sync(&self.s) then any = true
+
+        if any then self.bode_stale = true
 
         any
 
@@ -190,6 +204,7 @@ struct Model
             called = s"M${n}"
 
         self.meters.push(Meter(called, x1, y1, x2, y2, colour, buf(), buf()))
+        self.bode_stale = true
 
     private meter_named(self, name: string) -> bool
         for k in 0..<self.meters.len()
@@ -387,7 +402,7 @@ model(file: string, sch: Schematic) -> &Model
 
     val m: &Model = Model(file, sch, sim(sch.circuit), "", buf(), false, 0, 0, -1, true, true, speed_index(sch.speed), flows,
                   parts, bases, emitters, held_segments, held_parts, held_bases, held_emitters, 0.0, 0.0,
-                  Picture(None, None), Picture(None, None), panels(sch))
+                  Picture(None, None), Picture(None, None), panels(sch), false, Bode(buf(), buf(), "", 0.0, ""), true)
 
     // The meters the file places are the first ones.
     for i in 0..<sch.elements.len()
@@ -452,6 +467,9 @@ press(m: &Model, key: i32) -> bool
     elif key == SCANCODE_C
         m.meters.clear()
         m.probing = false
+        m.bode_stale = true
+    elif key == SCANCODE_B
+        m.showing_bode = !m.showing_bode
     elif key == SCANCODE_V
         m.values = !m.values
     elif key == SCANCODE_SPACE
