@@ -23,6 +23,8 @@ import sh.sysl.plutovg
 import sysl.buf.{Buf, buf}
 import sysl.fs.read_text
 import sysl.text.{parse_int, split}
+import sysl.sync.Atomic
+import sysl.threads.Mutex
 import sysl.time.monotonic
 
 const USAGE: string = "amber <file.amber> [--shot <out.png> [--time <seconds>]] [--meter x1,y1,x2,y2]... [--select <name>] [--bode] [--bench <seconds>]"
@@ -73,6 +75,12 @@ main(args: []string) -> Result[unit, string]
     val sch = parse_schematic(text).map_err(e -> s"${file}: ${e}")?
     val m = model(file, sch)
 
+    // In the window the circuit runs on a thread of its own, from a second reading of its file, and
+    // `m` is what the window draws; a picture or a measurement runs it here.
+    val windowed = shot == "" && bench == 0.0
+
+    m.remote = windowed
+
     for k in 0..<placed.len()
         val (x1, y1, x2, y2) = placed[k]
 
@@ -105,8 +113,18 @@ main(args: []string) -> Result[unit, string]
 
         return Ok(())
 
-    if shot == "" then return run(app(s"amber — ${file}", () -> screen(m), () -> GROUND, WIDTH, HEIGHT,
-                                      on_event = e -> shortcut(m, e), on_frame = dt -> tick(m, dt)))
+    if windowed
+        val link: &sync Link = Link(Mutex.new(model(file.copy(), parse_schematic(text).map_err(e -> s"${file}: ${e}")?)), Atomic(0))
+
+        link.engine.with((p) -> as_engine(*p))
+
+        val thread = start_thread(link).ok_or("the circuit's own thread would not start")?
+        val shown = run(app(s"amber — ${file}", () -> screen(m), () -> GROUND, WIDTH, HEIGHT,
+                            on_event = e -> shortcut(m, e), on_frame = dt -> frame(m, link, dt)))
+
+        link.quit.store(1)
+        thread.join()
+        return shown
 
     m.running = false
 

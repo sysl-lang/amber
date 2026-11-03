@@ -1,0 +1,70 @@
+module sh.sysl.amber
+@tests
+
+import sysl.raw.str_cast
+
+// A simulation that mirrors another reads exactly as the other does, part by part, and stays its own:
+// the other running on changes nothing in it until it mirrors again.
+
+// Every reading `a` gives, `b` gives too.
+private reads_alike(a: Sim, b: Sim) -> bool
+    if a.time != b.time then return false
+
+    for n in 0..<a.circuit.node_count()
+        if a.voltage(n) != b.voltage(n) then return false
+
+    for i in 0..<a.circuit.parts.len()
+        val k = int(i)
+
+        if a.across(k) != b.across(k) || a.current(k) != b.current(k) then return false
+
+        for t in 0..<a.circuit.parts[i].kind.terminals()
+            if a.terminal_current(k, t) != b.terminal_current(k, t) then return false
+
+    true
+
+@test("a mirror of a running circuit reads as it does — op-amp, capacitors, a pressed button — and keeps its own numbers after")
+mirror_reads_alike()
+    val text = str_cast(embed("../../../examples/kick.amber"))
+    val first = parse_schematic(text).unwrap()
+    val second = parse_schematic(text).unwrap()
+    var a = sim(first.circuit)
+    var b = sim(second.circuit)
+    val s1 = first.elements[usize(first.find("S1").unwrap())].part
+
+    assert(a.operating_point().is_ok() && b.operating_point().is_ok())
+    a.set_switch(s1, true)
+    assert(a.advance_to(5e-3).is_ok())
+    assert(!reads_alike(a, b))
+
+    b.mirror(a)
+    assert(reads_alike(a, b))
+    assert(b.circuit.parts[usize(s1)].kind == Switch(true))
+    assert(b.accepted == a.accepted)
+
+    // `a` runs on with the button let go; `b` is where it was, until it mirrors again.
+    val was = b.across(s1)
+    val at = b.time
+
+    a.set_switch(s1, false)
+    assert(a.advance_to(8e-3).is_ok())
+    assert(b.time == at && b.across(s1) == was && b.circuit.parts[usize(s1)].kind == Switch(true))
+    b.mirror(a)
+    assert(reads_alike(a, b) && b.circuit.parts[usize(s1)].kind == Switch(false))
+
+@test("a mirror takes on how each pin is set, and its diodes and transistors read off the same lines")
+mirror_pins()
+    val text = str_cast(embed("../../../examples/pins.amber"))
+    val first = parse_schematic(text).unwrap()
+    val second = parse_schematic(text).unwrap()
+    var a = sim(first.circuit)
+    var b = sim(second.circuit)
+    val gp = first.elements[usize(first.find("GP2").unwrap())].part
+
+    assert(a.operating_point().is_ok() && b.operating_point().is_ok())
+    a.set_pin(gp, PinMode.High, Pull.Floating)
+    assert(a.advance_to(1e-3).is_ok())
+
+    b.mirror(a)
+    assert(reads_alike(a, b))
+    assert(b.circuit.parts[usize(gp)].kind == a.circuit.parts[usize(gp)].kind)

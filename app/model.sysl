@@ -31,6 +31,21 @@ const HOLD_SECONDS: real = 1.0
 // The colours meters are drawn in, one each, in the order they were placed.
 val METER_COLOURS = [0xFFB030, 0x4FD1E8, 0xE86FD8, 0x9BE15D, 0xFF6B6B, 0xB79CFF]
 
+// The most settings a panel has: a power supply's two choices and three knobs.
+const MOST_SETTINGS: int = 5
+
+// Something done in the window that the circuit, running on its own thread, has still to be told of.
+enum Change
+    // Element `element` clicked: a switch flipped, a button pressed, a pin sent round its modes.
+    Toggle(element: int)
+    // The circuit started again, at its operating point if `settled`.
+    Start(settled: bool)
+    // Panel `panel`'s settings turned to the first `count` of `values`.
+    Settings(panel: int, values: [MOST_SETTINGS]real, count: int)
+    // A meter put across two grid points, or every meter taken away.
+    AddMeter(x1: int, y1: int, x2: int, y2: int)
+    ClearMeters
+
 // A voltmeter: its red lead on one grid point and its black lead on another, and what it has read.
 struct Meter
     name: string
@@ -140,6 +155,15 @@ struct Model
     // The push buttons pressed and not yet let go: each one's part, and the circuit's time it is let go.
     pressed: Buf[(int, real)]
 
+    // Whether the circuit runs on a thread of its own, this model being the window's copy of it, which
+    // runs nothing and draws what it is handed; and what has been done in the window since it was
+    // last handed over.
+    remote: bool
+    changes: Buf[Change]
+    // Whether this is the copy on that thread, whose panels are told their settings rather than read
+    // from controls.
+    engine: bool
+
     // Whether the speaker is sounding: there is one, it is not muted, and the clock runs at a second a
     // second, the only speed its sound is the right pitch at.
     hearing(self) -> bool = self.ear.speaker >= 0 && !self.ear.muted && self.running && self.trouble == "" && self.pace() == 1.0
@@ -174,7 +198,17 @@ struct Model
         var any = false
 
         for k in 0..<self.panels.len()
-            if self.panels[k].sync(&self.s) then any = true
+            if self.panels[k].sync(&self.s)
+                any = true
+
+                if self.remote
+                    val now = self.panels[k].applied
+                    var values: [MOST_SETTINGS]real = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+                    for j in 0..<min(now.len(), usize(MOST_SETTINGS))
+                        values[j] = now[j]
+
+                    self.changes.push(Settings(int(k), values, int(now.len())))
 
         if any then self.bode_stale = true
 
@@ -218,6 +252,15 @@ struct Model
         self.meters.push(Meter(called, x1, y1, x2, y2, colour, buf(), buf()))
         self.bode_stale = true
 
+        if self.remote then self.changes.push(AddMeter(x1, y1, x2, y2))
+
+    // Take every meter away.
+    clear_meters(*self)
+        self.meters.clear()
+        self.bode_stale = true
+
+        if self.remote then self.changes.push(ClearMeters)
+
     private meter_named(self, name: string) -> bool
         for k in 0..<self.meters.len()
             if self.meters[k].name == name then return true
@@ -242,6 +285,12 @@ struct Model
     // listening, driving high, driving low.
     toggle(*self, i: int)
         val e = self.sch.elements[usize(i)]
+
+        // The circuit's own thread does it, at the moment the circuit has reached.
+        if self.remote
+            if e.shape == Shape.Pin || e.shape == Shape.Button || e.shape == Shape.Switch then self.changes.push(Toggle(i))
+
+            return
 
         if e.shape == Shape.Pin
             if self.s.circuit.parts[usize(e.part)].kind is Pin(d)
@@ -292,6 +341,22 @@ struct Model
     // Start the circuit again, forgetting what the meters read: `settled` at its DC operating point,
     // every capacitor charged and every inductor's current steady, or else switched on from empty.
     start(*self, settled: bool)
+        // The circuit's own thread starts it; the window forgets what it has drawn, and is handed the
+        // circuit as it starts.
+        if self.remote
+            self.trouble = ""
+            self.most_amps = 0.0
+            forget(&self.segment_hold)
+            forget(&self.part_hold)
+            forget(&self.base_hold)
+            forget(&self.emitter_hold)
+
+            for k in 0..<self.meters.len()
+                self.meters[k].forget()
+
+            self.changes.push(Start(settled))
+            return
+
         self.s = sim(self.sch.circuit)
         self.trouble = ""
         self.most_amps = 0.0
@@ -310,7 +375,7 @@ struct Model
 
         // The instruments keep their settings: the circuit is started again with them as they are.
         for k in 0..<self.panels.len()
-            self.panels[k].apply(&self.s, true)
+            if self.engine then self.panels[k].apply_settings(&self.s, self.panels[k].applied, true) else self.panels[k].apply(&self.s, true)
 
         if (if settled then self.s.operating_point() else self.s.power_on()) is Err(why)
             self.trouble = why
@@ -495,7 +560,7 @@ model(file: string, sch: Schematic) -> &Model
     val m: &Model = Model(file, sch, sim(sch.circuit), "", buf(), false, 0, 0, -1, true, true, speed_index(sch.speed), flows,
                   parts, bases, emitters, held_segments, held_parts, held_bases, held_emitters, 0.0, 0.0,
                   Picture(None, None), Picture(None, None), panels(sch), false, Bode(buf(), buf(), "", 0.0, ""), true,
-                  ear(first_speaker(sch)), buf())
+                  ear(first_speaker(sch)), buf(), false, buf(), false)
 
     // The meters the file places are the first ones.
     for i in 0..<sch.elements.len()
@@ -569,6 +634,11 @@ tick(m: &Model, dt: real)
     // A frame late by more than a tenth of a second does not owe the time it lost.
     val step = min(dt, 0.1)
 
+    // The circuit's own thread runs the clock and plays the sound; the window moves its dots.
+    if m.remote
+        m.flow(step)
+        return
+
     m.run(step * m.pace(), SAMPLES_PER_FRAME)
     m.flow(step)
 
@@ -585,9 +655,8 @@ press(m: &Model, key: i32) -> bool
     if key == SCANCODE_ESCAPE
         if m.probing then m.probing = false else stop()
     elif key == SCANCODE_C
-        m.meters.clear()
+        m.clear_meters()
         m.probing = false
-        m.bode_stale = true
     elif key == SCANCODE_B
         m.showing_bode = !m.showing_bode
     elif key == SCANCODE_V

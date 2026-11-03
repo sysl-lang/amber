@@ -111,8 +111,28 @@ struct Sim
     // on; zero unless `set_initial` says otherwise.
     initial: Buf[real]
 
+    // Take on what `other`, a simulation of the same circuit, has reached: its time, its solution and
+    // what every part was linearised at and holds, and how each switch and pin stands. Every reading —
+    // `voltage`, `current`, `across`, `terminal_current` — then answers as `other`'s does. This is how
+    // a circuit run on a thread of its own is read from another, a copy taken while the two hold a
+    // lock, and the copy read once it is let go; nothing is solved.
+    mirror(*self, other: Sim)
+        self.time = other.time
+        self.accepted = other.accepted
+        self.rejected = other.rejected
+        copy_into(&self.x, other.x)
+        copy_into(&self.junction, other.junction)
+        copy_into(&self.held_v, other.held_v)
+        copy_into(&self.held_i, other.held_i)
+
+        for i in 0..<min(self.circuit.parts.len(), other.circuit.parts.len())
+            other.circuit.parts[i].kind match
+                Switch(closed) -> self.circuit.parts[i].kind = Switch(closed)
+                Pin(d) -> self.circuit.parts[i].kind = Pin(d)
+                _ -> ()
+
     // The voltage at node `node` against ground.
-    voltage(self, node: int) -> real = if node <= 0 then 0.0 else self.x[usize(node - 1)]
+    voltage(self, node: int) -> real =if node <= 0 then 0.0 else self.x[usize(node - 1)]
 
     // The voltage at the node called `name`; 0 for a name the circuit does not have.
     voltage_at(self, name: string) -> real = self.circuit.find_node(name) match
@@ -1427,6 +1447,13 @@ private[amber] limvds(want: real, was: real) -> real
         return want
 
     if want > was then min(want, 4.0) else max(want, -0.5)
+
+// Overwrite `to` with `from`'s numbers, element by element, so `to` stays its own buffer.
+private copy_into(to: *Buf[real], from: Buf[real])
+    to.clear()
+
+    for k in 0..<from.len()
+        to.push(from[k])
 
 // The voltage above which a junction of saturation current `is`, on thermal voltage `nvt`, has its
 // steps limited: where its curve bends hardest.

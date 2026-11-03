@@ -6,6 +6,9 @@ import sysl.buf.{Buf, buf}
 import sysl.math.{max, min, tau}
 import sysl.raw.str_cast
 import sysl.text.Search
+import sysl.sync.Atomic
+import sysl.threads.Mutex
+import sysl.time.{sleep, millis}
 
 val LED = """
     battery  B1  0 0  0 6  9V
@@ -1079,3 +1082,206 @@ headroom_fades()
         e.account(0.002, 1.0 / 60.0)
 
     assert(e.headroom() > 7.0)
+
+// --- The circuit on a thread of its own -------------------------------------------------------------
+
+// The window's model of `text` and the one a thread would run, each read from it separately, paired
+// as the window pairs them; nothing is started, so a test works the thread's copy itself.
+private paired(text: string) -> (&Model, &Model)
+    val ui = model("a.amber", parse_schematic(text).unwrap())
+    val e = model("a.amber", parse_schematic(text).unwrap())
+
+    ui.remote = true
+    e.engine = true
+    (ui, e)
+
+@test("the window's copy runs no clock of its own: a click waits for the handover, and the thread's time and readings come back")
+remote_runs_nothing()
+    val (ui, e) = paired(RC)
+    val s1 = ui.sch.find("S1").unwrap()
+    val part = usize(ui.sch.elements[usize(s1)].part)
+
+    // Clicked: the switch is still open in both until the copies are put side by side.
+    ui.toggle(s1)
+    tick(ui, 0.1)
+    assert(ui.s.time == 0.0 && e.s.time == 0.0)
+    assert(ui.s.circuit.parts[part].kind == Switch(false) && e.s.circuit.parts[part].kind == Switch(false))
+
+    exchange(ui, e)
+    assert(e.s.circuit.parts[part].kind == Switch(true) && ui.s.circuit.parts[part].kind == Switch(true))
+    assert(ui.changes.len() == 0)
+
+    // The thread works a second; the window sees where it got to, reading what it reads.
+    work(e, 1.0 / 60.0)
+    exchange(ui, e)
+    assert(ui.s.time == e.s.time && ui.s.time > 0.0)
+    assert(ui.reading(ui.meters[0]) == e.reading(e.meters[0]))
+    assert(ui.s.current(int(part)) == e.s.current(int(part)) && ui.s.current(int(part)).abs() > 0.0)
+    assert(ui.most_amps == e.most_amps && ui.most_amps > 0.0)
+
+    // Its meter has the thread's samples, which the thread hands over once and forgets.
+    assert(ui.meters[0].times.len() > 1 && e.meters[0].times.len() == 0)
+
+    val had = ui.meters[0].times.len()
+
+    exchange(ui, e)
+    assert(ui.meters[0].times.len() == had)
+    assert(ui.meters[0].times[had - 1] == ui.s.time)
+
+@test("the thread's copy works the time that passed at the clock's speed, and none while paused or after trouble")
+remote_work_paces()
+    val (ui, e) = paired(RC)
+
+    work(e, 0.02)
+    assert(close(e.s.time, 0.02))
+
+    // A late stretch owes no more than a tenth of a second.
+    work(e, 3.0)
+    assert(close(e.s.time, 0.12))
+
+    // Paused in the window, paused on the thread.
+    ui.running = false
+    exchange(ui, e)
+    work(e, 0.02)
+    assert(close(e.s.time, 0.12))
+
+    val (bad, stuck) = paired("battery B1 0 0 0 1 5\nwire 0 0 0 1\nground 0 1")
+
+    exchange(bad, stuck)
+    assert(bad.trouble != "" && bad.trouble == stuck.trouble)
+    assert(status(bad).contains("cannot solve:"))
+
+@test("a restart in the window starts the thread's copy again, and both forget what the meters read")
+remote_restart()
+    val (ui, e) = paired(RC)
+
+    ui.toggle(ui.sch.find("S1").unwrap())
+    exchange(ui, e)
+    work(e, 0.05)
+    exchange(ui, e)
+    assert(ui.s.time > 0.0)
+
+    press(ui, SCANCODE_R)
+    assert(ui.meters[0].times.len() == 0)
+    exchange(ui, e)
+    assert(ui.s.time == 0.0 && e.s.time == 0.0)
+    // The switch is back as the file has it, and the meter holds just the restart's reading.
+    assert(ui.s.circuit.parts[usize(ui.sch.elements[usize(ui.sch.find("S1").unwrap())].part)].kind == Switch(false))
+    assert(ui.meters[0].times.len() == 1 && ui.meters[0].times[0] == 0.0)
+
+@test("a knob turned in the window reaches the thread's copy, whose generator carries its cycle on from the thread's own time")
+remote_knob()
+    val (ui, e) = paired(BENCH)
+    val part = usize(e.panels[0].part)
+
+    // The thread is 2.3 ms in; the window was last handed 1 ms.
+    e.run(1e-3, 8)
+    exchange(ui, e)
+    e.run(1.3e-3, 8)
+
+    ui.panels[0].knobs[0].set(2000.0)
+    ui.panels[0].knobs[1].set(3.0)
+    tick(ui, 0.0)
+    exchange(ui, e)
+
+    val o = osc(e)
+
+    assert(close(o.frequency, 2000.0) && close(o.amplitude, 3.0))
+    assert(o.start == e.s.time && close(o.phase, 0.3))
+    assert(e.s.circuit.parts[part].kind == Generator(o.wave(), 50.0))
+    assert(e.panels[0].applied.len() == 4 && e.panels[0].applied[1] == ui.panels[0].knobs[0].value())
+
+    // A restart on the thread keeps the setting and starts its cycle afresh.
+    ui.restart()
+    exchange(ui, e)
+    assert(close(osc(e).frequency, 2000.0) && osc(e).start == 0.0 && osc(e).phase == 0.0)
+
+@test("a waveform chosen in the window is handed over as its number")
+remote_waveform()
+    val (ui, e) = paired(BENCH)
+
+    ui.panels[0].choices[0].chosen.set(2)
+    tick(ui, 0.0)
+    exchange(ui, e)
+    assert(osc(e).form == Waveform.Triangle)
+
+@test("a push button clicked in the window is let go by the thread's copy at exactly 10 ms, and the window sees both")
+remote_button()
+    val text = str_cast(embed("../examples/kick.amber"))
+    val (ui, e) = paired(text)
+    val s1 = ui.sch.find("S1").unwrap()
+    val part = usize(ui.sch.elements[usize(s1)].part)
+
+    e.run(0.05, 8)
+    ui.select(s1)
+    exchange(ui, e)
+    assert(e.pressed.len() == 1 && ui.s.circuit.parts[part].kind == Switch(true))
+
+    e.run(9e-3, 8)
+    exchange(ui, e)
+    assert(ui.s.circuit.parts[part].kind == Switch(true))
+    e.run(2e-3, 8)
+    exchange(ui, e)
+    assert(ui.s.circuit.parts[part].kind == Switch(false) && e.pressed.len() == 0)
+
+@test("a pin clicked in the window goes round its modes on the thread's copy")
+remote_pin()
+    val text = str_cast(embed("../examples/pins.amber"))
+    val (ui, e) = paired(text)
+    val gp = ui.sch.find("GP2").unwrap()
+    val part = usize(ui.sch.elements[usize(gp)].part)
+    val before = e.s.circuit.parts[part].kind
+
+    ui.select(gp)
+    exchange(ui, e)
+    assert(e.s.circuit.parts[part].kind != before)
+    assert(ui.s.circuit.parts[part].kind == e.s.circuit.parts[part].kind)
+
+@test("meters placed and cleared in the window are placed and cleared on the thread's copy, and read alike")
+remote_meters()
+    val (ui, e) = paired(RC)
+
+    ui.add_meter(3, 0, 7, 0)
+    exchange(ui, e)
+    assert(e.meters.len() == 2 && e.meters[1].x1 == 3 && e.meters[1].x2 == 7)
+
+    ui.toggle(ui.sch.find("S1").unwrap())
+    exchange(ui, e)
+    work(e, 0.05)
+    exchange(ui, e)
+    assert(ui.meters[1].times.len() > 0)
+    assert(ui.meters[1].readings[ui.meters[1].times.len() - 1] == ui.reading(ui.meters[1]))
+
+    press(ui, SCANCODE_C)
+    exchange(ui, e)
+    assert(ui.meters.len() == 0 && e.meters.len() == 0)
+
+@test("a mute and a speed set in the window are the thread's")
+remote_mute_and_speed()
+    val (ui, e) = paired(RC)
+
+    press(ui, SCANCODE_M)
+    press(ui, SCANCODE_MINUS)
+    exchange(ui, e)
+    assert(e.ear.muted && e.speed == ui.speed && e.pace() < 1.0)
+
+@test("on a real thread, the circuit runs while the window only hands over, and stops when told")
+remote_thread()
+    val ui = model("rc.amber", parse_schematic(RC).unwrap())
+    val link: &sync Link = Link(Mutex.new(model("rc.amber", parse_schematic(RC).unwrap())), Atomic(0))
+
+    ui.remote = true
+    link.engine.with((p) -> as_engine(*p))
+    ui.toggle(ui.sch.find("S1").unwrap())
+
+    val thread = start_thread(link).unwrap()
+
+    frame(ui, link, 0.0)
+    sleep(millis(50))
+    frame(ui, link, 0.0)
+    link.quit.store(1)
+    assert(thread.join())
+
+    // Fifty milliseconds of ours is about as much of the circuit's at a second a second, charging C1.
+    assert(ui.s.time > 0.01 && ui.s.time < 1.0)
+    assert(ui.reading(ui.meters[0]) > 0.0)

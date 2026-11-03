@@ -89,10 +89,7 @@ struct Ear
     // Hand what has been heard to the sound output, opening it if it has not been, unless too much is
     // already waiting to be played. With no sound output, what was heard is let go.
     play(*self)
-        if !self.tried
-            self.tried = true
-
-            if init_audio() then self.voice = open_audio_stream(i32(RATE))
+        self.open()
 
         if self.voice is Some(v)
             // Found empty while it was playing: the sound stopped for a moment before this arrived.
@@ -103,6 +100,16 @@ struct Ear
             self.playing = true
 
         self.heard.clear()
+
+    // Open the sound output, if it has not been tried yet. A circuit run on a thread of its own has it
+    // opened first on the window's, which is where the system wants its sound set up; what is played
+    // into it may come from any thread.
+    open(*self)
+        if self.tried then return
+
+        self.tried = true
+
+        if init_audio() then self.voice = open_audio_stream(i32(RATE))
 
     // Stop whatever is queued, as a pause or a mute does.
     hush(*self)

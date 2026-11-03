@@ -1,0 +1,122 @@
+// The circuit on a thread of its own, so drawing the window never takes time from working it out.
+//
+// **Two models of the circuit.** The thread holds one and runs it exactly as the window ran it before:
+// the clock, the meters' samples, the push buttons let go on time, and the speaker's sound, which it
+// plays itself. The window holds the other and solves nothing. Once a frame the two are put side by
+// side under a lock: what was done in the window — a click, a knob turned, a meter placed, a restart —
+// is handed to the thread's copy, and what that copy has reached comes back — its solution, the
+// meters' new readings, what the branches have carried, how the sound is keeping up — for the window
+// to draw. The lock is held for the copy and for each short stretch the thread works, never for a
+// frame's drawing.
+
+import sh.sysl.amber.{Switch, Pin}
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, min}
+import sysl.sync.Atomic
+import sysl.threads.{Mutex, Thread, spawn}
+import sysl.time.{monotonic, sleep, millis}
+
+// The model the thread runs, behind its lock, and whether the window has asked it to stop: 1 once it
+// has.
+struct Link
+    engine: Mutex[&Model]
+    quit: Atomic[int]
+
+// The longest stretch of the clock's own time worked at once: a frame late by more than this does not
+// owe the time it lost.
+const LONGEST_SLICE: real = 0.1
+
+// What the thread does until told to stop: work the circuit forward by the time that has passed since
+// it last did, a millisecond or so at a time, letting the lock go between.
+private drive(link: *Link) -> unit
+    var last = monotonic()
+
+    loop
+        if link.quit.load() == 1 then break
+
+        val now = monotonic()
+        val dt = real((now - last).us) * 1e-6
+
+        last = now
+        link.engine.with((p) -> work(*p, dt))
+        sleep(millis(1))
+
+    link.engine.with((p) -> (*p).ear.hush())
+
+// Work the thread's model forward by `dt` seconds of ours, as a frame of the window once did.
+work(e: &Model, dt: real)
+    if !e.running || e.trouble != ""
+        e.ear.hush()
+        return
+
+    val step = min(dt, LONGEST_SLICE)
+
+    e.run(step * e.pace(), max(1, int(step * 60.0 * real(SAMPLES_PER_FRAME))))
+
+    if e.hearing() then e.ear.play() else e.ear.hush()
+
+// Put the window's model `ui` and the thread's `e` side by side: what was done in the window goes to
+// `e`, and what `e` has reached comes back to be drawn.
+exchange(ui: &Model, e: &Model)
+    e.running = ui.running
+    e.speed = ui.speed
+    e.ear.muted = ui.ear.muted
+
+    for k in 0..<ui.changes.len()
+        ui.changes[k] match
+            Toggle(i) -> e.toggle(i)
+            Start(settled) -> e.start(settled)
+            Settings(panel, values, count) ->
+                var now: Buf[real] = buf()
+
+                for j in 0..<count
+                    now.push(values[usize(j)])
+
+                if usize(panel) < e.panels.len() then e.panels[usize(panel)].apply_settings(&e.s, now, false)
+            AddMeter(x1, y1, x2, y2) -> e.add_meter(x1, y1, x2, y2)
+            ClearMeters -> e.meters.clear()
+
+    ui.changes.clear()
+
+    ui.s.mirror(e.s)
+    ui.running = e.running
+    ui.trouble = e.trouble.copy()
+    ui.most_amps = e.most_amps
+    ui.held_at = e.held_at
+    ui.ear.busy = e.ear.busy
+    ui.ear.covered = e.ear.covered
+    ui.ear.dropouts = e.ear.dropouts
+
+    for k in 0..<min(ui.meters.len(), e.meters.len())
+        for j in 0..<e.meters[k].times.len()
+            ui.meters[k].record(e.meters[k].times[j], e.meters[k].readings[j])
+
+        e.meters[k].forget()
+
+    copy_holds(&ui.segment_hold, e.segment_hold)
+    copy_holds(&ui.part_hold, e.part_hold)
+    copy_holds(&ui.base_hold, e.base_hold)
+    copy_holds(&ui.emitter_hold, e.emitter_hold)
+end exchange
+
+private copy_holds(to: *Buf[Hold], from: Buf[Hold])
+    for k in 0..<min(to.len(), from.len())
+        to[k] = Hold(from[k].forward, from[k].back)
+
+// Make `e`, a model of the same file as the window's read separately, the one a thread runs. The
+// window's model is made its copy by setting `remote` before anything is done to it, so that every
+// meter placed and element clicked is handed over at the first `exchange`.
+as_engine(e: &Model)
+    e.engine = true
+
+    // The sound output is set up here, on the window's thread.
+    if e.ear.speaker >= 0 then e.ear.open()
+
+// A frame of the window whose circuit runs on the thread behind `link`: the frame's own work, then the
+// handover.
+frame(ui: &Model, link: &sync Link, dt: real)
+    tick(ui, dt)
+    link.engine.with((p) -> exchange(ui, *p))
+
+// Start the thread that runs the model behind `link`'s lock.
+start_thread(link: &sync Link) -> Option[Thread] = spawn(&drive, &*link)

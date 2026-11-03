@@ -103,30 +103,35 @@ struct Panel
     // Put the instrument's part in the circuit as the settings say, from the present time on. A
     // `fresh` start is a circuit just switched on again: a generator starts its cycle anew, where
     // otherwise it carries on from where it was in it.
-    apply(*self, s: *Sim, fresh: bool)
+    apply(*self, s: *Sim, fresh: bool) = self.apply_settings(s, self.settings(), fresh)
+
+    // Put the instrument's part in the circuit as the settings `now` say, every one a number as
+    // `settings` gives them, rather than as the controls stand: how the copy of the circuit on its own
+    // thread is told what the window's controls were turned to.
+    apply_settings(*self, s: *Sim, now: Buf[real], fresh: bool)
         self.instrument = self.instrument match
             SignalGenerator(osc) ->
                 var o = if fresh then oscillator(osc.form, osc.frequency, osc.amplitude, osc.offset).retuned(s.time) else osc.retuned(s.time)
 
-                o.form = WAVEFORMS[usize(self.choices[0].chosen.read())]
-                o.frequency = self.knobs[0].value()
-                o.amplitude = self.knobs[1].value()
-                o.offset = self.knobs[2].value()
+                o.form = WAVEFORMS[usize(now[0])]
+                o.frequency = now[1]
+                o.amplitude = now[2]
+                o.offset = now[3]
                 s.set_wave(self.part, o.wave())
                 SignalGenerator(o)
             BenchSupply(p) ->
                 var q = p
 
-                q.raw = self.choices[0].chosen.read() == 1
-                q.mains = if self.choices[1].chosen.read() == 1 then 60.0 else 50.0
-                q.volts = self.knobs[0].value()
-                q.amps = self.knobs[1].value()
+                q.raw = now[0] == 1.0
+                q.mains = if now[1] == 1.0 then 60.0 else 50.0
+                q.volts = now[2]
+                q.amps = now[3]
                 // A ripple deeper than the voltage would swing below nothing.
-                q.ripple = min(self.knobs[2].value(), 2.0 * q.volts)
+                q.ripple = min(now[4], 2.0 * q.volts)
                 s.set_supply(self.part, q)
                 BenchSupply(q)
 
-        self.applied = self.settings()
+        self.applied = now
 
     // The settings in a few words, for a label beside the part: `sine 1kHz 10mV`.
     summary(self) -> string = self.instrument match

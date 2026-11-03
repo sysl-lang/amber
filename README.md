@@ -50,6 +50,9 @@ so a small signal beside a large bias still rocks where it can be seen.
   9 V swing both play at a comfortable volume, and a circuit's rounding is silence. The status line
   says how many times faster than it plays the sound is being worked out, over the last second or
   so, and how many times it has run dry and stopped: `sound 9.1× real time, 0 dropouts`.
+- **The circuit runs on a thread of its own**, so drawing the window never takes time from working it
+  out or from the sound. Once a frame the window hands over what was clicked and turned and takes back
+  where the circuit has got to (`Sim.mirror`), under a lock held only for the copy.
 - **Click a push button** to tap it: closed for 10 ms of the circuit's time and let go at that very
   moment, as a finger would.
 - `b` swaps the scope for **a Bode plot**: each meter's gain (in decibels, the thick line) and phase
