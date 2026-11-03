@@ -82,7 +82,10 @@ about 1% of it, against the phase-shift oscillator's 9%), `opamp` (a TL072 ampli
 generator's sine eleven times into a speaker through a push-pull pair, its feedback taken after the
 pair so the op-amp jumps the pair's crossover gap and the speaker gets a clean sine), `kick` (a
 TR-808-style kick drum: a push button strikes an op-amp bridged-T resonator, which booms at 55 Hz and
-dies away over half a second; tap out a rhythm), `zener` (a raw supply's 2 V of ripple
+dies away over half a second; tap out a rhythm), `moog` (a transistor ladder filter, Moog's 1969
+circuit, on the generator's square wave: P1's voltage sweeps its four-pole cutoff from dark to
+bright, and its resonance rings at the corner; the heaviest circuit here, it is worked out at about
+half the speed it plays until the solver is sparse), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
 of a rippling 15 V, the ripple cut two-hundredfold), `pins` (three of a microcontroller's pins: one
 lighting an LED, one reading a button, one an ADC on a divider; click them) and `wallwart` (a 5 V supply that plugs into the

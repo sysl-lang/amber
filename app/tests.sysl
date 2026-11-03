@@ -1022,7 +1022,6 @@ pin_status()
 // --- A push button, and how the sound keeps up ------------------------------------------------------
 
 private kick() -> &Model = model("kick.amber", parse_schematic(str_cast(embed("../examples/kick.amber"))).unwrap())
-
 @test("a click presses a push button for 10 ms of the circuit's time and lets it go at that very moment")
 button_taps()
     val m = kick()

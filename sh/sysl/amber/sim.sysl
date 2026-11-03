@@ -741,15 +741,23 @@ struct Sim
                         if !close(self.junction[2 * i], be) || !close(self.junction[2 * i + 1], bc) then settled = false
                     // An op-amp is linearised at its inner node's voltage and the output's drive, the
                     // inner node's voltage less the output's.
+                    //
+                    // The drive and the inputs' difference are each the difference of two voltages,
+                    // and are known no better than those are: they are judged against the voltages
+                    // they are taken between, not against themselves. An op-amp under feedback holds
+                    // its inputs microvolts apart, and asking that of a difference of two 7 V nodes
+                    // asks for their rounding.
                     OpAmp(_) ->
                         val p = self.circuit.parts[i]
                         val inner = self.inner(int(i))
-                        val drive = inner - self.voltage(p.c)
-                        val vd = self.voltage(p.a) - self.voltage(p.b)
+                        val vo = self.voltage(p.c)
+                        val (va, vb) = (self.voltage(p.a), self.voltage(p.b))
 
-                        if !close(self.junction[2 * i], inner) || !close(self.junction[2 * i + 1], drive) then settled = false
+                        if !close(self.junction[2 * i], inner) then settled = false
 
-                        if !close(self.junction[self.difference_slot(int(i))], vd) then settled = false
+                        if !close_between(self.junction[2 * i + 1], inner - vo, inner, vo) then settled = false
+
+                        if !close_between(self.junction[self.difference_slot(int(i))], va - vb, va, vb) then settled = false
                     Mosfet(_, _, _) ->
                         val (gs, ds) = self.mosfet_now(int(i))
 
@@ -1211,6 +1219,11 @@ const SUPPLY_ROUNDING: real = 1e-3
 
 // Whether a junction voltage moved so little between linearising and solving that it is settled.
 private close(was: real, now: real) -> bool = (now - was).abs() <= 1e-6 * max(now.abs(), was.abs()) + 1e-9
+
+// Whether `now`, the difference of voltages `x` and `y`, moved from `was` by no more than those voltages
+// are themselves known to: a millionth of the larger, and a nanovolt.
+private close_between(was: real, now: real, x: real, y: real) -> bool =
+    (now - was).abs() <= 1e-6 * max(max(now.abs(), was.abs()), max(x.abs(), y.abs())) + 1e-9
 
 // Whether a diode's current at the voltage it was solved at is what the line it was solved on says, to
 // a millionth and a picoamp, as SPICE judges a junction: `now` is the curve's current there, and the

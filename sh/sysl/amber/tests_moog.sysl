@@ -1,0 +1,87 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, tau}
+import sysl.raw.str_cast
+
+// The Moog ladder example: a 110 Hz square through four transistor poles whose corner follows P1, the
+// cutoff voltage.
+
+// The amplitude of `v`, `dt` apart, at `hz`.
+private at(v: Buf[real], dt: real, hz: real) -> real
+    var re = 0.0
+    var im = 0.0
+
+    for k in 0..<v.len()
+        val a = tau * hz * real(k) * dt
+
+        re += v[k] * a.cos()
+        im += v[k] * a.sin()
+
+    2.0 * (re * re + im * im).sqrt() / real(v.len())
+
+// The voice with P1 at `cutoff` volts, settled a quarter of a second, then a tenth of a second of it,
+// sampled as the speaker plays it: its odd harmonics 1, 3, 5 … 15, as fractions of the first.
+private voice(cutoff: real) -> Buf[real]
+    val sch = parse_schematic(str_cast(embed("../../../examples/moog.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val p1 = sch.elements[usize(sch.find("P1").unwrap())].part
+    val dt = 1.0 / 48000.0
+    var v: Buf[real] = buf()
+
+    s.set_supply(p1, regulated(cutoff, 10e-3))
+    s.operating_point().unwrap()
+
+    for k in 1..12000
+        s.advance_to(real(k) * dt).unwrap()
+
+    // Eleven whole cycles of 110 Hz.
+    for k in 0..<4800
+        s.advance_to(real(12000 + k) * dt).unwrap()
+        v.push(s.voltage_at("voice"))
+
+    val first = at(v, dt, 110.0)
+    var out: Buf[real] = buf()
+
+    out.push(first)
+
+    for h in [3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0]
+        out.push(at(v, dt, 110.0 * h) / first)
+
+    out
+
+// How much of the square's top end gets through: its 9th to 15th harmonics against its first.
+private bright(h: Buf[real]) -> real = h[4] + h[5] + h[6] + h[7]
+
+@test("the ladder's cutoff follows P1: dark at 0.9 V, its upper harmonics almost gone; bright at 2.5 V")
+moog_cutoff()
+    val dark = voice(0.9)
+    val middle = voice(1.6)
+    val open = voice(2.5)
+
+    // A square's 9th harmonic is a ninth of its first; four poles below it take nearly all of it.
+    assert(dark[4] < 0.02)
+    assert(open[4] > 0.1)
+    assert(bright(dark) < bright(middle) && bright(middle) < bright(open))
+    // The fundamental gets through whatever the cutoff.
+    assert(dark[0] > 0.2 && open[0] > 0.4)
+
+    // Near the corner the resonance lifts a harmonic above where a square has it: at 1.6 V the 13th,
+    // 1.4 kHz, stands above a square's 1/13.
+    assert(middle[6] > 1.0 / 13.0)
+
+@test("the ladder's tail transistor stays out of saturation across P1's range")
+moog_tail()
+    val sch = parse_schematic(str_cast(embed("../../../examples/moog.amber"))).unwrap()
+    val qt = sch.elements[usize(sch.find("QT").unwrap())]
+    val p1 = sch.elements[usize(sch.find("P1").unwrap())].part
+
+    for cv in [0.9, 1.6, 2.5]
+        var s = sim(sch.circuit)
+
+        s.set_supply(p1, regulated(cv, 10e-3))
+        s.operating_point().unwrap()
+
+        // Its collector stays above its base.
+        assert(s.voltage(qt.a) - s.voltage(qt.b) > 0.3)

@@ -1,0 +1,130 @@
+# A synthesizer's voice: the signal generator's square wave through a transistor ladder filter, the
+# circuit Robert Moog patented in 1969, and out through a speaker. Turn P1's voltage to sweep it.
+#
+# The ladder is ten transistors. Q1 and Q2 at the bottom are a differential pair, steering the current
+# QT gives them between the two columns as the input swings; above them four rungs of pairs, Q3 to
+# Q10, pass the current up, each rung's bases held still by its own battery. At every rung the current
+# meets a capacitor on each side, CnA and CnB, and every rung is one pole of a low-pass filter whose
+# corner is the current over the capacitor: four poles, so above the corner the square's harmonics
+# fall away 24 dB an octave, the Moog's sound.
+#
+# **P1 is the cutoff.** It sets QT's base, so QT's current, so how fast each rung charges its
+# capacitors: about 0.85 V is a few hundred hertz, dark and muffled; 2.5 V is a few kilohertz, bright.
+#
+# **RK is the resonance**: the output fed back to Q2, the pair's other side. Around the corner the four
+# poles turn the signal half way round, so what comes back there adds rather than subtracts, and the
+# filter rings at its corner as it sweeps — the vowel-like sweep of a synthesizer.
+#
+# U1 follows the top of the ladder's right column and drives the speaker. The speaker plays while the
+# clock runs at a second a second, and the status line says how fast the sound is being worked out.
+# This is the heaviest circuit here, 38 unknowns solved 59,000 times a second of sound, and today it
+# is worked out at about half the speed it plays: expect dropouts until the solver is sparse.
+
+speed 1
+start settled
+
+battery   BV    40 0  40 8   15V
+ground          40 8
+wire            14 0  40 0
+
+# The loads at the top of the ladder.
+resistor  RLA   14 0  14 4   47k
+resistor  RLB   20 0  20 4   47k
+
+# Four rungs, each pair's bases tied and held by its battery, and a capacitor each side.
+npn       Q9    14 4  16 6   14 8   2N3904
+npn       Q10   20 4  18 6   20 8   2N3904
+wire            16 6  18 6
+battery   BB4   17 6  17 8   8V
+ground          17 8
+capacitor C4A   14 8  11 8   220n
+ground          11 8
+capacitor C4B   20 8  23 8   220n
+ground          23 8
+
+npn       Q7    14 8  16 10  14 12  2N3904
+npn       Q8    20 8  18 10  20 12  2N3904
+wire            16 10 18 10
+battery   BB3   17 10 17 12  7V
+ground          17 12
+capacitor C3A   14 12 11 12  220n
+ground          11 12
+capacitor C3B   20 12 23 12  220n
+ground          23 12
+
+npn       Q5    14 12 16 14  14 16  2N3904
+npn       Q6    20 12 18 14  20 16  2N3904
+wire            16 14 18 14
+battery   BB2   17 14 17 16  6V
+ground          17 16
+capacitor C2A   14 16 11 16  220n
+ground          11 16
+capacitor C2B   20 16 23 16  220n
+ground          23 16
+
+npn       Q3    14 16 16 18  14 20  2N3904
+npn       Q4    20 16 18 18  20 20  2N3904
+wire            16 18 18 18
+battery   BB1   17 18 17 20  5V
+ground          17 20
+capacitor C1A   14 20 11 20  220n
+ground          11 20
+capacitor C1B   20 20 23 20  220n
+ground          23 20
+
+# The input pair and the current it steers.
+npn       Q1    14 20 12 22  14 24  2N3904
+npn       Q2    20 20 22 22  20 24  2N3904
+wire            14 24 20 24
+npn       QT    17 24 19 27  17 28  2N3904
+resistor  RT    17 28 17 32  10k
+ground          17 32
+resistor  RCV   19 27 30 27  10k
+supply    P1    30 27 30 31  1.6 10m
+ground          30 31
+
+# The input: the generator onto Q1, both bases biased to 4 V, which leaves QT room to stay out of
+# saturation at the top of P1's range.
+gen       G1    4 22  4 26   square 110 50m
+ground          4 26
+capacitor CIN   4 22  8 22   1u
+wire            8 22  12 22
+resistor  RB1   12 22 12 26  10k
+battery   BIN1  12 26 12 30  4V
+ground          12 30
+wire            22 22 24 22
+resistor  RB2   24 22 28 22  10k
+battery   BIN2  28 22 28 26  4V
+ground          28 26
+
+# The resonance: the output back to Q2.
+resistor  RK    24 22 24 18  100k
+capacitor CK    24 18 24 15  10u
+wire            24 15 24 2
+wire            24 2  34 2
+wire            34 2  34 6
+
+# U1 follows the top of the right column, on its own bias.
+capacitor CO    21 4  23 4   1u
+wire            20 4  21 4
+wire            23 4  27 4
+wire            27 4  27 7
+wire            27 7  28 7
+resistor  RIB   27 7  27 10  100k
+battery   BREF  27 10 27 13  7.5V
+ground          27 13
+opamp     U1    30 6  TL072
+wire            30 4  30 0
+ground          30 8
+wire            28 5  28 3
+wire            28 3  32 3
+wire            32 3  32 6
+
+# The speaker.
+wire            32 6  36 6
+resistor  RS    36 6  36 10  1k
+speaker   SPK   36 10 36 13  8
+ground          36 13
+
+label     voice 34 6
+meter     VOICE 36 10 36 13
