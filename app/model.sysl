@@ -563,6 +563,11 @@ status(m: &Model) -> string
 
         return s"${clock} · ${e.name} ${described(m, e)}: ${volts(m.s.across(e.part))} drain to source, ${volts(vgs)} gate to source, ${engineering(id.abs())}A ${into(id)} the drain"
 
+    if e.shape == Shape.OpAmp
+        val io = m.s.current(e.part)
+
+        return s"${clock} · ${e.name} ${described(m, e)}: output at ${volts(m.s.voltage(e.c))}, ${engineering(io.abs())}A ${if io < 0.0 then "into" else "out of"} it; + at ${volts(m.s.voltage(e.a))}, − at ${volts(m.s.voltage(e.b))}; supplies ${volts(m.s.voltage(e.d))} and ${volts(m.s.voltage(e.e))}"
+
     if e.shape.points() == 3
         val vbe = m.s.voltage(e.b) - m.s.voltage(e.c)
         val ic = m.s.terminal_current(e.part, 0)
@@ -581,6 +586,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Capacitor -> s"${e.value}F capacitor"
     Inductor -> s"${e.value}H inductor"
     Speaker -> s"${e.value}Ω speaker"
+    OpAmp -> s"${e.value} op-amp"
     Winding -> if e.value == "" then "transformer's secondary" else s"${e.value} transformer's primary"
     Battery -> s"${e.value} battery"
     Source -> s"${e.value} source"

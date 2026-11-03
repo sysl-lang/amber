@@ -36,6 +36,7 @@ import sysl.text.{Search, fields, split}
 // | `nmos`, `pmos` | three: drain, gate, source | a model: `2N7000` (an nmos's, the default) or `BS250` (a pmos's) |
 // | `transformer` | four: the primary's two ends, then the secondary's | a turns ratio, `120:9`, and perhaps the primary's inductance |
 // | `speaker` | two | its voice coil's resistance, 8 Ω if not given; a viewer plays the voltage across it |
+// | `opamp` | one, its middle; its pins are around it | a model: `741` (the default) or `TL072` |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -116,6 +117,9 @@ enum Shape: u8
     Winding
     // A loudspeaker: to the circuit its voice coil's resistance; a viewer plays the voltage across it.
     Speaker
+    // An op-amp, placed by its middle, its five pins around it: its non-inverting input, inverting
+    // input, output, positive supply and negative supply.
+    OpAmp
     Ground
     Label
     Meter
@@ -124,6 +128,7 @@ enum Shape: u8
     points(self) -> int = self match
         Ground | Label -> 1
         Npn | Pnp | Nmos | Pmos -> 3
+        OpAmp -> 5
         _ -> 2
 
     // Whether it is a part of the circuit, rather than a wire, a marker or an instrument.
@@ -156,11 +161,19 @@ struct Element
     // The third point, a transistor's emitter; the second again for anything else.
     x3: int
     y3: int
+    // The fourth and fifth points, an op-amp's supply pins; the third again for anything else.
+    x4: int
+    y4: int
+    x5: int
+    y5: int
     // The node each end is on; -1 for a meter's lead on a point no part reaches. `c` is a transistor's
-    // emitter, and `b` again for anything else.
+    // emitter, and `b` again for anything else; `d` and `e` are an op-amp's supplies, and `c` again for
+    // anything else.
     a: int
     b: int
     c: int
+    d: int
+    e: int
     // Which of the circuit's parts it is; -1 for anything that is not a part.
     part: int
     colour: Colour
@@ -169,13 +182,17 @@ struct Element
     point(self, k: int) -> (int, int) = k match
         0 -> (self.x1, self.y1)
         1 -> (self.x2, self.y2)
-        _ -> (self.x3, self.y3)
+        2 -> (self.x3, self.y3)
+        3 -> (self.x4, self.y4)
+        _ -> (self.x5, self.y5)
 
     // The node its end `k` is on.
     node(self, k: int) -> int = k match
         0 -> self.a
         1 -> self.b
-        _ -> self.c
+        2 -> self.c
+        3 -> self.d
+        _ -> self.e
 
 // A straight run of wire with no junction along it, between two grid points, and the element it is a
 // piece of. A wire with a junction partway along is two segments, since the two halves can carry
@@ -211,14 +228,10 @@ struct Schematic
 
             if e.shape == Meter || e.a < 0 then continue
 
-            if e.x1 == x && e.y1 == y then return Some(e.a)
+            for end in 0..<e.shape.points()
+                if e.point(end) == (x, y) then return Some(e.node(end))
 
-            if e.shape.points() >= 2
-                if e.x2 == x && e.y2 == y then return Some(e.b)
-
-                if e.shape.points() == 3 && e.x3 == x && e.y3 == y then return Some(e.c)
-
-                if e.shape == Wire && on_segment(x, y, e) then return Some(e.a)
+            if e.shape == Wire && on_segment(x, y, e) then return Some(e.a)
 
         None
 
@@ -258,9 +271,9 @@ struct Schematic
                 edge_a.push(point_id(&px, &py, &inject, e.x1, e.y1))
                 edge_b.push(0)
 
-            // A transistor takes in at each terminal the current that flows into it there.
-            if e.part >= 0 && e.shape.points() == 3
-                for t in 0..<3
+            // A transistor or an op-amp takes in at each terminal the current that flows into it there.
+            if e.part >= 0 && e.shape.points() >= 3
+                for t in 0..<e.shape.points()
                     val (x, y) = e.point(t)
                     val p = point_id(&px, &py, &inject, x, y)
 
@@ -387,6 +400,8 @@ parse_schematic(text: string) -> Result[Schematic, string]
 
         if words[0] == "transformer"
             parts = transformer(words).map_err(why -> s"line ${line_no}: ${why}")?
+        elif words[0] == "opamp"
+            parts.push(opamp(words).map_err(why -> s"line ${line_no}: ${why}")?)
         else
             parts.push(element(words).map_err(why -> s"line ${line_no}: ${why}")?)
 
@@ -464,7 +479,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
         Speaker -> if rest.len == 0 then "8" else rest[0]
         _ -> rest.join(" ")
 
-    Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], -1, -1, -1, -1, colour), kind))
+    Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5], -1, -1, -1, -1, -1, -1, colour), kind))
 
 // A speaker's voice coil when its line gives none: the usual 8 Ω.
 const SPEAKER_OHMS: real = 8.0
@@ -521,9 +536,33 @@ private transformer(words: []string) -> Result[Buf[(Element, Option[Kind])], str
     val primary = if rest.len == 2 then positive(rest[1], "an inductance")? else PRIMARY_HENRIES
     var out: Buf[(Element, Option[Kind])] = buf()
 
-    out.push((Element(Winding, name, rest[0], xy[0], xy[1], xy[2], xy[3], xy[2], xy[3], -1, -1, -1, -1, Red), Some(Inductor(primary))))
-    out.push((Element(Winding, name, "", xy[4], xy[5], xy[6], xy[7], xy[6], xy[7], -1, -1, -1, -1, Red), Some(Inductor(primary / (ratio * ratio)))))
+    out.push((Element(Winding, name, rest[0], xy[0], xy[1], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], -1, -1, -1, -1, -1, -1, Red),
+              Some(Inductor(primary))))
+    out.push((Element(Winding, name, "", xy[4], xy[5], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], -1, -1, -1, -1, -1, -1, Red),
+              Some(Inductor(primary / (ratio * ratio)))))
     Ok(out)
+
+// An op-amp's line: its name, the grid point at its middle, and perhaps its model, `741` (the
+// default) or `TL072`. Its pins are around that point: the inverting input two squares left and one up,
+// the non-inverting input two left and one down, the output two right, and the positive and negative
+// supplies two up and two down.
+private opamp(words: []string) -> Result[(Element, Option[Kind]), string]
+    if words.len < 2 then return Err("an opamp needs a name")
+
+    if words.len < 4 then return Err("an opamp is placed by 1 point, its middle")
+
+    if words.len > 5 then return Err(s"'${words[5]}' is more than an opamp takes")
+
+    val name = words[1]
+    val x = parse_coordinate(words[2])?
+    val y = parse_coordinate(words[3])?
+    val model = if words.len == 5 then words[4] else "741"
+    val m = model match
+        "741" -> OPAMP_741
+        "TL072" -> OPAMP_TL072
+        _ -> return Err(s"'${model}' is not an op-amp model: 741 or TL072")
+
+    Ok((Element(OpAmp, name, model, x - 2, y + 1, x - 2, y - 1, x + 2, y, x, y - 2, x, y + 2, -1, -1, -1, -1, -1, -1, Red), Some(OpAmp(m))))
 
 // "a resistor", "an inductor", "an npn": the kind with its article.
 private a_word(word: string) -> string
@@ -787,21 +826,26 @@ private min_of(a: int, b: int) -> int = if a < b then a else b
 
 private max_of(a: int, b: int) -> int = if a < b then b else a
 
-// Number every end by the set of joined points it belongs to: `a` and `b` are set to a net number,
-// `c` likewise, the same for ends that are joined. Nets are found by union–find over the ends, three
-// slots per element. A meter's leads take the net of whatever they touch and join nothing to anything.
+// The most ends an element has: an op-amp's five pins.
+const MOST_ENDS: int = 5
+
+// Number every end by the set of joined points it belongs to: `a` to `e` are set to a net number, the
+// same for ends that are joined, and an element with fewer ends repeats its last. Nets are found by
+// union–find over the ends, `MOST_ENDS` slots per element. A meter's leads take the net of whatever
+// they touch and join nothing to anything.
 private join(elements: *Buf[Element])
     val n = elements.len()
     var parent: Buf[int] = buf()
 
-    for k in 0..<3 * n
+    for k in 0..<MOST_ENDS * int(n)
         parent.push(int(k))
 
     for i in 0..<n
         val e = elements[i]
+        val mine0 = MOST_ENDS * int(i)
 
-        // A wire's two ends are one net; a part's are two, or three.
-        if e.shape == Wire then unite(&parent, int(3 * i), int(3 * i + 1))
+        // A wire's two ends are one net; a part's are two or more.
+        if e.shape == Wire then unite(&parent, mine0, mine0 + 1)
 
         for j in 0..<n
             val f = elements[j]
@@ -810,21 +854,24 @@ private join(elements: *Buf[Element])
 
             for end in 0..<f.shape.points()
                 val (x, y) = f.point(end)
-                val k = int(3 * j) + end
+                val k = MOST_ENDS * int(j) + end
 
                 for mine in 0..<e.shape.points()
                     val (ex, ey) = e.point(mine)
 
-                    if ex == x && ey == y then unite(&parent, int(3 * i) + mine, k)
+                    if ex == x && ey == y then unite(&parent, mine0 + mine, k)
 
-                if e.shape == Wire && on_segment(x, y, e) then unite(&parent, int(3 * i), k)
+                if e.shape == Wire && on_segment(x, y, e) then unite(&parent, mine0, k)
 
     for i in 0..<n
         val ends = elements[i].shape.points()
+        val net = (end: int) -> root(&parent, MOST_ENDS * int(i) + min_of(end, ends - 1))
 
-        elements[i].a = root(&parent, int(3 * i))
-        elements[i].b = if ends >= 2 then root(&parent, int(3 * i + 1)) else elements[i].a
-        elements[i].c = if ends == 3 then root(&parent, int(3 * i + 2)) else elements[i].b
+        elements[i].a = net(0)
+        elements[i].b = net(1)
+        elements[i].c = net(2)
+        elements[i].d = net(3)
+        elements[i].e = net(4)
 
 private root(parent: *Buf[int], k: int) -> int
     var r = k
@@ -850,7 +897,7 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
     // Whether a part's end or a ground is on the net, which is what makes it a node.
     var live: Buf[bool] = buf()
 
-    for _ in 0..<3 * elements.len()
+    for _ in 0..<MOST_ENDS * int(elements.len())
         node_of.push(-1)
         live.push(false)
 
@@ -858,9 +905,8 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
         val e = elements[i]
 
         if e.shape.is_part() || e.shape == Ground
-            live[usize(e.a)] = true
-            live[usize(e.b)] = true
-            live[usize(e.c)] = true
+            for end in 0..<MOST_ENDS
+                live[usize(e.node(end))] = true
 
     // Grounds first, then labels, so a node's name is the one it was given wherever the label is.
     for i in 0..<elements.len()
@@ -881,7 +927,7 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
     var unnamed = 0
 
     for i in 0..<elements.len()
-        for end in 0..<3
+        for end in 0..<MOST_ENDS
             val net = elements[i].node(end)
 
             if live[usize(net)] && node_of[usize(net)] < 0
@@ -899,13 +945,18 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
         elements[i].a = node_of[usize(elements[i].a)]
         elements[i].b = node_of[usize(elements[i].b)]
         elements[i].c = node_of[usize(elements[i].c)]
+        elements[i].d = node_of[usize(elements[i].d)]
+        elements[i].e = node_of[usize(elements[i].e)]
 
         if kinds[i] is Some(kind)
             val e = elements[i]
 
             elements[i].part = int(c.parts.len())
 
-            if kind.terminals() == 3 then c.add3(e.name, kind, e.a, e.b, e.c) else c.add(e.name, kind, e.a, e.b)
+            kind.terminals() match
+                5 -> c.add5(e.name, kind, e.a, e.b, e.c, e.d, e.e)
+                3 -> c.add3(e.name, kind, e.a, e.b, e.c)
+                _ -> c.add(e.name, kind, e.a, e.b)
 
     // A transformer's windings, the primary (which carries the ratio) and the secondary after it, are
     // coupled, its insulation joins their second ends, and its core's losses are across its primary.

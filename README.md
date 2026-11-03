@@ -74,7 +74,9 @@ this large keeps only the switches', LEDs' and nodes' labels), `oscillator` (a o
 phase-shift oscillator that starts itself from the jolt of switching on and plays about 530 Hz
 through a speaker; `r` to hear it start again), `sine` (a Wien-bridge oscillator, three transistors
 and two diodes holding its gain at exactly 3, playing a sine of about 720 Hz whose harmonics are
-about 1% of it, against the phase-shift oscillator's 9%), `zener` (a raw supply's 2 V of ripple
+about 1% of it, against the phase-shift oscillator's 9%), `opamp` (a TL072 amplifying the signal
+generator's sine eleven times into a speaker through a push-pull pair, its feedback taken after the
+pair so the op-amp jumps the pair's crossover gap and the speaker gets a clean sine), `zener` (a raw supply's 2 V of ripple
 cut to about 27 mV by a 5.1 V zener), `regulator` (a zener-referenced emitter follower: 4.87 V out
 of a rippling 15 V, the ripple cut two-hundredfold) and `wallwart` (a 5 V supply that plugs into the
 wall: 120 V at 60 Hz through a 120:9 transformer, a diode bridge and a 1000 µF reservoir, then a
@@ -105,7 +107,8 @@ Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `curre
 `gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
 `closed`), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
-(`2N7000`, the default) and `pmos` (`BS250`, the default). Also `wire`,
+(`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
+`TL072`). Also `wire`,
 `ground`, `label` (names a node), `meter` and `speaker` (its voice coil's resistance, 8 Ω unless it
 says; the viewer plays the voltage across it). Waves: `dc 5`, `sine 5 1k [offset]`,
 `square 0 5 1k [duty]`, `triangle -1 1 1k` (low, high, frequency), `pulse low high delay rise fall
@@ -144,6 +147,17 @@ resistance in series, as `wallwart` does.
 
 ```
 transformer T1  10 2  10 10  12 2  12 10  120:9   # primary, secondary, turns ratio
+```
+
+An op-amp is placed by its middle; its inverting input is two squares left and one up, its
+non-inverting input two left and one down, its output two right, and its positive and negative
+supplies two up and two down. It is simulated as it behaves rather than as its transistors: a gain of
+200,000 falling with frequency at its gain-bandwidth (1 MHz for the 741, 3 MHz for the TL072), a slew
+rate (0.5 and 13 V/µs), an output a volt and a half short of each supply, 75 Ω out, and no more than
+25 mA — so it cannot drive a speaker by itself, and clips trying.
+
+```
+opamp     U1  12 8  TL072                  # − at 10 7, + at 10 9, out at 14 8, V+ at 12 6, V− at 12 10
 ```
 
 A transistor is placed by three points — collector, base, emitter — with its base a square or more

@@ -34,6 +34,12 @@ const SUPPLY_H: real = 0.6
 // middle of the collector and emitter. Its circle, RING across, is centred HUB toward the base.
 const BAR: real = 0.45
 const SLANT: real = 0.15
+// An op-amp's triangle, in squares from its middle: its back edge to the left, its tip to the right,
+// and half its height.
+const TRIANGLE_BACK: real = 1.3
+const TRIANGLE_TIP: real = 1.4
+const TRIANGLE_HALF: real = 1.5
+
 const BEND: real = 0.55
 const HUB: real = 0.2
 const RING: real = 0.64
@@ -140,10 +146,13 @@ private place(m: &Model, r: Rect) -> Place
     for i in 0..<m.sch.elements.len()
         val e = m.sch.elements[i]
 
-        x0 = min(x0, min(e.x1, min(e.x2, e.x3)))
-        y0 = min(y0, min(e.y1, min(e.y2, e.y3)))
-        x1 = max(x1, max(e.x1, max(e.x2, e.x3)))
-        y1 = max(y1, max(e.y1, max(e.y2, e.y3)))
+        for k in 0..<max(2, e.shape.points())
+            val (x, y) = e.point(k)
+
+            x0 = min(x0, x)
+            y0 = min(y0, y)
+            x1 = max(x1, x)
+            y1 = max(y1, y)
 
     if x0 > x1
         x0 = 0
@@ -165,6 +174,15 @@ private hit(m: &Model, at: Place, wx: int, wy: int) -> int
 
     for i in 0..<m.sch.elements.len()
         val e = m.sch.elements[i]
+
+        // An op-amp is hit anywhere in its triangle's box.
+        if e.shape == OpAmp
+            val (cx, cy) = (at.x(real(e.x4)), at.y(real(e.y3)))
+
+            if px > cx - TRIANGLE_BACK * at.unit && px < cx + TRIANGLE_TIP * at.unit && (py - cy).abs() < TRIANGLE_HALF * at.unit
+                return int(i)
+
+            continue
 
         // A transistor is hit anywhere in its circle.
         if e.shape.points() == 3
@@ -250,6 +268,7 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
             Meter -> ()
             Npn | Pnp -> pen.transistor(e, most, hot)
             Nmos | Pmos -> pen.mosfet(e, most, hot)
+            OpAmp -> pen.opamp(e, most, hot)
             _ -> pen.part(e, most, hot)
 
     // A dot wherever three or more ends meet, as a draughtsman marks a junction.
@@ -279,6 +298,10 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
         for i in 0..<m.sch.elements.len()
             val e = m.sch.elements[i]
 
+            // An op-amp's currents are seen on the wires to its pins.
+            if e.shape == OpAmp
+                continue
+
             if e.part >= 0 && (e.shape == Nmos || e.shape == Pmos)
                 pen.mosfet_dots(e, i, m.part_flow[i])
             elif e.part >= 0 && e.shape.points() == 3
@@ -302,17 +325,10 @@ private ends_at(m: &Model, x: int, y: int) -> int
 
         if e.shape == Meter || e.shape == Label then continue
 
-        if e.x1 == x && e.y1 == y then n += 1
+        for end in 0..<e.shape.points()
+            if e.point(end) == (x, y) then n += 1
 
-        if e.shape.points() == 2
-            if e.x2 == x && e.y2 == y
-                n += 1
-            elif e.shape == Wire && between(x, y, e)
-                n += 2
-        elif e.shape.points() == 3
-            if e.x2 == x && e.y2 == y then n += 1
-
-            if e.x3 == x && e.y3 == y then n += 1
+        if e.shape == Wire && between(x, y, e) then n += 2
 
     n
 
@@ -722,6 +738,42 @@ private struct Pen
     // A transistor: a lead from each of its three points in its node's colour, and the symbol in a
     // circle between them — the base's bar, the collector's and emitter's slants to it, and the
     // emitter's arrow, pointing out of an NPN and into a PNP.
+    // An op-amp: a triangle pointing at its output, its inputs on its left marked − above and + below,
+    // its supplies' leads meeting its top and bottom edges, each lead in its pin's colour.
+    opamp(self, e: Element, most: real, hot: bool)
+        val m = self.m
+        val (cx, cy) = (real(e.x4), real(e.y3))
+        // Where the slanting edges cross the supplies' line.
+        val edge = TRIANGLE_HALF * (1.0 - TRIANGLE_BACK / (TRIANGLE_BACK + TRIANGLE_TIP))
+
+        self.width(3.0)
+
+        for (k, x0, y0, x1, y1) in [(0, real(e.x1), real(e.y1), cx - TRIANGLE_BACK, real(e.y1)),
+                                    (1, real(e.x2), real(e.y2), cx - TRIANGLE_BACK, real(e.y2)),
+                                    (2, real(e.x3), real(e.y3), cx + TRIANGLE_TIP, cy),
+                                    (3, real(e.x4), real(e.y4), cx, cy - edge),
+                                    (4, real(e.x5), real(e.y5), cx, cy + edge)]
+            set(self.vg, wire_colour(m.s.voltage(e.node(k)), most))
+            self.line(x0, y0, x1, y1)
+
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+        self.vg.begin()
+        self.vg.move_to(self.px(cx - TRIANGLE_BACK), self.py(cy - TRIANGLE_HALF))
+        self.vg.line_to(self.px(cx + TRIANGLE_TIP), self.py(cy))
+        self.vg.line_to(self.px(cx - TRIANGLE_BACK), self.py(cy + TRIANGLE_HALF))
+        self.vg.close_path()
+        self.vg.stroke()
+
+        // − beside the inverting input, + beside the non-inverting one.
+        self.width(2.0)
+
+        val sx = cx - TRIANGLE_BACK + 0.35
+
+        self.line(sx - 0.15, real(e.y2), sx + 0.15, real(e.y2))
+        self.line(sx - 0.15, real(e.y1), sx + 0.15, real(e.y1))
+        self.line(sx, real(e.y1) - 0.15, sx, real(e.y1) + 0.15)
+
     transistor(self, e: Element, most: real, hot: bool)
         val g = transistor_frame(e)
         val m = self.m
@@ -1038,7 +1090,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp -> true
     _ -> false
 
 // The text over the picture: each part's name and value, the voltage across it when values are on,
@@ -1057,6 +1109,18 @@ private labels(m: &Model, c: *Canvas, at: Place)
         if !e.shape.is_part() then continue
 
         if crowded && !labelled_when_crowded(e.shape) then continue
+
+        // An op-amp's name and model over its triangle beside its positive supply's lead, and with
+        // values on, its output's voltage under its tip.
+        if e.shape == OpAmp
+            val (cx, cy) = (real(e.x4), real(e.y3))
+
+            put(c, at.x(cx + 0.3), at.y(cy - TRIANGLE_HALF) - 20.0, s"${e.name} ${e.value}", INK, false)
+
+            if !crowded && m.values && m.trouble == ""
+                put(c, at.x(cx + 0.6), at.y(cy + 0.5), volts(m.s.voltage(e.c)), 0xFFB030, false)
+
+            continue
 
         if e.shape.points() == 3
             transistor_label(m, c, at, e)

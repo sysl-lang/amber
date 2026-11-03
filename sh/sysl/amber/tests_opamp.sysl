@@ -1,7 +1,9 @@
 module sh.sysl.amber
 @tests
 
-import sysl.math.{max, min}
+import sysl.buf.{Buf, buf}
+import sysl.math.{max, min, tau}
+import sysl.raw.str_cast
 
 // The op-amp macromodel against what an op-amp does: the gain feedback sets, the rails it stops short
 // of, its bandwidth shrinking as its gain grows, how fast its output can move, the current it can give,
@@ -179,3 +181,87 @@ opamp_supply_current()
             sum += s.terminal_current(3, k)
 
         assert(sum.abs() < 1e-12)
+
+// --- In a schematic ---------------------------------------------------------------------------------
+
+@test("a schematic's op-amp is placed by its middle, its five pins around it, the 741 unless it says")
+opamp_schematic()
+    val sch = parse_schematic("opamp U1 10 8\nopamp U2 20 8 TL072").unwrap()
+    val u1 = sch.elements[0]
+
+    assert(u1.shape == OpAmp && u1.value == "741")
+    assert(u1.point(0) == (8, 9) && u1.point(1) == (8, 7) && u1.point(2) == (12, 8))
+    assert(u1.point(3) == (10, 6) && u1.point(4) == (10, 10))
+    assert(sch.circuit.parts[0].kind == OpAmp(OPAMP_741))
+    assert(sch.circuit.parts[1].kind == OpAmp(OPAMP_TL072))
+
+    // Each pin is its own node, joined to whatever reaches its point.
+    val wired = parse_schematic("opamp U1 10 8\nresistor R1 12 8 14 8 1k\nwire 10 6 10 2\nground 10 10").unwrap()
+    val p = wired.circuit.parts[0]
+
+    assert(p.c == wired.circuit.parts[1].a)
+    assert(p.e == 0)
+    assert(p.d > 0 && p.a != p.b && p.a != p.d)
+
+    assert(parse_schematic("opamp").unwrap_err() == "line 1: an opamp needs a name")
+    assert(parse_schematic("opamp U1 3").unwrap_err() == "line 1: an opamp is placed by 1 point, its middle")
+    assert(parse_schematic("opamp U1 3 4 LM358").unwrap_err() == "line 1: 'LM358' is not an op-amp model: 741 or TL072")
+    assert(parse_schematic("opamp U1 3 4 741 fast").unwrap_err() == "line 1: 'fast' is more than an opamp takes")
+
+// The amplitude of `v`, `dt` apart, at `hz`, and its harmonics' total against it.
+private tone_of(v: Buf[real], dt: real, hz: real) -> (real, real)
+    val at = (f: real) ->
+        var re = 0.0
+        var im = 0.0
+
+        for k in 0..<v.len()
+            val a = tau * f * real(k) * dt
+
+            re += v[k] * a.cos()
+            im += v[k] * a.sin()
+
+        2.0 * (re * re + im * im).sqrt() / real(v.len())
+
+    var sum = 0.0
+
+    for h in 2..5
+        sum += at(hz * real(h)) * at(hz * real(h))
+
+    (at(hz), sum.sqrt() / at(hz))
+
+@test("the op-amp example: eleven times the generator's 50 mV into the speaker, a clean sine, while U1 jumps the push-pull pair's gap")
+opamp_example()
+    var s = sim(parse_schematic(str_cast(embed("../../../examples/opamp.amber"))).unwrap().circuit)
+    var out: Buf[real] = buf()
+    var drive: Buf[real] = buf()
+    val dt = 1.0 / 48000.0
+
+    s.operating_point().unwrap()
+
+    // Ten cycles of 440 Hz in, then ten to measure, a sample at a time as the viewer plays it.
+    for k in 1..2400
+        s.advance_to(real(k) * dt).unwrap()
+
+    for k in 0..<1091
+        s.advance_to(real(2400 + k) * dt).unwrap()
+        out.push(s.voltage_at("out"))
+        drive.push(s.voltage(s.circuit.parts[3].c))
+
+    val (swing, thd) = tone_of(out, dt, 440.0)
+    val (_, notched) = tone_of(drive, dt, 440.0)
+
+    assert(swing > 0.53 && swing < 0.56)
+    assert(thd < 0.01)
+    // U1's own output is far from a sine: it carries the gap the pair would leave.
+    assert(notched > 5.0 * thd)
+
+    // And the push-pull pair, not U1, carries the speaker's current: U1 gives a few hundredths of it.
+    var most_speaker = 0.0
+    var most_u1 = 0.0
+
+    for k in 0..<480
+        s.advance_to(real(3491 + k) * dt).unwrap()
+        most_speaker = max(most_speaker, s.voltage_at("out").abs() / 8.0)
+        most_u1 = max(most_u1, s.current(3).abs())
+
+    assert(most_speaker > 0.06 && most_u1 < 0.05 * most_speaker)

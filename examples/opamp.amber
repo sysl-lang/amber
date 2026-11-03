@@ -1,0 +1,59 @@
+# An op-amp amplifying the signal generator's sine eleven times and playing it through a speaker, with
+# a push-pull pair to do the lifting.
+#
+# U1 on its own could not drive the speaker: it gives at most 25 mA, which across 8 Ω is a fifth of a
+# volt, and asked for more it flattens the peaks. So its output drives the bases of Q1 and Q2, an NPN
+# and a PNP with their emitters together: Q1 pushes current into the speaker on the way up, Q2 pulls
+# it out on the way down, and U1 supplies only their base currents, a few hundredths as much.
+#
+# Between them is a gap: around zero neither transistor conducts until U1's output is a base drop
+# above or below the speaker, so on its own the pair would leave a notch at every crossing. RF takes
+# the feedback from the speaker, after the pair, so U1 sees the notch and closes it, jumping its output
+# across the gap faster than the ear can hear: watch DRIVE leap by about 1.3 V at each crossing while
+# OUT stays a clean sine. The gain is 1 + RF / RG, 11, and 50 mV in is 0.55 V out.
+#
+# The speaker plays while the clock runs at a second a second; `m` mutes it. Click the generator to
+# change the tone or the level.
+
+speed 1
+start settled
+
+battery   BP    40 0  40 8   12V
+battery   BN    40 8  40 16  12V
+ground          40 8
+wire            12 0  40 0
+wire            12 16 40 16
+
+gen       G1    4 9   4 13   sine 440 50m
+ground          4 13
+wire            4 9   10 9
+
+opamp     U1    12 8  TL072
+wire            12 6  12 0
+wire            12 10 12 16
+
+# The gain: RG from the inverting input to ground, RF back from the speaker.
+wire            10 7  10 2
+resistor  RG    10 5  6 5    1k
+ground          6 5
+wire            10 2  14 2
+resistor  RF    14 2  18 2   10k
+wire            18 2  26 2
+wire            26 2  26 8
+
+# The push-pull pair, its bases on U1's output and its emitters on the speaker.
+wire            14 8  18 8
+wire            18 6  18 10
+npn       Q1    20 3  18 6   20 8   2N3904
+pnp       Q2    20 13 18 10  20 8   2N3906
+wire            20 3  20 0
+wire            20 13 20 16
+wire            20 8  26 8
+speaker   SPK   24 8  24 12  8
+ground          24 12
+
+label     in    7 9
+label     out   26 8
+meter     IN    4 9   4 13
+meter     DRIVE 18 10 24 12
+meter     OUT   24 8  24 12
