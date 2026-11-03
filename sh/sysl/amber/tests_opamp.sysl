@@ -141,9 +141,10 @@ opamp_current_limit()
 
     // 25 mA into 8 Ω, and the few microvolts the input's 0.4 µA through its 2 MΩ adds.
     assert(out > 0.15 && out < 0.2 + 1e-5)
-    // The load, RL, the sixth part, carries what the op-amp gives: no more than its 25 mA.
-    assert(near(s.current(5), out / 8.0, 1e-9))
-    assert(s.current(5) < 25e-3 && near(-s.current(3), s.current(5), 1e-6))
+    // The op-amp gives no more than its 25 mA (its current is what flows out of its output), and the
+    // load, RL, carries that and the input's 0.4 µA.
+    assert(s.current(3) < 25e-3 && s.current(3) > 24.9e-3)
+    assert(near(s.current(5), s.current(3) + 0.4e-6, 1e-8))
 
     // A light load is no trouble: 1 V into 1k is 1 V.
     var light = sim(non_inverting(OPAMP_741, Dc(1.0), 0.0, 0.0, 1e3))
