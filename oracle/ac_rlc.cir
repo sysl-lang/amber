@@ -1,0 +1,14 @@
+Series RLC band-pass across its resonance
+* 1 mH and 1 uF resonate at 5.03 kHz; 10 ohms sets a Q of about 3.2.
+V1 in 0 AC 1
+R1 in a 10
+L1 a b 1m
+C1 b out 1u
+RL out 0 100
+.ac dec 10 100 100k
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+ac dec 10 100 100k
+wrdata ac_rlc.data vr(out) vi(out) vr(b) vi(b)
+.endc
+.end

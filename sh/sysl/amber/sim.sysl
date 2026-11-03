@@ -2,6 +2,7 @@ module sh.sysl.amber
 
 import sysl.buf.{Buf, buf}
 import sysl.math.{max, min}
+import sysl.math.complex.Complex
 
 // The thermal voltage kT/q at 27 °C, 300.15 K, the temperature SPICE assumes, from the exact SI values of
 // Boltzmann's constant and the electron's charge.
@@ -72,7 +73,7 @@ struct Sim
     junction: Buf[real]
     size: int
     x: Buf[real]
-    sys: System
+    sys: System[real]
     // A conductance from every node to ground while the solution is approached by steps; 0 otherwise.
     shunt: real
     // The time the solution is at, in seconds.
@@ -258,6 +259,63 @@ struct Sim
     current_limited(self, i: int) -> bool = self.circuit.parts[usize(i)].kind match
         Supply(s) -> (s.wave().at(self.time) - self.across(i)) / s.resistance() > s.amps
         _ -> false
+
+    // How the circuit answers a small sine at `hertz` from each of `drives`: every voltage and current
+    // as a phasor, its size the sine's amplitude and its angle the sine's phase. The circuit is the
+    // straight line touching it at the solution it has now — the operating point, found first if it
+    // has not been — so a diode is its conductance there, a transistor its gains, a capacitor
+    // `jωC` and an inductor `jωL`, and a source not driven holds still.
+    response(*self, hertz: real, drives: []const Drive) -> Result[Response, string]
+        if !self.started then self.operating_point()?
+
+        // The system the operating point was solved with is the line itself: written now, with the
+        // junctions where the solution left them, it is every part's slope there.
+        val was = self.method
+
+        self.method = Steady
+        self.stamp()
+        self.method = was
+
+        val w = 2.0 * real.pi() * hertz
+        var sys: System[Complex[real]] = system(self.size)
+
+        for k in 0..<self.sys.a.len()
+            sys.a[k] = Complex.from_real(self.sys.a[k])
+
+        for i in 0..<self.circuit.parts.len()
+            val p = self.circuit.parts[i]
+            val a = p.a - 1
+            val b = p.b - 1
+
+            p.kind match
+                Capacitor(farads) ->
+                    val y = Complex(0.0, w * farads)
+
+                    sys.at(a, a, y)
+                    sys.at(b, b, y)
+                    sys.at(a, b, -y)
+                    sys.at(b, a, -y)
+                Inductor(henries) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, -w * henries))
+                _ -> ()
+
+        for d in drives
+            val p = self.circuit.parts[usize(d.part)]
+            val a = p.a - 1
+            val b = p.b - 1
+
+            p.kind match
+                VoltageSource(_) -> sys.rhs(self.extra[usize(d.part)], d.phasor)
+                CurrentSource(_) ->
+                    sys.rhs(a, -d.phasor)
+                    sys.rhs(b, d.phasor)
+                Generator(_, ohms) ->
+                    sys.rhs(a, d.phasor / ohms)
+                    sys.rhs(b, -d.phasor / ohms)
+                _ -> return Err(s"'${p.name}' is not a source, so it cannot be driven")
+
+        if sys.solve().is_none() then return Err(self.singular())
+
+        Ok(Response(hertz, self.circuit, self.extra, sys.z))
 
     // Find the DC operating point at the present time: every voltage and current with the circuit
     // settled, capacitors charged and inductors' currents steady. Time starts from here.
@@ -760,6 +818,35 @@ struct Sim
     private singular(self) -> string
         "the circuit has a node no part fixes the voltage of, or a loop of voltage sources and inductors"
 end Sim
+
+// A source driven with a small sine in `Sim.response`: its part and the sine as a phasor.
+struct Drive
+    part: int
+    phasor: Complex[real]
+
+// Source `part` driven with a sine of `amplitude` (volts, or amps for a current source) at a phase of
+// `degrees`.
+drive(part: int, amplitude: real, degrees: real) -> Drive =
+    Drive(part, Complex.from_polar(amplitude, degrees.to_radians()))
+
+// A circuit's answer to a small sine, at one frequency: each voltage and current a phasor.
+struct Response
+    hertz: real
+    circuit: Circuit
+    extra: Buf[int]
+    x: Buf[Complex[real]]
+
+    // The voltage at node `node` against ground.
+    voltage(self, node: int) -> Complex[real] = if node <= 0 then Complex.from_real(0.0) else self.x[usize(node - 1)]
+
+    // The current through voltage source or inductor `i`, from its first terminal to its second; zero
+    // for any other part.
+    current(self, i: int) -> Complex[real]
+        val k = self.extra[usize(i)]
+
+        self.circuit.parts[usize(i)].kind match
+            VoltageSource(_) | Inductor(_) -> self.x[usize(k)]
+            _ -> Complex.from_real(0.0)
 
 // A simulator for `c`, not yet solved. It works on its own copy of the parts, so flipping a switch or
 // changing a wave in it leaves `c` as it was.

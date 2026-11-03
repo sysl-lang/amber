@@ -1,0 +1,21 @@
+Common-source NMOS amplifier with a source capacitor, its gain against frequency
+VG g 0 DC 0 AC 1 90
+CIN g gate 100n
+R1 vdd gate 1meg
+R2 gate 0 470k
+VDD vdd 0 12
+RD vdd d 4.7k
+M1 d gate s s nm L=10u W=100u
+RS s 0 1k
+CS s 0 47u
+COUT d out 1u
+RL out 0 47k
+LCH out 0 10
+.model nm NMOS (LEVEL=1 VTO=1.5 KP=100u LAMBDA=0.02)
+.ac oct 2 10 1meg
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+ac oct 2 10 1meg
+wrdata ac_cs_amplifier.data vr(out) vi(out) vr(s) vi(s) vr(d) vi(d)
+.endc
+.end

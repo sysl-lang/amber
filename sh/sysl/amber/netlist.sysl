@@ -34,11 +34,13 @@ import sysl.text.{Search, fields, split, to_lower}
 // | `.op` | the operating point |
 // | `.tran tstep tstop [tstart [tmax]] [UIC]` | a run through time, printed every `tstep` |
 // | `.dc source start stop step` | the operating point at each value of a source |
+// | `.ac dec\|oct\|lin points fstart fstop` | the response to a small sine at each frequency |
 // | `.end` | the end; anything after it is not read |
 //
 // Waves are SPICE's `PULSE(v1 v2 td tr tf pw per)`, `SIN(vo va freq td theta phase)` and
-// `PWL(t1 v1 t2 v2 …)`, with SPICE's defaults for the parameters left off. An `AC` part of a source is
-// read and set aside; a `.control` block is ngspice's own scripting and is skipped whole.
+// `PWL(t1 v1 t2 v2 …)`, with SPICE's defaults for the parameters left off. A source's `AC magnitude
+// [phase]`, the phase in degrees, is the sine `.ac` drives it with; a `.control` block is ngspice's own
+// scripting and is skipped whole.
 //
 // **What is read but not modelled is said, not dropped.** A diode model's junction capacitance, a
 // transistor model's base resistance, a MOSFET's body effect or a bulk not on its source, a `.options`
@@ -55,6 +57,39 @@ enum Analysis derives Eq
     Tran(step: real, stop: real, start: real, longest: real, from_empty: bool)
     // Source `source` set to each value from `from` to `to` by `step`.
     Sweep(source: string, from: real, to: real, step: real)
+    // The response to the sources' `AC` parts at frequencies from `from` to `to` hertz: `points` a
+    // decade or an octave apart, or `points` in all evenly spaced.
+    Ac(spacing: Spacing, points: int, from: real, to: real)
+
+// How `.ac` spaces its frequencies.
+enum Spacing
+    Decade
+    Octave
+    Linear
+
+// The frequencies `.ac` visits: each `points` a decade or an octave from `from`, while not past `to`,
+// or `points` of them from `from` to `to` evenly.
+frequencies(spacing: Spacing, points: int, from: real, to: real) -> Buf[real]
+    var out: Buf[real] = buf()
+
+    if spacing == Linear
+        for k in 0..<points
+            out.push(if points == 1 then from else from + (to - from) * real(k) / real(points - 1))
+
+        return out
+
+    val base = if spacing == Decade then 10.0 else 2.0
+    var k = 0
+
+    loop
+        val f = from * base.pow(real(k) / real(points))
+
+        if f > to * (1.0 + 1e-9) then break
+
+        out.push(f)
+        k += 1
+
+    out
 
 struct Netlist
     title: string
@@ -62,6 +97,8 @@ struct Netlist
     analyses: Buf[Analysis]
     // What each capacitor and inductor holds when switched on, by part; 0 for the rest.
     initial: Buf[real]
+    // The sources with an `AC` part, which `.ac` drives.
+    drives: Buf[Drive]
     // What was read and not modelled, one sentence each.
     notes: Buf[string]
 
@@ -119,6 +156,7 @@ parse_netlist(text: string) -> Result[Netlist, string]
 
                     analyses.push(a)
                 ".dc" -> analyses.push(dc_card(words).map_err(why -> s"${at}: ${why}")?)
+                ".ac" -> analyses.push(ac_card(words).map_err(why -> s"${at}: ${why}")?)
                 ".options" | ".option" | ".print" | ".plot" | ".probe" | ".save" | ".width" | ".temp" ->
                     notes.push(s"${at}: ${words[0]} is not acted on")
                 ".ic" | ".nodeset" -> notes.push(s"${at}: ${words[0]} is not read; give capacitors and inductors IC= instead")
@@ -127,6 +165,7 @@ parse_netlist(text: string) -> Result[Netlist, string]
 
     var c = circuit()
     var initial: Buf[real] = buf()
+    var drives: Buf[Drive] = buf()
 
     for k in 1..<lines.len()
         val (line_no, words) = lines[k]
@@ -143,6 +182,10 @@ parse_netlist(text: string) -> Result[Netlist, string]
 
         initial.push(e.ic)
 
+        if e.kind.wave().is_some()
+            if source_ac(words.view()[3..<words.len()]) is Some((mag, phase))
+                drives.push(drive(int(c.parts.len()) - 1, mag, phase))
+
     for k in 0..<analyses.len()
         if analyses[k] is Sweep(source, _, _, _)
             val found = c.find_part(source) match
@@ -151,7 +194,7 @@ parse_netlist(text: string) -> Result[Netlist, string]
 
             if !found then return Err(s".dc sweeps '${source}', which is not a source in the netlist")
 
-    Ok(Netlist(split(text, "\n")[0].trim(), c, analyses, initial, notes))
+    Ok(Netlist(split(text, "\n")[0].trim(), c, analyses, initial, drives, notes))
 
 // The netlist's lines with comments taken out and continuations joined, each with the number of the
 // line it began on, split into words. The title keeps its case; everything else is lower case, with
@@ -348,6 +391,26 @@ private tran_card(words: Buf[string]) -> Result[Analysis, string]
 
     Ok(Tran(step, stop, start, longest, from_empty))
 
+// `.ac dec|oct|lin points fstart fstop`.
+private ac_card(words: Buf[string]) -> Result[Analysis, string]
+    if words.len() != 5 then return Err(".ac takes dec, oct or lin, a number of points, a start and a stop")
+
+    val spacing = words[1] match
+        "dec" -> Decade
+        "oct" -> Octave
+        "lin" -> Linear
+        _ -> return Err(s".ac spaces its frequencies by dec, oct or lin, not '${words[1]}'")
+
+    val points = parse_value(words[2])?
+    val from = parse_value(words[3])?
+    val to = parse_value(words[4])?
+
+    if points < 1.0 || points != points.floor() then return Err(".ac's number of points is a whole number above zero")
+
+    if from <= 0.0 || to < from then return Err(".ac's frequencies start above zero and stop at or after their start")
+
+    Ok(Ac(spacing, int(points), from, to))
+
 // `.dc source start stop step`.
 private dc_card(words: Buf[string]) -> Result[Analysis, string]
     if words.len() != 5 then return Err(".dc takes one source, a start, a stop and a step")
@@ -518,11 +581,24 @@ private value_and_ic(name: string, rest: []string) -> Result[(real, real), strin
 
     Err(s"'${name}' takes a value and perhaps IC=")
 
+// A source's `ac` part, `AC magnitude [phase]`, with the phase in degrees: how `.ac` drives it. A
+// source without one is not driven; SPICE's magnitude when the word stands alone is 1.
+private source_ac(words: []string) -> Option[(real, real)]
+    for k in 0..<words.len
+        if words[k] == "ac"
+            val mag = if k + 1 < words.len then parse_value(words[k + 1]).unwrap_or(1.0) else 1.0
+            val phase = if k + 2 < words.len then parse_value(words[k + 2]).unwrap_or(0.0) else 0.0
+
+            return Some((mag, phase))
+
+    None
+
 // A source's value or wave: `[dc] v`, `pulse(…)`, `sin(…)` or `pwl(…)`, each perhaps with an `ac`
-// part, which is set aside.
+// part, which `source_ac` reads.
 private source_wave(name: string, words: []string, tstep: real, tstop: real) -> Result[Wave, string]
     var dc: Option[real] = None
     var wave: Option[Wave] = None
+    var driven = false
     var k: usize = 0
 
     while k < words.len
@@ -534,7 +610,8 @@ private source_wave(name: string, words: []string, tstep: real, tstop: real) -> 
             dc = Some(parse_value(words[k + 1])?)
             k += 2
         elif w == "ac"
-            // A magnitude and perhaps a phase, both numbers.
+            // A magnitude and perhaps a phase, read by `source_ac`.
+            driven = true
             k += 1
 
             var taken = 0
@@ -564,7 +641,8 @@ private source_wave(name: string, words: []string, tstep: real, tstop: real) -> 
         Some(w) -> Ok(w)
         None -> dc match
             Some(v) -> Ok(Dc(v))
-            None -> Err(s"'${name}' needs a value")
+            // A source that is only an `AC` part holds nothing still, as SPICE has it.
+            None -> if driven then Ok(Dc(0.0)) else Err(s"'${name}' needs a value")
 
 // SPICE's waves from their arguments, with SPICE's defaults for those left off.
 private spice_wave(name: string, kind: string, v: Buf[real], tstep: real, tstop: real) -> Result[Wave, string]

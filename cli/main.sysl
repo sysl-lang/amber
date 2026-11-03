@@ -4,9 +4,10 @@
 //
 // The notes come first — what the netlist asks for that amber reads but does not model — then each
 // analysis in the order the netlist gives them: the operating point as a list of values, a run
-// through time or a sweep as a table, one row a print step or a swept value.
+// through time, a sweep or a small-signal analysis as a table, one row a print step, a swept value or
+// a frequency.
 
-import sh.sysl.amber.{Netlist, parse_netlist, run_analysis, engineering, Analysis, Op, Tran, Sweep, Table}
+import sh.sysl.amber.{Netlist, parse_netlist, run_analysis, engineering, Analysis, Op, Tran, Sweep, Ac, Spacing, Decade, Octave, Table}
 import sysl.buf.{Buf, buf}
 import sysl.fs.read_text
 
@@ -32,7 +33,7 @@ report(text: string) -> Result[Buf[string], string]
     for k in 0..<net.notes.len()
         out.push(s"note: ${net.notes[k]}")
 
-    if net.analyses.len() == 0 then out.push("no analysis asked for: .op, .tran or .dc")
+    if net.analyses.len() == 0 then out.push("no analysis asked for: .op, .tran, .dc or .ac")
 
     for k in 0..<net.analyses.len()
         val a = net.analyses[k]
@@ -50,6 +51,13 @@ heading(a: Analysis) -> string = a match
     Tran(step, stop, _, _, from_empty) ->
         s"transient, every ${engineering(step)}s to ${engineering(stop)}s${if from_empty then ", from empty" else ""}"
     Sweep(source, from, to, step) -> s"sweep of ${source} from ${engineering(from)} to ${engineering(to)} by ${engineering(step)}"
+    Ac(spacing, points, from, to) ->
+        val per = spacing match
+            Decade -> " a decade"
+            Octave -> " an octave"
+            Linear -> ""
+
+        s"small signal, ${points} points${per} from ${engineering(from)}Hz to ${engineering(to)}Hz"
 
 private point(t: Table, out: *Buf[string])
     for k in 0..<t.columns.len()

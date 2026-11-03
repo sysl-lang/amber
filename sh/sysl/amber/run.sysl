@@ -1,6 +1,8 @@
 module sh.sysl.amber
 
 import sysl.buf.{Buf, buf}
+import sysl.math.max
+import sysl.math.complex.Complex
 
 // What an analysis answers with: named columns, and a row for each moment or each value swept.
 struct Table
@@ -65,6 +67,61 @@ run_analysis(net: Netlist, a: Analysis) -> Result[Table, string]
                 t.rows.push(row(net, &s, Some(value)))
 
             Ok(t)
+        Ac(spacing, points, from, to) ->
+            s.operating_point()?
+
+            var t = ac_table(net)
+
+            for f in frequencies(spacing, points, from, to)
+                val r = s.response(f, net.drives.view())?
+                var cells: Buf[real] = buf()
+
+                cells.push(f)
+
+                for n in 1..<net.circuit.nodes.len()
+                    push_phasor(&cells, r.voltage(int(n)))
+
+                for i in 0..<net.circuit.parts.len()
+                    net.circuit.parts[i].kind match
+                        VoltageSource(_) | Inductor(_) -> push_phasor(&cells, r.current(int(i)))
+                        _ -> ()
+
+                t.rows.push(cells)
+
+            Ok(t)
+
+// `.ac`'s columns, SPICE's names for the parts of a phasor: for each node `vdb` (its size in
+// decibels), `vp` (its phase in radians), `vr` and `vi` (its real and imaginary parts), and the same
+// four for each voltage source's and inductor's current.
+private ac_table(net: Netlist) -> Table
+    var columns: Buf[string] = buf()
+
+    columns.push("frequency")
+
+    for n in 1..<net.circuit.nodes.len()
+        for part in ["vdb", "vp", "vr", "vi"]
+            columns.push(s"${part}(${net.circuit.nodes[n]})")
+
+    for i in 0..<net.circuit.parts.len()
+        val p = net.circuit.parts[i]
+
+        p.kind match
+            VoltageSource(_) | Inductor(_) ->
+                for part in ["idb", "ip", "ir", "ii"]
+                    columns.push(s"${part}(${p.name})")
+            _ -> ()
+
+    Table(columns, buf())
+
+private push_phasor(cells: *Buf[real], z: Complex[real])
+    cells.push(decibels(z))
+    cells.push(z.arg())
+    cells.push(z.re)
+    cells.push(z.im)
+
+// A phasor's size in decibels, `20 log10 |z|`; a node the sine never reaches is given -300 dB rather
+// than minus infinity.
+decibels(z: Complex[real]) -> real = 20.0 * max(z.abs(), 1e-15).log10()
 
 private table(net: Netlist, first: string) -> Table
     var columns: Buf[string] = buf()

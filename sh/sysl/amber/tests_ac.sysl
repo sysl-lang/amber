@@ -1,0 +1,276 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.math.complex.Complex
+
+// The response to a small sine: `.ac` read from a netlist, the frequencies it visits, and the circuit
+// linearised about its operating point.
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+private phasor_near(got: Complex[real], want: Complex[real], tol: real) -> bool = (got - want).abs() <= tol
+
+// How far `node` moves for a volt at source `source`, measured the long way: the operating point with
+// the source a millivolt either side of `volts`. The small-signal answer at a low frequency, where no
+// capacitor is in the way, must be this slope.
+private slope(c: Circuit, source: int, volts: real, node: string) -> real
+    var up = sim(c)
+
+    up.set_wave(source, Dc(volts + 1e-3))
+    up.operating_point().unwrap()
+
+    var down = sim(c)
+
+    down.set_wave(source, Dc(volts - 1e-3))
+    down.operating_point().unwrap()
+
+    (up.voltage_at(node) - down.voltage_at(node)) / 2e-3
+
+@test(".ac reads its spacing, its points and its two frequencies")
+ac_card_reads()
+    val net = parse_netlist("a\nV1 a 0 AC 1\nR1 a 0 1k\n.ac dec 10 1 1meg\n.ac oct 3 100 800\n.ac lin 5 1k 5k\n").unwrap()
+
+    assert(net.analyses[0] == Ac(Decade, 10, 1.0, 1e6))
+    assert(net.analyses[1] == Ac(Octave, 3, 100.0, 800.0))
+    assert(net.analyses[2] == Ac(Linear, 5, 1e3, 5e3))
+
+@test("a source's AC part is how .ac drives it: a magnitude and a phase in degrees, and 1 alone")
+ac_drives_read()
+    val net = parse_netlist("""
+        d
+        V1 a 0 DC 2 AC 1 0 $ the input
+        V2 b 0 AC 2 90
+        I1 c 0 AC
+        V3 d 0 SIN(0 1 1k) AC 0.5 180
+        V4 e 0 5
+        R1 a b 1k
+        R2 c d 1k
+        R3 e 0 1k
+        .ac dec 1 1 10
+        """).unwrap()
+
+    assert(net.circuit.parts[0].kind == VoltageSource(Dc(2.0)))
+    // A source that is only an AC part holds nothing still.
+    assert(net.circuit.parts[1].kind == VoltageSource(Dc(0.0)))
+    assert(net.circuit.parts[2].kind == CurrentSource(Dc(0.0)))
+    assert(net.circuit.parts[3].kind.wave() == Some(Sine(0.0, 1.0, 1e3, 0.0, 0.0, 0.0)))
+    // V4 has no AC part, so it is not driven.
+    assert(net.drives.len() == 4)
+    assert(net.drives[0].part == 0 && phasor_near(net.drives[0].phasor, Complex(1.0, 0.0), 1e-12))
+    assert(net.drives[1].part == 1 && phasor_near(net.drives[1].phasor, Complex(0.0, 2.0), 1e-12))
+    assert(net.drives[2].part == 2 && phasor_near(net.drives[2].phasor, Complex(1.0, 0.0), 1e-12))
+    assert(net.drives[3].part == 3 && phasor_near(net.drives[3].phasor, Complex(-0.5, 0.0), 1e-12))
+
+@test(".ac's mistakes are refused, with their line")
+ac_card_refusals()
+    val base = "t\nV1 a 0 AC 1\nR1 a 0 1\n"
+
+    assert(parse_netlist(base + ".ac dec 10 1\n").unwrap_err() == "line 4: .ac takes dec, oct or lin, a number of points, a start and a stop")
+    assert(parse_netlist(base + ".ac log 10 1 10\n").unwrap_err() == "line 4: .ac spaces its frequencies by dec, oct or lin, not 'log'")
+    assert(parse_netlist(base + ".ac dec 0 1 10\n").unwrap_err() == "line 4: .ac's number of points is a whole number above zero")
+    assert(parse_netlist(base + ".ac dec 2.5 1 10\n").unwrap_err() == "line 4: .ac's number of points is a whole number above zero")
+    assert(parse_netlist(base + ".ac dec 10 0 10\n").unwrap_err() == "line 4: .ac's frequencies start above zero and stop at or after their start")
+    assert(parse_netlist(base + ".ac dec 10 10 1\n").unwrap_err() == "line 4: .ac's frequencies start above zero and stop at or after their start")
+    // A source that is neither a value, a wave nor an AC part still needs one.
+    assert(parse_netlist("t\nV1 a 0\nR1 a 0 1\n").unwrap_err() == "line 2: 'v1' needs two nodes and a value")
+    assert(parse_netlist("t\nV1 a 0 DC\nR1 a 0 1\n").unwrap_err() == "line 2: 'v1': dc needs a value")
+
+@test("the frequencies: so many a decade or an octave up to the stop, or so many evenly in all")
+frequencies_spaced()
+    val dec = frequencies(Decade, 10, 100.0, 1e5)
+
+    assert(dec.len() == 31)
+    assert(dec[0] == 100.0)
+    assert(near(dec[1], 125.89254117941673, 1e-9))
+    // The last lands on the stop, give or take rounding, and is not lost to it.
+    assert(near(dec[30], 1e5, 1e-6))
+
+    val oct = frequencies(Octave, 2, 10.0, 40.0)
+
+    assert(oct.len() == 5)
+    assert(near(oct[1], 14.142135623730951, 1e-12))
+    assert(near(oct[4], 40.0, 1e-12))
+
+    // A stop short of the first step is the start alone.
+    assert(frequencies(Decade, 10, 100.0, 120.0).len() == 1)
+    assert(frequencies(Decade, 10, 100.0, 100.0).len() == 1)
+
+    val lin = frequencies(Linear, 5, 1e3, 5e3)
+
+    assert(lin.len() == 5)
+    assert(lin[0] == 1e3 && lin[2] == 3e3 && lin[4] == 5e3)
+    assert(frequencies(Linear, 1, 1e3, 5e3).len() == 1)
+    assert(frequencies(Linear, 1, 1e3, 5e3)[0] == 1e3)
+
+@test("an RC low-pass: flat below its corner, 3 dB down and 45° behind at it, falling 20 dB a decade above")
+rc_low_pass()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(0.0)), "in", "0")
+    c.connect("R1", Resistor(1e3), "in", "out")
+    c.connect("C1", Capacitor(1e-6), "out", "0")
+
+    var s = sim(c)
+    val drives = [drive(0, 1.0, 0.0)]
+    val corner = 1.0 / (2.0 * real.pi() * 1e3 * 1e-6)
+    val out = c.find_node("out").unwrap()
+
+    val low = s.response(corner / 1000.0, drives[..]).unwrap()
+
+    assert(near(low.voltage(out).abs(), 1.0, 1e-6))
+
+    val at = s.response(corner, drives[..]).unwrap()
+
+    assert(near(decibels(at.voltage(out)), -3.0103, 1e-4))
+    assert(near(at.voltage(out).arg(), -real.pi() / 4.0, 1e-9))
+
+    val high = s.response(corner * 100.0, drives[..]).unwrap()
+
+    assert(near(decibels(high.voltage(out)), -40.0, 1e-3))
+    // The source's current is what flows out of it through R1 and C1, the other way round.
+    assert(phasor_near(at.current(0), -(at.voltage(c.find_node("in").unwrap()) - at.voltage(out)) / Complex.from_real(1e3), 1e-15))
+    assert(at.current(1).is_zero())
+    assert(at.voltage(0).is_zero())
+
+@test("an inductor is jωL: an RL high-pass's corner, and a short at DC that does not disturb the bias")
+rl_high_pass()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(5.0)), "in", "0")
+    c.connect("R1", Resistor(100.0), "in", "out")
+    c.connect("L1", Inductor(10e-3), "out", "0")
+
+    var s = sim(c)
+    val corner = 100.0 / (2.0 * real.pi() * 10e-3)
+    val r = s.response(corner, [drive(0, 1.0, 0.0)][..]).unwrap()
+    val out = c.find_node("out").unwrap()
+
+    assert(near(r.voltage(out).abs(), 0.7071067811865476, 1e-9))
+    assert(near(r.voltage(out).arg(), real.pi() / 4.0, 1e-9))
+    // The operating point it was linearised about: the inductor a wire, carrying 50 mA.
+    assert(near(s.current(2), 0.05, 1e-9))
+    assert(near(r.current(2).abs(), 0.7071067811865476 / 100.0, 1e-9))
+
+@test("a generator and a current source drive through what they are: a resistance, and a current")
+generator_and_current_drive()
+    var c = circuit()
+
+    // A 50 Ω generator into a 50 Ω load delivers half its voltage.
+    c.connect("G1", Generator(Dc(0.0), 50.0), "a", "0")
+    c.connect("R1", Resistor(50.0), "a", "0")
+    // A milliamp flowing from `b` through the source to ground, so up through R2: -1 V at `b`.
+    c.connect("I1", CurrentSource(Dc(0.0)), "b", "0")
+    c.connect("R2", Resistor(1e3), "b", "0")
+
+    var s = sim(c)
+    val r = s.response(1e3, [drive(0, 2.0, 0.0), drive(2, 1e-3, 0.0)][..]).unwrap()
+
+    assert(phasor_near(r.voltage(c.find_node("a").unwrap()), Complex(1.0, 0.0), 1e-9))
+    assert(phasor_near(r.voltage(c.find_node("b").unwrap()), Complex(-1.0, 0.0), 1e-9))
+
+    // Each alone: a sine's answer is the sum of each source's.
+    val g = s.response(1e3, [drive(0, 2.0, 0.0)][..]).unwrap()
+
+    assert(r.voltage(1) == g.voltage(1))
+    assert(g.voltage(c.find_node("b").unwrap()).is_zero())
+
+@test("what cannot be driven or solved is refused")
+response_refusals()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(1.0)), "a", "0")
+    c.connect("R1", Resistor(1e3), "a", "0")
+
+    var s = sim(c)
+
+    assert(s.response(1e3, [drive(1, 1.0, 0.0)][..]).unwrap_err() == "'R1' is not a source, so it cannot be driven")
+
+    // Two voltage sources fighting over one node have no answer at any frequency.
+    var d = circuit()
+
+    d.connect("V1", VoltageSource(Dc(1.0)), "a", "0")
+    d.connect("V2", VoltageSource(Dc(1.0)), "a", "0")
+    var fighting = sim(d)
+
+    assert(fighting.response(1e3, [drive(0, 1.0, 0.0)][..]).is_err())
+
+    // Nothing driven: everything holds still.
+    val quiet = s.response(1e3, [][..]).unwrap()
+
+    assert(quiet.voltage(1).is_zero())
+
+@test("a diode is its conductance at the operating point: the answer is the slope of its curve")
+diode_linearised()
+    var c = circuit()
+
+    // SILICON has a series resistance, so the junction is a node inside the diode.
+    c.connect("V1", VoltageSource(Dc(2.0)), "in", "0")
+    c.connect("R1", Resistor(1e3), "in", "a")
+    c.connect("D1", Diode(SILICON), "a", "0")
+
+    var s = sim(c)
+    val r = s.response(1.0, [drive(0, 1.0, 0.0)][..]).unwrap()
+    val a = r.voltage(c.find_node("a").unwrap())
+
+    assert(near(a.re, slope(c, 0, 2.0, "a"), 1e-6))
+    assert(near(a.im, 0.0, 1e-15))
+    // About 1.2 mA flows, so the diode is tens of ohms against R1's thousand: a small fraction passes.
+    assert(a.re > 0.01 && a.re < 0.1)
+
+@test("a transistor is its gains at the operating point: a common-emitter stage's gain is the slope of its curve")
+transistor_linearised()
+    var c = circuit()
+
+    c.connect("VCC", VoltageSource(Dc(12.0)), "vcc", "0")
+    c.connect("VB", VoltageSource(Dc(1.6)), "in", "0")
+    c.connect("RB", Resistor(1e3), "in", "b")
+    c.connect("RC", Resistor(4.7e3), "vcc", "c")
+    c.connect3("Q1", Transistor(NPN_2N3904), "c", "b", "e")
+    c.connect("RE", Resistor(1e3), "e", "0")
+
+    var s = sim(c)
+    val gain = s.response(1.0, [drive(1, 1.0, 0.0)][..]).unwrap().voltage(c.find_node("c").unwrap())
+
+    assert(near(gain.re, slope(c, 1, 1.6, "c"), 1e-5))
+    // Inverting, and close to RC / RE.
+    assert(gain.re < -4.0 && gain.re > -4.7)
+
+@test("a MOSFET is its gm and gds at the operating point: a common-source stage's gain is the slope of its curve")
+mosfet_linearised()
+    var c = circuit()
+
+    c.connect("VDD", VoltageSource(Dc(12.0)), "vdd", "0")
+    c.connect("VG", VoltageSource(Dc(2.1)), "g", "0")
+    c.connect("RD", Resistor(4.7e3), "vdd", "d")
+    c.connect3("M1", Mosfet(NMOS_2N7000, DEFAULT_W, DEFAULT_L), "d", "g", "0")
+
+    var s = sim(c)
+    val gain = s.response(1.0, [drive(1, 1.0, 0.0)][..]).unwrap().voltage(c.find_node("d").unwrap())
+
+    // To the operating point's own tolerance, a few parts in a million.
+    assert(near(gain.re, slope(c, 1, 2.1, "d"), 1e-5 * gain.re.abs()))
+    // Saturated, a tenth of a volt over its threshold: gm is KP times that, a hundredth of a siemens,
+    // and the gain about gm · RD, a little more for the channel's shortening.
+    assert(gain.re < -47.0 && gain.re > -53.0)
+
+@test("a response is about the solution the circuit has now, found first if it has not been")
+response_finds_its_operating_point()
+    var c = circuit()
+
+    c.connect("V1", VoltageSource(Dc(2.0)), "in", "0")
+    c.connect("R1", Resistor(1e3), "in", "a")
+    c.connect("D1", Diode(SILICON), "a", "0")
+
+    var fresh = sim(c)
+    val first = fresh.response(1.0, [drive(0, 1.0, 0.0)][..]).unwrap()
+    var settled = sim(c)
+
+    settled.operating_point().unwrap()
+
+    val second = settled.response(1.0, [drive(0, 1.0, 0.0)][..]).unwrap()
+
+    assert(first.voltage(2) == second.voltage(2))
+    // And it leaves the circuit where it was, ready to run on through time.
+    assert(near(fresh.voltage_at("a"), settled.voltage_at("a"), 1e-15))
+    fresh.advance_to(1e-3).unwrap()

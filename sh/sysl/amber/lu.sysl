@@ -1,33 +1,43 @@
 module sh.sysl.amber
 
 import sysl.buf.{Buf, buf}
+import sysl.math.{Float, Magnitude}
+import sysl.math.complex.Complex
+
+// What a system's matrix holds: a real number for the circuit through time, a complex one for its
+// response to a sine. Pivoting asks each entry its size, which is the one comparison both have.
+trait Entry: Add + Sub + Mul + Div + Zero + Eq + Magnitude
+
+impl Entry for real
+
+impl[F: Float] Entry for Complex[F]
 
 // A dense square system `A · x = z`, solved by LU factorisation with partial pivoting.
 //
 // A circuit's matrix is mostly zeros, and a large one wants a sparse factorisation; the circuits a
 // person draws on a screen have tens of unknowns, where the dense one is simpler and fast enough.
-struct System
+struct System[T: Entry]
     n: int
     // Row-major, `n × n`.
-    a: Buf[real]
-    z: Buf[real]
+    a: Buf[T]
+    z: Buf[T]
 
     clear(*self)
         for i in 0..<self.a.len()
-            self.a[i] = 0.0
+            self.a[i] = T.zero()
 
         for i in 0..<self.z.len()
-            self.z[i] = 0.0
+            self.z[i] = T.zero()
 
     // Add `v` to the entry at row `r`, column `c`. A row or column of -1 is ground, which has no
     // equation of its own, and the stamp lands nowhere.
-    at(*self, r: int, c: int, v: real)
+    at(*self, r: int, c: int, v: T)
         if r < 0 || c < 0 then return
 
         self.a[usize(r * self.n + c)] += v
 
     // Add `v` to the right-hand side at row `r`.
-    rhs(*self, r: int, v: real)
+    rhs(*self, r: int, v: T)
         if r < 0 then return
 
         self.z[usize(r)] += v
@@ -36,19 +46,20 @@ struct System
     // singular — a node no part fixes the voltage of, or a loop of voltage sources.
     solve(*self) -> Option[unit]
         val n = self.n
+        val nothing = T.zero().magnitude()
 
         for k in 0..<n
             var p = k
-            var best = self.a[usize(k * n + k)].abs()
+            var best = self.a[usize(k * n + k)].magnitude()
 
             for r in k + 1..<n
-                val v = self.a[usize(r * n + k)].abs()
+                val v = self.a[usize(r * n + k)].magnitude()
 
                 if v > best
                     best = v
                     p = r
 
-            if best < 1e-300 then return None
+            if best <= nothing then return None
 
             if p != k
                 for c in 0..<n
@@ -67,7 +78,7 @@ struct System
             for r in k + 1..<n
                 val f = self.a[usize(r * n + k)] / pivot
 
-                if f != 0.0
+                if f != T.zero()
                     for c in k + 1..<n
                         self.a[usize(r * n + c)] -= f * self.a[usize(k * n + c)]
 
@@ -87,14 +98,14 @@ struct System
         Some(())
 end System
 
-system(n: int) -> System
-    var a: Buf[real] = buf()
-    var z: Buf[real] = buf()
+system[T: Entry](n: int) -> System[T]
+    var a: Buf[T] = buf()
+    var z: Buf[T] = buf()
 
     for _ in 0..<n * n
-        a.push(0.0)
+        a.push(T.zero())
 
     for _ in 0..<n
-        z.push(0.0)
+        z.push(T.zero())
 
     System(n, a, z)

@@ -1,0 +1,24 @@
+Common-emitter amplifier's gain from 1 Hz to 100 MHz
+* examples/amplifier.amber as a netlist: the coupling capacitors cut the low end; the model has no
+* junction capacitance, so the high end stays flat.
+VG g 0 DC 0 AC 1
+RG g in 50
+CIN in b 470n
+VCC vcc 0 12
+R1 vcc b 47k
+R2 b 0 10k
+RC vcc c 3.9k
+Q1 c b e q2n3904
+RE1 e x 100
+RE2 x 0 1k
+CE x 0 10u
+COUT c out 220n
+RL out 0 10k
+.model q2n3904 NPN (IS=6.734f BF=416.4 BR=0.7371 VAF=74.03)
+.ac dec 5 1 100meg
+.control
+option reltol=1e-6 abstol=1e-14 vntol=1e-9
+ac dec 5 1 100meg
+wrdata ac_ce_amplifier.data vr(out) vi(out) vr(b) vi(b)
+.endc
+.end

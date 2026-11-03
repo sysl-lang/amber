@@ -102,7 +102,7 @@ netlist_uic()
     assert(close(t.rows[0][1], 3.0, 1e-6))
     assert(close(t.rows[1][1], 3.0 * (-1.0).exp(), 1e-3))
 
-@test("an AC part of a source is set aside, and a $ comment is a comment")
+@test("an AC part of a source leaves its DC value alone, and a $ comment is a comment")
 netlist_ac_and_comments()
     val net = parse_netlist("a\nV1 a 0 DC 2 AC 1 0 $ the input\nR1 a 0 1k\n.op\n").unwrap()
 
@@ -144,13 +144,17 @@ netlist_refusals()
 // errors add up over a run: a sine ringing a resonant circuit for twelve cycles is the worst case
 // here, at 0.14%; the astable multivibrator, whose edges are steep, reaches 0.07%; the rest stay under
 // 0.03%. The operating point and a sweep, which take no steps, must agree to a part in ten thousand,
-// and do to a few parts in ten million.
+// and do to a few parts in ten million. A small-signal analysis must agree to a part in ten thousand of
+// the largest value its vector reaches, since a phasor's real or imaginary part passes through zero as
+// its phase turns; the amplifiers agree to a few parts in ten million, and the RLC filter, which has
+// no operating point to linearise about, to a part in a hundred million.
 agree(net: Netlist, names: []const string, expected: []const real)
     val width = names.len + 1
     val a = net.analyses[0]
     val t = run_analysis(net, a).unwrap()
     val rows = expected.len / width
     val stepped = a is Tran(_, _, _, _, _)
+    val phasors = a is Ac(_, _, _, _)
 
     if a != Op then assert(t.rows.len() == rows)
 
@@ -165,9 +169,14 @@ agree(net: Netlist, names: []const string, expected: []const real)
             val got_row = if a == Op then t.rows[0] else t.rows[r]
             val want = expected[r * width + 1 + j]
             val got = got_row[col]
-            val tol = if stepped then 2e-3 * span + 1e-6 else 1e-4 * want.abs() + 1e-6
+            val tol = if stepped then 2e-3 * span + 1e-6 elif phasors then 1e-4 * span + 1e-12 else 1e-4 * want.abs() + 1e-6
 
-            if a != Op then assert((got_row[0] - expected[r * width]).abs() <= 1e-9 * max(1.0, expected[r * width].abs()))
+            // ngspice writes nine figures, so a frequency a decade's tenth along, 125.892541179 Hz,
+            // comes back as 125.892541.
+            val scale = expected[r * width]
+            val near = if phasors then 1e-8 * scale.abs() else 1e-9 * max(1.0, scale.abs())
+
+            if a != Op then assert((got_row[0] - scale).abs() <= near)
 
             if (got - want).abs() > tol
                 print(s"${names[j]} at ${expected[r * width]}: amber ${got}, ngspice ${want}")
