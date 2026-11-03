@@ -20,7 +20,14 @@
 #
 # **RK is the resonance**: the output fed back to Q2, the pair's other side. Around the corner the four
 # poles turn the signal half way round, so what comes back there adds rather than subtracts, and the
-# filter rings at its corner as it sweeps — the vowel-like sweep of a synthesizer.
+# filter rings at its corner as it sweeps — the vowel-like sweep of a synthesizer. How hard it rings
+# is the loop's gain: RB2 / (RB2 + RK) of the output back, times the ladder's own gain, which follows
+# its current. At four the ladder sings on its own; 330k puts a struck note's loop at about three, so
+# each edge of the square rings once and alike, the ringing fading with the note as its current does.
+# Past four, with 100k, what came back drove the input pair from one side to the other and each falling
+# edge spiked down two and a half times as far as the rising edge went up. The input is kept to 10 mV
+# for the same reason: the pair is straight only within a few tens of millivolts, and a louder square
+# bends the two edges apart.
 #
 # U1 follows the top of the ladder's right column and drives the speaker through CSP, which keeps the
 # ladder's DC, rising and falling with each note, out of it. The speaker plays while the clock runs at
@@ -107,7 +114,7 @@ ground          30 31
 
 # The input: the generator onto Q1, both bases biased to 4 V, which leaves QT room to stay out of
 # saturation at the top of P1's range.
-gen       G1    4 22  4 26   square 110 50m
+gen       G1    4 22  4 26   square 110 10m
 ground          4 26
 capacitor CIN   4 22  8 22   1u
 wire            8 22  12 22
@@ -120,7 +127,7 @@ battery   BIN2  28 22 28 26  4V
 ground          28 26
 
 # The resonance: the output back to Q2.
-resistor  RK    24 22 24 18  100k
+resistor  RK    24 22 24 18  330k
 capacitor CK    24 18 24 15  10u
 wire            24 15 24 2
 wire            24 2  34 2

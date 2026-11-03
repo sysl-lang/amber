@@ -2,7 +2,7 @@ module sh.sysl.amber
 @tests
 
 import sysl.buf.{Buf, buf}
-import sysl.math.{max, tau}
+import sysl.math.{max, min, tau}
 import sysl.raw.str_cast
 
 // The Moog ladder example: a 110 Hz square through four transistor poles whose corner follows P1, the
@@ -87,9 +87,59 @@ moog_note()
     assert(at(before, dt, 110.0) < loud / 1000.0)
     // Loud at once, fading to under half in half a second.
     assert(at(late, dt, 110.0) < 0.5 * loud)
-    // Bright at once — the 9th harmonic a good part of a square's ninth — and dark as it fades.
-    assert(at(early, dt, 990.0) / loud > 0.1)
+    // Bright at once — the 9th harmonic most of a square's, which is a ninth of its first — and dark
+    // as it fades.
+    assert(at(early, dt, 990.0) / loud > 0.08)
     assert(at(late, dt, 990.0) / at(late, dt, 110.0) < 0.02)
+
+// How far `v` swings above its average and how far below.
+private swings(v: Buf[real]) -> (real, real)
+    var sum = 0.0
+    var hi = v[0]
+    var lo = v[0]
+
+    for k in 0..<v.len()
+        sum += v[k]
+        hi = max(hi, v[k])
+        lo = min(lo, v[k])
+
+    val mean = sum / real(v.len())
+
+    (hi - mean, mean - lo)
+
+@test("a struck note rings at its corner on both edges alike: the resonance does not slam the input pair from side to side")
+moog_resonance_symmetric()
+    val sch = parse_schematic(str_cast(embed("../../../examples/moog.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val button = sch.elements[usize(sch.find("S1").unwrap())].part
+    val dt = 1.0 / 24000.0
+    var v: Buf[real] = buf()
+
+    s.operating_point().unwrap()
+    s.set_switch(button, true)
+
+    // Eleven cycles of the bright start, at the follower's output, the ladder's top.
+    for k in 1..4800
+        s.advance_to(real(k) * dt).unwrap()
+
+        if k > 2400 then v.push(s.voltage_at("voice"))
+
+    val (up, down) = swings(v)
+
+    // A loop gain past the ladder's four sent each falling edge down two and a half times as far as
+    // the rising edges went up, with the pair driven from one side to the other and back.
+    assert(up > 0.1)
+    assert(down < 1.25 * up && up < 1.25 * down)
+
+    // And near its corner, around 1.6 kHz while struck, the ringing lifts a harmonic above where a
+    // square has it, its nth at 1/n of its first.
+    val first = at(v, dt, 110.0)
+    var lifted = false
+
+    for n in [11.0, 13.0, 15.0, 17.0, 19.0]
+        if at(v, dt, 110.0 * n) / first > 1.0 / n then lifted = true
+
+    assert(lifted)
 
 // How much of the square's top end gets through: its 9th to 15th harmonics against its first.
 private bright(h: Buf[real]) -> real = h[4] + h[5] + h[6] + h[7]
@@ -107,16 +157,7 @@ moog_cutoff()
     assert(open[4] > 0.1)
     assert(bright(dark) < bright(middle) && bright(middle) < bright(open))
     // The fundamental gets through whatever the cutoff.
-    assert(dark[0] > 0.2 && open[0] > 0.4)
-
-    // Near the corner the resonance lifts a harmonic above where a square has it, its nth at 1/n: at
-    // 1.95 V the corner is around a kilohertz, among the 9th to the 15th.
-    var lifted = false
-
-    for (k, n) in [(4, 9.0), (5, 11.0), (6, 13.0), (7, 15.0)]
-        if middle[usize(k)] > 1.0 / n then lifted = true
-
-    assert(lifted)
+    assert(dark[0] > 0.08 && open[0] > 0.2)
 
 @test("the ladder's tail transistor stays out of saturation across P1's range")
 moog_tail()
