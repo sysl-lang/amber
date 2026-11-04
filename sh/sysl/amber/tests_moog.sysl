@@ -141,6 +141,47 @@ moog_resonance_symmetric()
 
     assert(lifted)
 
+@test("a struck note starts without a thump, and the speaker holds each half of the square level")
+moog_no_thump_no_droop()
+    val sch = parse_schematic(str_cast(embed("../../../examples/moog.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val speaker = sch.elements[usize(sch.find("SPK").unwrap())].part
+    val button = sch.elements[usize(sch.find("S1").unwrap())].part
+    val dt = 1.0 / 24000.0
+
+    s.operating_point().unwrap()
+    s.set_switch(button, true)
+
+    val start = span(&s, speaker, dt, 0.03, dt)
+    val note = span(&s, speaker, 0.03, 0.12, dt)
+    val (up, down) = swings(note)
+    var loudest = 0.0
+
+    for k in 0..<start.len()
+        loudest = max(loudest, start[k].abs())
+
+    // Struck, the ladder's two columns both fall by volts as its current comes on. Heard from one
+    // column, that fall was a thump twice the note's own swing; heard as their difference, it cancels.
+    assert(loudest < 1.5 * max(up, down))
+
+    // A square's half holds level: half way through a half-period and just before its end, the
+    // speaker reads within a twentieth of the note's swing. Coupled to it through 2.2 µF, 2.2 ms against
+    // a half-period of 4.5, each half sagged most of the way back.
+    val half = 1.0 / 220.0
+    var worst = 0.0
+
+    for edge in 12..24
+        val t = real(edge) * half
+        val middle = s_at(note, 0.03, dt, t + 0.5 * half)
+        val end = s_at(note, 0.03, dt, t + 0.95 * half)
+
+        worst = max(worst, (end - middle).abs())
+
+    assert(worst < 0.05 * (up + down))
+
+// The reading of `v`, which starts at `from` and is `dt` apart, nearest time `t`.
+private s_at(v: Buf[real], from: real, dt: real, t: real) -> real = v[usize(((t - from) / dt).round())]
+
 // How much of the square's top end gets through: its 9th to 15th harmonics against its first.
 private bright(h: Buf[real]) -> real = h[4] + h[5] + h[6] + h[7]
 

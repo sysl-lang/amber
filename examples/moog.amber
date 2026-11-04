@@ -22,15 +22,18 @@
 # poles turn the signal half way round, so what comes back there adds rather than subtracts, and the
 # filter rings at its corner as it sweeps — the vowel-like sweep of a synthesizer. How hard it rings
 # is the loop's gain: RB2 / (RB2 + RK) of the output back, times the ladder's own gain, which follows
-# its current. At four the ladder sings on its own; 330k puts a struck note's loop at about three, so
+# its current. At four the ladder sings on its own; 680k puts a struck note's loop at about three, so
 # each edge of the square rings once and alike, the ringing fading with the note as its current does.
-# Past four, with 100k, what came back drove the input pair from one side to the other and each falling
-# edge spiked down two and a half times as far as the rising edge went up. The input is kept to 10 mV
-# for the same reason: the pair is straight only within a few tens of millivolts, and a louder square
-# bends the two edges apart.
+# Past four, what came back would drive the input pair from one side to the other, and each falling
+# edge would spike down far further than the rising edge went up. The input is kept to 10 mV for the
+# same reason: the pair is straight only within a few tens of millivolts, and a louder square bends the
+# two edges apart.
 #
-# U1 follows the top of the ladder's right column and drives the speaker through CSP, which keeps the
-# ladder's DC, rising and falling with each note, out of it. The speaker plays while the clock runs at
+# **U1 hears the two columns' difference**, as the Moog's own output stage does. When a note is struck
+# both columns fall by volts together as the ladder's current comes on; heard from one column, that
+# fall is a thump at the start of every note, and as a difference it cancels, while the note itself,
+# opposite in the two, doubles. CIN and CSP are large so that neither the generator's coupling nor the
+# speaker's lets a half of the square sag before the next edge. The speaker plays while the clock runs at
 # a second a second, and the status line says how fast the sound is being worked out: this is the
 # heaviest circuit here, about 40 unknowns solved some 30,000 times a second of sound, and on an idle
 # machine it keeps up with about one and a half times to spare.
@@ -116,7 +119,7 @@ ground          30 31
 # saturation at the top of P1's range.
 gen       G1    4 22  4 26   square 110 10m
 ground          4 26
-capacitor CIN   4 22  8 22   1u
+capacitor CIN   4 22  8 22   10u
 wire            8 22  12 22
 resistor  RB1   12 22 12 26  10k
 battery   BIN1  12 26 12 30  4V
@@ -127,15 +130,16 @@ battery   BIN2  28 22 28 26  4V
 ground          28 26
 
 # The resonance: the output back to Q2.
-resistor  RK    24 22 24 18  330k
+resistor  RK    24 22 24 18  680k
 capacitor CK    24 18 24 15  10u
 wire            24 15 24 2
 wire            24 2  34 2
 wire            34 2  34 6
 
-# U1 follows the top of the right column, on its own bias.
-capacitor CO    21 4  23 4   1u
+# U1 hears the two columns' difference, about BREF's 7.5 V: the right column's top through RDA, half
+# of it against BREF through RIB, and the left column's top through RDB against RF.
 wire            20 4  21 4
+resistor  RDA   21 4  23 4   100k
 wire            23 4  27 4
 wire            27 4  27 7
 wire            27 7  28 7
@@ -145,13 +149,18 @@ ground          27 13
 opamp     U1    30 6  TL072
 wire            30 4  30 0
 ground          30 8
+wire            14 4  12 4
+wire            12 4  12 1
+wire            12 1  25 1
+resistor  RDB   25 1  28 1   100k
+wire            28 1  28 3
 wire            28 5  28 3
-wire            28 3  32 3
+resistor  RF    28 3  32 3   100k
 wire            32 3  32 6
 
 # The speaker.
 wire            32 6  34 6
-capacitor CSP   34 6  36 6   2.2u
+capacitor CSP   34 6  36 6   100u
 resistor  RS    36 6  36 10  1k
 speaker   SPK   36 10 36 13  8
 ground          36 13
