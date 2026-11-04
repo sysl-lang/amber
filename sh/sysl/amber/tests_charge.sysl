@@ -1,0 +1,39 @@
+module sh.sysl.amber
+@tests
+
+import sysl.raw.str_cast
+
+// The charge example: a 0.1 Hz square wave through 10 kΩ into 100 µF, a one-second time constant, so
+// the capacitor follows the textbook curve up for five seconds and down for five, every period.
+
+private near(v: real, want: real) -> bool = (v - want).abs() < 0.05
+
+@test("the charge example charges and discharges its capacitor on the RC curve, period after period")
+charge_and_discharge()
+    val sch = parse_schematic(str_cast(embed("../../../examples/charge.amber"))).unwrap()
+    var s = sim(sch.circuit)
+    val (one, five) = ((-1.0).exp(), (-5.0).exp())
+    val full = 9.0 * (1.0 - five)
+
+    assert(near(s.voltage_at("cap"), 0.0))
+
+    // Up: 63% after one time constant, all but full after five.
+    s.advance_to(1.0).unwrap()
+    assert(near(s.voltage_at("cap"), 9.0 * (1.0 - one)))
+    s.advance_to(5.0).unwrap()
+    assert(near(s.voltage_at("cap"), full))
+
+    // Down: the same curve upside down, from where the charging left it.
+    s.advance_to(6.0).unwrap()
+    assert(near(s.voltage_at("cap"), full * one))
+    s.advance_to(10.0).unwrap()
+
+    val left = full * five
+
+    assert(near(s.voltage_at("cap"), left))
+
+    // And again, from what the discharge left.
+    s.advance_to(11.0).unwrap()
+    assert(near(s.voltage_at("cap"), left + (9.0 - left) * (1.0 - one)))
+    s.advance_to(16.0).unwrap()
+    assert(s.voltage_at("cap") < 4.0)

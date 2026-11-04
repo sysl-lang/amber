@@ -1,0 +1,23 @@
+# A capacitor charging and discharging, over and over: a slow square wave through a resistor into it.
+#
+# For five seconds the source is at 9 V and the capacitor charges: quickly at first, then more and more
+# slowly, as the voltage left across the resistor, and so the current, shrinks. After one time constant,
+# R × C = 10 kΩ × 100 µF = 1 s, it has reached 63% of the way; after five it is all but full. Then the
+# source drops to 0 V and the capacitor gives its charge back through the same resistor, falling the
+# same curve upside down: 63% of the way down in a second, all but empty in five. Then it starts again.
+#
+# M2, across the resistor, shows the current: a jump to its largest the moment the source changes, then
+# dying away as the capacitor catches up, one way while it charges and the other while it discharges.
+# Turn R1 or C1 up and the curves stretch, so the capacitor no longer fills or empties before the source
+# turns round; turn them down and they sharpen towards the square itself.
+
+speed 1
+
+source    V1  0 0  0 6  square 0 9 0.1
+resistor  R1  0 0  6 0  10k
+capacitor C1  6 0  6 6  100u
+wire          6 6  0 6
+ground        0 6
+label     cap 6 0
+meter     M1  6 0  6 6
+meter     M2  0 0  6 0
