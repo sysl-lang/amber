@@ -1295,3 +1295,30 @@ remote_thread()
     // Fifty milliseconds of ours is about as much of the circuit's at a second a second, charging C1.
     assert(ui.s.time > 0.01 && ui.s.time < 1.0)
     assert(ui.reading(ui.meters[0]) > 0.0)
+
+@test("the moog's key struck as fast as clicks come, up to three in a frame, keeps playing: every press let go and no trouble")
+remote_rapid_presses()
+    val text = str_cast(embed("../examples/moog.amber"))
+    val (ui, e) = paired(text)
+    val s1 = ui.sch.find("S1").unwrap()
+    val part = usize(ui.sch.elements[usize(s1)].part)
+
+    exchange(ui, e)
+
+    // Two seconds of frames, a frame's clicks going over together, each pressed while the last is
+    // still down.
+    for frame in 0..<120
+        for _ in 0..<(frame % 4)
+            ui.select(s1)
+
+        exchange(ui, e)
+        work(e, 1.0 / 60.0)
+        assert(e.trouble == "")
+
+    exchange(ui, e)
+    assert((ui.s.time - 2.0).abs() < 1e-9 && ui.trouble == "")
+
+    // Let go, the key stays up.
+    work(e, 1.0 / 60.0)
+    exchange(ui, e)
+    assert(e.pressed.len() == 0 && ui.s.circuit.parts[part].kind == Switch(false))
