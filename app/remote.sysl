@@ -16,11 +16,10 @@ import sysl.sync.Atomic
 import sysl.threads.{Mutex, Thread, spawn}
 import sysl.time.{monotonic, sleep, millis}
 
-// The model the thread runs, behind its lock, and whether the window has asked it to stop: 1 once it
-// has.
+// The model the thread runs, behind its lock, and whether the window has asked it to stop.
 struct Link
     engine: Mutex[&Model]
-    quit: Atomic[int]
+    quit: Atomic[bool]
 
 // The longest stretch of the clock's own time worked at once: a frame late by more than this does not
 // owe the time it lost.
@@ -32,7 +31,7 @@ private drive(link: *Link) -> unit
     var last = monotonic()
 
     loop
-        if link.quit.load() == 1 then break
+        if link.quit.load() then break
 
         val now = monotonic()
         val dt = real((now - last).us) * 1e-6

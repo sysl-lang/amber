@@ -1278,7 +1278,7 @@ remote_mute_and_speed()
 @test("on a real thread, the circuit runs while the window only hands over, and stops when told")
 remote_thread()
     val ui = model("rc.amber", parse_schematic(RC).unwrap())
-    val link: &sync Link = Link(Mutex.new(model("rc.amber", parse_schematic(RC).unwrap())), Atomic(0))
+    val link: &sync Link = Link(Mutex.new(model("rc.amber", parse_schematic(RC).unwrap())), Atomic(false))
 
     ui.remote = true
     link.engine.with((p) -> as_engine(*p))
@@ -1289,7 +1289,7 @@ remote_thread()
     frame(ui, link, 0.0)
     sleep(millis(50))
     frame(ui, link, 0.0)
-    link.quit.store(1)
+    link.quit.store(true)
     assert(thread.join())
 
     // Fifty milliseconds of ours is about as much of the circuit's at a second a second, charging C1.
