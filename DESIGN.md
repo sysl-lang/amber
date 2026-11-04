@@ -137,14 +137,17 @@ Each is a piece of work of its own, in this order.
 5. ~~**DC sweep and AC analysis**: `.dc` sweeps a source; `.ac` and `Sim.response` linearise the
    circuit at its operating point (the Newton system written there is every part's slope) and solve
    it with `jωC` and `jωL` added, by the same LU generic over its entry (`real` through time,
-   `Complex[real]` here, pivoting on `Magnitude`), held to ngspice on an RLC band-pass and bipolar and
-   MOSFET amplifiers; the viewer's Bode plot, each meter's gain and phase driven from the generator.~~
-6. **Sparse LU.** Done in part: the matrix is kept dense and eliminated sparse — each step looks once
-   at its pivot's row and column for what is not zero and updates only that, bit for bit the dense
-   answer — and clearing touches only the entries ever written. With the speaker at 24 kHz,
-   `examples/moog.amber` (43 unknowns) went from 0.55× real time to 2.2×. A plan replayed from the
-   first factorisation was tried and was slower: without a fill-reducing order, the pattern's fill
-   is nearly dense. What is left is a real sparse structure, rows and columns as lists with a
-   Markowitz or minimum-degree order, which `amber-app <file> --bench <seconds>` will measure.
+   `Complex[real]` here, pivoting on each entry's size), held to ngspice on an RLC band-pass and
+   bipolar and MOSFET amplifiers; the viewer's Bode plot, each meter's gain and phase driven from the
+   generator.~~
+6. ~~**Sparse LU.** Each pivot is chosen by Markowitz's rule — fewest others in its row and column —
+   among those at least half the largest in their column, and the elimination is recorded as it
+   goes: the pivot's place, the entries under it and right of it, and where each product lands.
+   Every later solve replays that list, and a pivot gone unsound replans only from its own step,
+   the steps before it already done. The matrix stays dense in storage, so a stamp is an index, and
+   clearing touches only the entries ever written. On `examples/moog.amber` (44 unknowns) a
+   factorisation is 99 products where the numbered order made over 4,000, and the circuit runs 2.4×
+   faster, about five times real time on an idle machine; `amber-app <file> --bench <seconds>`
+   reports the products and how often the order was replanned.~~
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save.
 8. **Benchtop's analog layer**, measured against the H747 real-time bar.

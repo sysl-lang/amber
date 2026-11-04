@@ -1,42 +1,97 @@
 module sh.sysl.amber
 
 import sysl.buf.{Buf, buf}
-import sysl.math.{Float, Magnitude}
+import sysl.math.{Float, Magnitude, max}
 import sysl.math.complex.Complex
 
 // What a system's matrix holds: a real number for the circuit through time, a complex one for its
-// response to a sine. Pivoting asks each entry its size, which is the one comparison both have.
-trait Entry: Add + Sub + Mul + Div + Zero + Eq + Magnitude
+// response to a sine. Pivoting asks each entry its size, as a real, since a pivot is judged by how
+// its size compares with a fraction of another's.
+trait Entry: Add + Sub + Mul + Div + Zero + Eq
+    size(self) -> real
 
 impl Entry for real
+    size(self) -> real = self.abs()
 
 impl[F: Float] Entry for Complex[F]
+    size(self) -> real = real(self.magnitude())
 
-// A square system `A · x = z`, solved by LU factorisation with partial pivoting.
+// How small a pivot may be beside the largest entry under it in its column.
 //
-// **It is kept dense and eliminated sparse.** A circuit's matrix is mostly zeros, a handful of
-// entries a row — a node's own conductances and its neighbours' — and so are its factors, filled in
-// only where elimination joins neighbours of neighbours. Each step of the elimination looks once at
-// the pivot's row for the entries that are not zero, and updates only the rows with something under
-// the pivot, only in those columns: the work is the factors' entries rather than `n³`. Leaving out a
-// product with zero changes no sum, so the answer is the dense elimination's to the last bit.
+// **Half, not the thousandth SPICE's sparse solver allows.** A circuit's matrix is scaled very
+// unevenly — a capacitor over a nanosecond step is thousands of siemens, a junction that is off a
+// picosiemens — and a pivot a hundred times smaller than its column costs digits a step's error
+// control then notices: the astable multivibrator's edges moved by a part in a thousand at a
+// hundredth. At a half the order is still free to choose among the entries of a column that are
+// alike, which is most of the choice sparseness needs.
+val RELATIVE = 0.5
+
+// A square system `A · x = z`, solved by sparse LU factorisation in an order chosen to keep the
+// factors sparse, and the order kept for as long as it stays sound.
 //
-// **Only the entries ever written are cleared** for the next writing: those `at` has stamped and
-// those elimination has filled in, which `touched` lists, rather than all `n²`.
+// **A circuit's matrix is mostly zeros**, a handful of entries a row: a node's own conductances and
+// its neighbours'. Eliminating an unknown joins every pair of its neighbours, and an entry that was
+// zero becomes one that is not, *fill*; in the order the unknowns happen to be numbered, a ladder of
+// forty unknowns fills to nearly dense. Chosen well, almost nothing fills. Each step here takes the
+// pivot whose row and column have fewest other entries — Markowitz's rule, the product of the two
+// counts bounding the fill it can make — among those no smaller than `RELATIVE` of the largest in
+// their column, so that the order never trades accuracy for sparseness.
+//
+// **The order is planned once and replayed.** A circuit is stamped into the same places every time:
+// only the values move as junctions turn on and capacitors charge. The first solve chooses the
+// pivots while it eliminates and records every step: the pivot's place, the entries under it, those
+// right of it, and the place each product lands. Every solve after is that list and nothing else, no
+// searching and no scanning, the work the factors' entries.
+//
+// **A pivot that has become too small is replanned from where it stands.** The steps before it are
+// sound and done, and nothing after them changes what they did: a later step reads only rows and
+// columns still to be eliminated. So the elimination carries on from that step, choosing afresh,
+// and the plan's tail is replaced. A circuit that swings between two states, two pivots taking turns
+// at being the larger, replans only those last few steps each time. An entry stamped somewhere the
+// plan never saw replans from the start.
+//
+// **The matrix is stored dense**, `n × n` and row-major, so that stamping an entry is an index, and
+// **only the entries ever written are cleared** for the next writing: those `at` has stamped and
+// those elimination has filled, which `touched` lists, rather than all `n²`.
 struct System[T: Entry]
     n: int
     // Row-major, `n × n`.
     a: Buf[T]
     z: Buf[T]
-    // Whether each entry has ever been written, and those entries' places.
+    // Whether each entry has ever been written, stamped or filled, and those entries' places: the
+    // shape of the matrix and its factors together.
     written: Buf[bool]
     touched: Buf[int]
-    // Each pivot row's columns right of the diagonal that are not zero, the rows of U, one after
-    // another: row `k`'s are `cols[starts[k]..<starts[k + 1]]`. Made afresh by each `solve`.
+    // Whether the plan fits the matrix: false before the first solve and once `at` has written a
+    // place the plan never saw.
+    planned: bool
+    // How many times some of the order has been chosen.
+    plans: int
+    // Step `k`'s pivot is at row `rows[k]`, column `cols[k]`, the entry `pivots[k]`.
+    rows: Buf[int]
     cols: Buf[int]
-    starts: Buf[int]
-    // The rows below the pivot with something to eliminate, for the step at hand.
-    below: Buf[int]
+    pivots: Buf[int]
+    // The entries under step `k`'s pivot, `lower[lower_starts[k]..<lower_starts[k + 1]]`, as places,
+    // with their rows.
+    lower: Buf[int]
+    lower_rows: Buf[int]
+    lower_starts: Buf[int]
+    // The entries right of it, `upper[upper_starts[k]..]` likewise, with their columns.
+    upper: Buf[int]
+    upper_cols: Buf[int]
+    upper_starts: Buf[int]
+    // Where each product lands: for each entry under the pivot in turn, one place for each right of it.
+    targets: Buf[int]
+    target_starts: Buf[int]
+    // The solution by column, before it is written back to `z`.
+    x: Buf[T]
+    // While planning: whether each row and column is still to be eliminated, how many entries each
+    // still has, and each column's largest.
+    live_rows: Buf[bool]
+    live_cols: Buf[bool]
+    row_counts: Buf[int]
+    col_counts: Buf[int]
+    largest: Buf[real]
 
     clear(*self)
         for k in self.touched
@@ -52,7 +107,10 @@ struct System[T: Entry]
 
         val k = r * self.n + c
 
-        self.mark(k)
+        if !self.written[usize(k)]
+            self.mark(k)
+            self.planned = false
+
         self.a[usize(k)] += v
 
     // Add `v` to the right-hand side at row `r`.
@@ -61,101 +119,231 @@ struct System[T: Entry]
 
         self.z[usize(r)] += v
 
-    // Solve in place: on return `z` holds `x`, and `a` holds the factors. `None` when the matrix is
-    // singular — a node no part fixes the voltage of, or a loop of voltage sources.
+    // Solve in place: on return `z` holds `x`. `None` when the matrix is singular — a node no part
+    // fixes the voltage of, or a loop of voltage sources.
     solve(*self) -> Option[unit]
-        val n = self.n
-        val nothing = T.zero().magnitude()
-        val zero = T.zero()
+        val from = if self.planned then self.replay() else 0
 
-        self.cols.clear()
-        self.starts.clear()
+        if from < self.n && !self.plan(from) then return None
 
-        for k in 0..<n
-            var p = k
-            var best = self.a[usize(k * n + k)].magnitude()
-
-            for r in k + 1..<n
-                val v = self.a[usize(r * n + k)].magnitude()
-
-                if v > best
-                    best = v
-                    p = r
-
-            if best <= nothing then return None
-
-            // Only the columns still to be eliminated: those left of the diagonal are never read
-            // again.
-            if p != k
-                for c in k..<n
-                    val t = self.a[usize(k * n + c)]
-
-                    // A value moved into an entry never written makes it one to clear.
-                    if t != zero then self.mark(p * n + c)
-
-                    if self.a[usize(p * n + c)] != zero then self.mark(k * n + c)
-
-                    self.a[usize(k * n + c)] = self.a[usize(p * n + c)]
-                    self.a[usize(p * n + c)] = t
-
-                val t = self.z[usize(k)]
-
-                self.z[usize(k)] = self.z[usize(p)]
-                self.z[usize(p)] = t
-
-            self.starts.push(int(self.cols.len()))
-
-            for c in k + 1..<n
-                if self.a[usize(k * n + c)] != zero then self.cols.push(c)
-
-            self.below.clear()
-
-            for r in k + 1..<n
-                if self.a[usize(r * n + k)] != zero then self.below.push(r)
-
-            val pivot = self.a[usize(k * n + k)]
-            val first = usize(self.starts[usize(k)])
-            val last = self.cols.len()
-
-            for r in self.below
-                val f = self.a[usize(r * n + k)] / pivot
-
-                for j in first..<last
-                    val at = r * n + self.cols[j]
-
-                    self.mark(at)
-                    self.a[usize(at)] -= f * self.a[usize(k * n + self.cols[j])]
-
-                self.z[usize(r)] -= f * self.z[usize(k)]
-
-        self.starts.push(int(self.cols.len()))
-
-        var r = n - 1
-
-        while r >= 0
-            var s = self.z[usize(r)]
-
-            for j in usize(self.starts[usize(r)])..<usize(self.starts[usize(r + 1)])
-                val c = self.cols[j]
-
-                s -= self.a[usize(r * n + c)] * self.z[usize(c)]
-
-            self.z[usize(r)] = s / self.a[usize(r * n + r)]
-            r -= 1
-
+        self.substitute()
         Some(())
+
+    // Eliminate in the planned order, and answer how many steps were done: all `n`, or the step whose
+    // pivot is no longer sound, the steps before it done.
+    private replay(*self) -> int
+        for k in 0..<self.n
+            val pivot = self.a[usize(self.pivots[usize(k)])]
+            val size = pivot.size()
+
+            if !(size > 0.0) then return k
+
+            val first = usize(self.lower_starts[usize(k)])
+            val last = usize(self.lower_starts[usize(k + 1)])
+
+            for l in first..<last
+                if self.a[usize(self.lower[l])].size() * RELATIVE > size then return k
+
+            val up = usize(self.upper_starts[usize(k)])
+            val count = usize(self.upper_starts[usize(k + 1)]) - up
+            var t = usize(self.target_starts[usize(k)])
+            val zk = self.z[usize(self.rows[usize(k)])]
+
+            for l in first..<last
+                val f = self.a[usize(self.lower[l])] / pivot
+
+                for u in up..<up + count
+                    self.a[usize(self.targets[t])] -= f * self.a[usize(self.upper[u])]
+                    t += 1
+
+                self.z[usize(self.lower_rows[l])] -= f * zk
+
+        self.n
+
+    // Eliminate from step `from` on, the steps before it done, choosing each pivot as it goes and
+    // recording it in the plan in place of what was there. False when no pivot is left that is not
+    // zero: the matrix is singular.
+    private plan(*self, from: int) -> bool
+        val n = self.n
+
+        self.plans += 1
+        self.planned = false
+        self.forget(from)
+
+        for i in 0..<n
+            self.live_rows[usize(i)] = true
+            self.live_cols[usize(i)] = true
+            self.row_counts[usize(i)] = 0
+            self.col_counts[usize(i)] = 0
+
+        for k in 0..<from
+            self.live_rows[usize(self.rows[usize(k)])] = false
+            self.live_cols[usize(self.cols[usize(k)])] = false
+
+        for k in self.touched
+            val (r, c) = (k / n, k % n)
+
+            if self.live_rows[usize(r)] && self.live_cols[usize(c)]
+                self.row_counts[usize(r)] += 1
+                self.col_counts[usize(c)] += 1
+
+        for _ in from..<n
+            val best = self.choose()
+
+            if best < 0 then return false
+
+            self.step(best)
+
+        self.lower_starts.push(int(self.lower.len()))
+        self.upper_starts.push(int(self.upper.len()))
+        self.target_starts.push(int(self.targets.len()))
+        self.planned = true
+        true
+
+    // The sound pivot with the fewest others in its row and column, and of those the largest beside
+    // its column; -1 when every entry left is zero.
+    private choose(*self) -> int
+        val n = self.n
+
+        for c in 0..<n
+            self.largest[usize(c)] = 0.0
+
+        for r in 0..<n
+            if !self.live_rows[usize(r)] then continue
+
+            for c in 0..<n
+                if self.live_cols[usize(c)] && self.written[usize(r * n + c)]
+                    self.largest[usize(c)] = max(self.largest[usize(c)], self.a[usize(r * n + c)].size())
+
+        var best = -1
+        var fewest = 0
+        var share = 0.0
+
+        for r in 0..<n
+            if !self.live_rows[usize(r)] then continue
+
+            for c in 0..<n
+                val k = r * n + c
+
+                if !self.live_cols[usize(c)] || !self.written[usize(k)] then continue
+
+                val size = self.a[usize(k)].size()
+
+                if !(size > 0.0) || size < RELATIVE * self.largest[usize(c)] then continue
+
+                val cost = (self.row_counts[usize(r)] - 1) * (self.col_counts[usize(c)] - 1)
+                val part = size / self.largest[usize(c)]
+
+                if best < 0 || cost < fewest || (cost == fewest && part > share)
+                    best = k
+                    fewest = cost
+                    share = part
+
+        best
+
+    // Eliminate with the pivot at `best`, recording the step.
+    private step(*self, best: int)
+        val n = self.n
+        val (r, c) = (best / n, best % n)
+
+        self.rows.push(r)
+        self.cols.push(c)
+        self.pivots.push(best)
+        self.lower_starts.push(int(self.lower.len()))
+        self.upper_starts.push(int(self.upper.len()))
+        self.target_starts.push(int(self.targets.len()))
+        self.live_rows[usize(r)] = false
+        self.live_cols[usize(c)] = false
+
+        val up = self.upper.len()
+
+        for j in 0..<n
+            if self.live_cols[usize(j)] && self.written[usize(r * n + j)]
+                self.upper.push(r * n + j)
+                self.upper_cols.push(j)
+                self.col_counts[usize(j)] -= 1
+
+        val down = self.lower.len()
+
+        for i in 0..<n
+            if self.live_rows[usize(i)] && self.written[usize(i * n + c)]
+                self.lower.push(i * n + c)
+                self.lower_rows.push(i)
+                self.row_counts[usize(i)] -= 1
+
+        val pivot = self.a[usize(best)]
+        val zk = self.z[usize(r)]
+
+        for l in down..<self.lower.len()
+            val i = self.lower_rows[l]
+            val f = self.a[usize(self.lower[l])] / pivot
+
+            for u in up..<self.upper.len()
+                val t = i * n + self.upper_cols[u]
+
+                // A place that was zero and is not now: fill, part of the shape from here on.
+                if !self.written[usize(t)]
+                    self.mark(t)
+                    self.row_counts[usize(i)] += 1
+                    self.col_counts[usize(self.upper_cols[u])] += 1
+
+                self.targets.push(t)
+                self.a[usize(t)] -= f * self.a[usize(self.upper[u])]
+
+            self.z[usize(i)] -= f * zk
+
+    // Drop the plan from step `from` on.
+    private forget(*self, from: int)
+        if from == 0
+            for b in [&self.rows, &self.cols, &self.pivots, &self.lower, &self.lower_rows, &self.lower_starts]
+                b.clear()
+
+            for b in [&self.upper, &self.upper_cols, &self.upper_starts, &self.targets, &self.target_starts]
+                b.clear()
+
+            return
+
+        val k = usize(from)
+
+        self.lower.truncate(usize(self.lower_starts[k]))
+        self.lower_rows.truncate(usize(self.lower_starts[k]))
+        self.upper.truncate(usize(self.upper_starts[k]))
+        self.upper_cols.truncate(usize(self.upper_starts[k]))
+        self.targets.truncate(usize(self.target_starts[k]))
+
+        for b in [&self.rows, &self.cols, &self.pivots, &self.lower_starts, &self.upper_starts, &self.target_starts]
+            b.truncate(k)
+
+    // Back-substitution, last pivot first: each step's unknown is its row's right-hand side less what
+    // the unknowns already found contribute, over its pivot.
+    private substitute(*self)
+        var k = self.n - 1
+
+        while k >= 0
+            var s = self.z[usize(self.rows[usize(k)])]
+
+            for u in usize(self.upper_starts[usize(k)])..<usize(self.upper_starts[usize(k + 1)])
+                s -= self.a[usize(self.upper[u])] * self.x[usize(self.upper_cols[u])]
+
+            self.x[usize(self.cols[usize(k)])] = s / self.a[usize(self.pivots[usize(k)])]
+            k -= 1
+
+        for i in 0..<self.x.len()
+            self.z[i] = self.x[i]
 
     // Note entry `k` as written, so the next clearing clears it.
     private mark(*self, k: int)
-        if !self.written[usize(k)]
-            self.written[usize(k)] = true
-            self.touched.push(k)
+        self.written[usize(k)] = true
+        self.touched.push(k)
 end System
 
 system[T: Entry](n: int) -> System[T]
     var a: Buf[T] = buf()
     var z: Buf[T] = buf()
     var written: Buf[bool] = buf()
+    var live: Buf[bool] = buf()
+    var counts: Buf[int] = buf()
+    var largest: Buf[real] = buf()
 
     for _ in 0..<n * n
         a.push(T.zero())
@@ -163,5 +351,9 @@ system[T: Entry](n: int) -> System[T]
 
     for _ in 0..<n
         z.push(T.zero())
+        live.push(true)
+        counts.push(0)
+        largest.push(0.0)
 
-    System(n, a, z, written, buf(), buf(), buf(), buf())
+    System(n, a, z, written, buf(), false, 0, buf(), buf(), buf(), buf(), buf(), buf(), buf(), buf(),
+        buf(), buf(), buf(), z.copy(), live.copy(), live, counts.copy(), counts, largest)

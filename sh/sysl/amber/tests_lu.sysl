@@ -2,8 +2,11 @@ module sh.sysl.amber
 @tests
 
 import sysl.buf.{Buf, buf}
+import sysl.math.complex.Complex
+import sysl.math.max
 
-// The system solver: kept dense, eliminated sparse, cleared only where it was written.
+// The system solver: ordered to keep its factors sparse, the order replayed and replanned from the
+// step that went unsound, cleared only where it was written.
 
 // A system of `n` unknowns written from `entries` (row, column, value) and `rhs`, solved.
 private solved(n: int, entries: []const (int, int, real), rhs: []const real) -> Buf[real]
@@ -97,3 +100,250 @@ lu_singular()
     s.at(1, 1, 1.0)
     // Row 2 is nothing at all: a node no part fixes.
     assert(s.solve().is_none())
+
+// How far `A · x` is from `z` for the entries written, beside `|A| · |x| + |z|`: the backward error,
+// which a sound elimination keeps to a few roundings however unevenly the matrix is scaled.
+private residual(n: int, entries: Buf[(int, int, real)], rhs: Buf[real], x: Buf[real]) -> real
+    var worst = 0.0
+
+    for r in 0..<n
+        var sum = -rhs[usize(r)]
+        var scale = rhs[usize(r)].abs()
+
+        for (i, c, v) in entries
+            if i == r
+                sum += v * x[usize(c)]
+                scale += (v * x[usize(c)]).abs()
+
+        worst = max(worst, sum.abs() / scale)
+
+    worst
+
+// A next number in [0, 1) from a seed, the seed moved on.
+private next(seed: *int) -> real
+    *seed = (*seed * 75 + 74) % 65537
+    real(*seed) / 65537.0
+
+// A circuit-shaped system: `nodes` nodes joined at random by conductances from a picosiemens to a
+// thousand siemens, each with a path to ground, and `sources` voltage sources each fixing one node,
+// whose rows and columns have nothing on their diagonal.
+private circuit_like(nodes: int, sources: int, seed: *int) -> Buf[(int, int, real)]
+    var e: Buf[(int, int, real)] = buf()
+    val decades = (seed: *int) -> 10.0.pow(next(seed) * 15.0 - 12.0)
+
+    for i in 0..<nodes
+        e.push((i, i, decades(seed)))
+
+        for _ in 0..<2
+            val j = int(next(seed) * real(nodes))
+
+            if j == i then continue
+
+            val g = decades(seed)
+
+            e.push((i, i, g))
+            e.push((j, j, g))
+            e.push((i, j, -g))
+            e.push((j, i, -g))
+
+    for k in 0..<sources
+        val node = nodes - 1 - 2 * k
+
+        e.push((nodes + k, node, 1.0))
+        e.push((node, nodes + k, 1.0))
+
+    e
+
+private solve_entries(s: *System[real], n: int, e: Buf[(int, int, real)], rhs: Buf[real]) -> Buf[real]
+    s.clear()
+
+    for (r, c, v) in e
+        s.at(r, c, v)
+
+    for i in 0..<n
+        s.rhs(i, rhs[usize(i)])
+
+    s.solve().unwrap()
+
+    var x: Buf[real] = buf()
+
+    for i in 0..<n
+        x.push(s.z[usize(i)])
+
+    x
+
+@test("circuit-shaped systems, conductances over fifteen decades and sources with empty diagonals, solve to a residual of rounding")
+lu_circuit_shaped()
+    var seed = 1
+
+    for _ in 0..<40
+        val (nodes, sources) = (6 + int(next(&seed) * 20.0), 1 + int(next(&seed) * 3.0))
+        val n = nodes + sources
+        val e = circuit_like(nodes, sources, &seed)
+        var rhs: Buf[real] = buf()
+
+        for _ in 0..<n
+            rhs.push(next(&seed) * 2.0 - 1.0)
+
+        var s: System[real] = system(n)
+        val x = solve_entries(&s, n, e, rhs)
+
+        assert(residual(n, e, rhs, x) < 1e-13)
+
+        // And again, the plan replayed, to the same answer to the last bit.
+        val again = solve_entries(&s, n, e, rhs)
+
+        assert(s.plans == 1)
+
+        for i in 0..<n
+            assert(again[usize(i)] == x[usize(i)])
+
+@test("a hub numbered first fills nothing: the order eliminates its spokes before it")
+lu_orders_for_sparseness()
+    // A star, every node joined to node 0: eliminating node 0 first joins every pair of the rest,
+    // n² fill; eliminating it last, none.
+    val n = 30
+    var s: System[real] = system(n)
+    var e: Buf[(int, int, real)] = buf()
+    var rhs: Buf[real] = buf()
+
+    e.push((0, 0, 1.0))
+
+    for i in 1..<n
+        e.push((i, i, 2.0))
+        e.push((0, 0, 1.0))
+        e.push((0, i, -1.0))
+        e.push((i, 0, -1.0))
+
+    for i in 0..<n
+        rhs.push(real(i))
+
+    val x = solve_entries(&s, n, e, rhs)
+
+    assert(residual(n, e, rhs, x) < 1e-12)
+    // One product for each spoke, onto the hub: no fill.
+    assert(s.targets.len() == usize(n - 1))
+    assert(s.touched.len() == usize(3 * n - 2))
+
+// Rows 2 and 3 share a column; which of them is the sound pivot for it swaps with `flip`. Rows 0 and 1
+// are eliminated first whichever it is.
+private written(flip: bool) -> Buf[(int, int, real)]
+    var e: Buf[(int, int, real)] = buf()
+
+    e.push((0, 0, 4.0))
+    e.push((1, 1, 4.0))
+    e.push((0, 2, 1.0))
+    e.push((2, 0, 1.0))
+    e.push((1, 3, 1.0))
+    e.push((3, 1, 1.0))
+    e.push((2, 2, if flip then 1e-6 else 3.0))
+    e.push((3, 2, if flip then 3.0 else 1e-6))
+    e.push((2, 3, 1.0))
+    e.push((3, 3, 1.0))
+    e
+
+@test("a pivot gone small replans from its own step on, and two states taking turns stay correct")
+lu_replans_the_tail()
+    val n = 4
+    var rhs: Buf[real] = buf()
+
+    for v in [1.0, 2.0, 3.0, 4.0]
+        rhs.push(v)
+
+    var s: System[real] = system(n)
+
+    solve_entries(&s, n, written(false), rhs)
+
+    // The first plan pivots row 2 on column 2, its 3; the other state leaves that entry a
+    // millionth less a quarter, beside row 3's 3, and the plan is unsound from that step.
+    assert(s.plans == 1 && s.cols[2] == 2)
+
+    val (rows, cols) = ((s.rows[0], s.rows[1]), (s.cols[0], s.cols[1]))
+
+    for round in 1..<7
+        val e = written(round % 2 == 1)
+        val x = solve_entries(&s, n, e, rhs)
+
+        assert(residual(n, e, rhs, x) < 1e-15)
+
+    // Replanned once, from step 2: the two steps before it are where the first plan put them, and
+    // the order chosen then, column 3 before column 2, is sound in both states, so the turns that
+    // follow replay it.
+    assert(s.plans == 2)
+    assert((s.rows[0], s.rows[1]) == rows && (s.cols[0], s.cols[1]) == cols)
+    assert(s.cols[2] == 3)
+
+@test("an entry stamped where the plan never saw replans from the start, and a system gone singular says so and recovers")
+lu_new_place_and_singular_after_a_plan()
+    var s: System[real] = system(3)
+    var rhs: Buf[real] = buf()
+
+    for v in [1.0, 2.0, 3.0]
+        rhs.push(v)
+
+    var e: Buf[(int, int, real)] = buf()
+
+    e.push((0, 0, 2.0))
+    e.push((1, 1, 2.0))
+    e.push((2, 2, 2.0))
+    solve_entries(&s, 3, e, rhs)
+    assert(s.plans == 1)
+
+    // A conductance between 0 and 2, a place not in the plan.
+    e.push((0, 2, -1.0))
+    e.push((2, 0, -1.0))
+    e.push((0, 0, 1.0))
+    e.push((2, 2, 1.0))
+
+    val x = solve_entries(&s, 3, e, rhs)
+
+    assert(s.plans == 2 && residual(3, e, rhs, x) < 1e-12)
+
+    // Row 1's only entry gone to zero: singular, though a plan exists.
+    s.clear()
+    s.at(0, 0, 1.0)
+    s.at(1, 1, 0.0)
+    s.at(2, 2, 1.0)
+    assert(s.solve().is_none())
+
+    // And the next system that is sound solves.
+    val y = solve_entries(&s, 3, e, rhs)
+
+    assert(residual(3, e, rhs, y) < 1e-12)
+
+@test("a complex system, a series RLC's, solves to its residual and replays its plan")
+lu_complex()
+    // Two nodes and a source: 1 Ω from the source to node 1, j·2 Ω from node 1 to node 2, −j·0.5 S
+    // from node 2 to ground; unknowns v1, v2, and the source's current.
+    var s: System[Complex[real]] = system(3)
+
+    for _ in 0..<3
+        s.clear()
+
+        val y = Complex(0.0, -0.5)
+        val yl = Complex(1.0, 0.0) / Complex(0.0, 2.0)
+
+        s.at(0, 0, Complex(1.0, 0.0) + yl)
+        s.at(0, 1, Complex(0.0, 0.0) - yl)
+        s.at(1, 0, Complex(0.0, 0.0) - yl)
+        s.at(1, 1, yl + y)
+        s.at(0, 2, Complex(-1.0, 0.0))
+        s.at(2, 0, Complex(1.0, 0.0))
+        s.rhs(2, Complex(1.0, 0.0))
+        s.solve().unwrap()
+
+    // The source fixes v1 = 1, and the divider of j·2 over j·2 − j·2 would be infinite: at
+    // −j·0.5 S the capacitor is +j·2 Ω, so v2 = 1 · (j·2) / (j·2 + j·2) — check it against the
+    // equations instead, since the arithmetic is the test.
+    val v1 = s.z[0]
+    val v2 = s.z[1]
+    val i = s.z[2]
+    val yl = Complex(1.0, 0.0) / Complex(0.0, 2.0)
+    val y = Complex(0.0, -0.5)
+    val node1 = (Complex(1.0, 0.0) + yl) * v1 - yl * v2 - i
+    val node2 = (yl + y) * v2 - yl * v1
+
+    assert(v1.size() > 0.0)
+    assert(node1.size() < 1e-12 && node2.size() < 1e-12 && (v1 - Complex(1.0, 0.0)).size() < 1e-12)
+    assert(s.plans == 1)
+

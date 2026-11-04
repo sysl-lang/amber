@@ -37,7 +37,7 @@
 # speaker's lets a half of the square sag before the next edge. The speaker plays while the clock runs at
 # a second a second, and the status line says how fast the sound is being worked out: this is the
 # heaviest circuit here, about 40 unknowns solved some 30,000 times a second of sound, and on an idle
-# machine it keeps up with about one and a half times to spare.
+# machine it keeps up with about five times to spare.
 
 speed 1
 start settled

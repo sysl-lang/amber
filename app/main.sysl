@@ -107,7 +107,7 @@ main(args: []string) -> Result[unit, string]
 
         val took = real((monotonic() - began).us) * 1e-6
 
-        print(s"${file}: ${engineering(m.s.time)}s of its sound in ${engineering(took)}s, ${m.s.time / took}× real time; ${m.s.size} unknowns, ${m.s.accepted} steps")
+        print(s"${file}: ${engineering(m.s.time)}s of its sound in ${engineering(took)}s, ${m.s.time / took}× real time; ${m.s.size} unknowns, ${m.s.accepted} steps, ${m.s.sys.targets.len()} products a factorisation, ${m.s.sys.plans} orderings")
 
         if m.trouble != "" then print(s"cannot solve: ${m.trouble}")
 

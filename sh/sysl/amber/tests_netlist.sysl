@@ -142,7 +142,7 @@ netlist_refusals()
 // **A run through time may stray by 0.2% of the largest value its vector reaches.** ngspice is run
 // with a tolerance a hundred times tighter than amber's, so the difference is amber's own error, and
 // errors add up over a run: a sine ringing a resonant circuit for twelve cycles is the worst case
-// here, at 0.14%; the astable multivibrator, whose edges are steep, reaches 0.07%; the rest stay under
+// here, at 0.14%; the astable multivibrator, whose edges are steep, reaches 0.14%; the rest stay under
 // 0.03%. The operating point and a sweep, which take no steps, must agree to a part in ten thousand,
 // and do to a few parts in ten million. A small-signal analysis must agree to a part in ten thousand of
 // the largest value its vector reaches, since a phasor's real or imaginary part passes through zero as
