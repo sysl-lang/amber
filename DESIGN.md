@@ -68,7 +68,8 @@ current is `(v(out) − v(return) − wave) / ohms`, negative while it delivers,
 output resistance must be more than zero, 50 Ω unless the line says otherwise.
 
 **A triangle is a pulse with no top** (`triangle()`: rise and fall each half the period, width zero),
-not a variant of `Wave`: the solver already lands a step on each of a pulse's corners, a netlist
+and a sawtooth a pulse that is all rise (`sawtooth()`: rise all but a thousandth of the period, fall
+that thousandth, as a square's edges are), neither a variant of `Wave`: the solver already lands a step on each of a pulse's corners, a netlist
 writes it as `PULSE`, and the generator's parameters live in its `Oscillator`, not in the wave.
 
 **An `Oscillator` holds a generator's settings and its phase.** Every waveform's cycle starts where a

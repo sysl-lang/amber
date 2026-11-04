@@ -695,6 +695,11 @@ private struct Pen
                 f.to_across(mid, -gw / 2.0, cy + gh)
                 f.to_across(mid, gw / 2.0, cy - gh)
                 f.to_across(mid, gw, cy)
+            Some(Waveform.Sawtooth) ->
+                f.move_across(mid, -gw, cy)
+                f.to_across(mid, 0.0, cy + gh)
+                f.to_across(mid, 0.0, cy - gh)
+                f.to_across(mid, gw, cy)
             Some(Waveform.Dc) ->
                 f.move_across(mid, -gw, cy + gh / 2.0)
                 f.to_across(mid, gw, cy + gh / 2.0)

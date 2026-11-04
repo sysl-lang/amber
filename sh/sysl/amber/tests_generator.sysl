@@ -45,6 +45,30 @@ netlist_triangle()
 
     assert(net.circuit.parts[0].kind.wave() == Some(triangle(-1.0, 1.0, 1000.0)))
 
+@test("a netlist writes a sawtooth as a pulse that is all rise, and it is the same wave")
+netlist_sawtooth()
+    val net = parse_netlist("sawtooth\nV1 a 0 PULSE(0 5 0 0.999m 1u 0 1m)\nR1 a 0 1k\n.end").unwrap()
+
+    assert(net.circuit.parts[0].kind.wave() == Some(sawtooth(0.0, 5.0, 1000.0)))
+
+@test("a sawtooth generator's climb and fall are followed: at its top just before each fall, at its foot just after")
+generator_sawtooth()
+    val sch = parse_schematic("gen G1 0 0 0 4 sawtooth 1k 1\nresistor RL 0 0 4 0 150\nwire 4 0 4 4\nwire 4 4 0 4\nground 0 4").unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+
+    // The load has 150 of the 200 Ω, three quarters of the wave, from -1 to 1 V.
+    for cycle in 0..<3
+        val fall = (real(cycle) + 0.4995) * 1e-3
+
+        s.advance_to(fall).unwrap()
+        assert(near(s.across(1), 0.75, 1e-6))
+        s.advance_to(fall + 1e-6).unwrap()
+        assert(near(s.across(1), -0.75, 1e-6))
+        s.advance_to(fall + 0.25e-3).unwrap()
+        assert(near(s.across(1), 0.75 * (-1.0 + 2.0 * 0.249 / 0.999), 1e-6))
+
 // --- The oscillator ---------------------------------------------------------------------------------
 
 @test("every waveform starts its cycle where a sine does, at its offset and rising")
@@ -69,6 +93,20 @@ oscillator_waveforms()
     assert(near(tri.at(period / 2.0), 1.0, 1e-9))
     assert(near(tri.at(3.0 * period / 4.0), -1.0, 1e-9))
     assert(near(tri.at(period / 8.0), 2.0, 1e-9))
+
+    // A sawtooth climbs from -1 to 3 over all but a thousandth of the period, through its offset at the
+    // cycle's start, and falls back half a period later.
+    val saw = oscillator(Waveform.Sawtooth, 1000.0, 2.0, 1.0).wave()
+    val climb = 4.0 / (0.999 * period)
+
+    assert(near(saw.at(0.0), 1.0, 1e-9))
+    assert(near(saw.at(period / 4.0), 1.0 + climb * period / 4.0, 1e-9))
+    assert(near(saw.at(0.4995 * period), 3.0, 1e-9))
+    assert(near(saw.at(0.5005 * period), -1.0, 1e-9))
+    assert(near(saw.at(0.75 * period), -1.0 + climb * 0.2495 * period, 1e-9))
+    // The solver lands a step on the top of each fall and on its foot.
+    assert(near(saw.next_corner(0.0).unwrap(), 0.4995 * period, 1e-12))
+    assert(near(saw.next_corner(0.4995 * period + 1e-12).unwrap(), 0.5005 * period, 1e-12))
 
     assert(dc == Dc(1.0))
 
@@ -122,7 +160,7 @@ generator_matched_load()
 
 @test("a generator's operating point is its wave at the start of time, behind its resistance")
 generator_operating_point()
-    for w in [Sine(1.5, 2.0, 1000.0, 0.0, 0.0, 0.0), square(-1.0, 4.0, 50.0), triangle(0.5, 3.0, 10.0), Dc(-2.0)]
+    for w in [Sine(1.5, 2.0, 1000.0, 0.0, 0.0, 0.0), square(-1.0, 4.0, 50.0), triangle(0.5, 3.0, 10.0), sawtooth(-1.0, 1.0, 100.0, delay = -2e-3), Dc(-2.0)]
         var c = circuit()
 
         c.connect("G1", Generator(w, 50.0), "out", "0")
@@ -226,8 +264,8 @@ schematic_generator()
 
 @test("a generator line's mistakes are refused with their line")
 generator_refusals()
-    assert(parse_schematic("gen G1 0 0 0 4").unwrap_err() == "line 1: a generator needs a waveform: sine, square, triangle or dc")
-    assert(parse_schematic("gen G1 0 0 0 4 sawtooth 1k 1").unwrap_err() == "line 1: 'sawtooth' is not a generator's waveform: sine, square, triangle or dc")
+    assert(parse_schematic("gen G1 0 0 0 4").unwrap_err() == "line 1: a generator needs a waveform: sine, square, triangle, sawtooth or dc")
+    assert(parse_schematic("gen G1 0 0 0 4 ramp 1k 1").unwrap_err() == "line 1: 'ramp' is not a generator's waveform: sine, square, triangle, sawtooth or dc")
     assert(parse_schematic("gen G1 0 0 0 4 sine 1k").unwrap_err() == "line 1: a generator takes a waveform, a frequency, an amplitude, and perhaps an offset and an output resistance")
     assert(parse_schematic("gen G1 0 0 0 4 sine 1k 1 0 50 9").unwrap_err() == "line 1: '9' is more than a generator takes")
     assert(parse_schematic("gen G1 0 0 0 4 sine 0 1").unwrap_err() == "line 1: a frequency is more than zero")

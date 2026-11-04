@@ -696,9 +696,9 @@ private positive(word: string, what: string) -> Result[real, string]
 
     Ok(v)
 
-// A wave from its words: `dc 5`, `sine 5 1k`, `square 0 5 1k`, `pulse …`, `pwl …`.
+// A wave from its words: `dc 5`, `sine 5 1k`, `square 0 5 1k`, `sawtooth 0 5 1k`, `pulse …`, `pwl …`.
 parse_wave(words: []string) -> Result[Wave, string]
-    if words.len == 0 then return Err("a wave needs a kind: dc, sine, square, triangle, pulse or pwl")
+    if words.len == 0 then return Err("a wave needs a kind: dc, sine, square, triangle, sawtooth, pulse or pwl")
 
     var v: Buf[real] = buf()
 
@@ -734,6 +734,12 @@ parse_wave(words: []string) -> Result[Wave, string]
             if v[2] <= 0.0 then return Err("a frequency is more than zero")
 
             Ok(triangle(v[0], v[1], v[2]))
+        "sawtooth" ->
+            if n != 3 then return Err("sawtooth takes a low, a high and a frequency")
+
+            if v[2] <= 0.0 then return Err("a frequency is more than zero")
+
+            Ok(sawtooth(v[0], v[1], v[2]))
         "pulse" ->
             if n != 7 then return Err("pulse takes low, high, delay, rise, fall, width and period")
 
@@ -753,14 +759,14 @@ parse_wave(words: []string) -> Result[Wave, string]
                 points.push((v[2 * k], v[2 * k + 1]))
 
             Ok(Pwl(points))
-        _ -> Err(s"'${words[0]}' is not a kind of wave: dc, sine, square, triangle, pulse or pwl")
+        _ -> Err(s"'${words[0]}' is not a kind of wave: dc, sine, square, triangle, sawtooth, pulse or pwl")
 
 // A signal generator's settings from the words after its points — `sine 1k 10m`, `square 50 2.5 2.5
 // 600` — and its output resistance, 50 Ω where they do not give one.
 parse_generator(words: []string) -> Result[(Oscillator, real), string]
-    if words.len == 0 then return Err("a generator needs a waveform: sine, square, triangle or dc")
+    if words.len == 0 then return Err("a generator needs a waveform: sine, square, triangle, sawtooth or dc")
 
-    val form = waveform_named(words[0]).ok_or(s"'${words[0]}' is not a generator's waveform: sine, square, triangle or dc")?
+    val form = waveform_named(words[0]).ok_or(s"'${words[0]}' is not a generator's waveform: sine, square, triangle, sawtooth or dc")?
 
     if words.len < 3 then return Err("a generator takes a waveform, a frequency, an amplitude, and perhaps an offset and an output resistance")
 

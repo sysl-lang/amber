@@ -5,7 +5,8 @@
 # a second. That voltage, through REM, opens QT: the ladder's current rises at once and dies away with
 # it, and the ladder's corner and its gain both follow the current, so each note starts bright and loud
 # and fades darker and quieter — the Moog's pluck. Tap out a bass line; the generator's panel sets the
-# pitch.
+# pitch, and its waveform: the square is hollow and woody, the sawtooth, every harmonic at once, the
+# brassy sound most people think of as a Moog.
 #
 # The ladder is ten transistors. Q1 and Q2 at the bottom are a differential pair, steering the current
 # QT gives them between the two columns as the input swings; above them four rungs of pairs, Q3 to

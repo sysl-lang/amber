@@ -30,7 +30,7 @@ so a small signal beside a large bias still rocks where it can be seen.
 - **Click a switch** to flip it; click any part for the voltage across it, the current through it and
   the power it takes or delivers.
 - **Click a signal generator** to open its panel beside the scope: a waveform (sine, square,
-  triangle or dc), and sliders for its frequency (a tenth of a hertz to a megahertz, a decade to the
+  triangle, sawtooth or dc), and sliders for its frequency (a tenth of a hertz to a megahertz, a decade to the
   same length of slider), its amplitude (a millivolt to ten volts, likewise) and its offset. A change
   reaches the circuit at once, while its clock runs: nothing restarts, and the wave carries on from
   where it was in its cycle, as a bench generator's does. `close`, or a click anywhere else, puts the
@@ -124,11 +124,11 @@ transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and
 `TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).
 Also `wire`, `ground`, `label` (names a node), `meter` and `speaker` (its voice coil's resistance,
 8 Ω unless it says; the viewer plays the voltage across it). Waves: `dc 5`, `sine 5 1k [offset]`,
-`square 0 5 1k [duty]`, `triangle -1 1 1k` (low, high, frequency), `pulse low high delay rise fall
+`square 0 5 1k [duty]`, `triangle -1 1 1k` and `sawtooth -1 1 1k` (low, high, frequency), `pulse low high delay rise fall
 width period` (SPICE's), and `pwl t v t v …`. Values take SPICE's suffixes: `4.7k`, `10u`, `1meg`
 (and `1m` is a milliohm).
 
-A signal generator is a bench instrument: a waveform (`sine`, `square`, `triangle` or `dc`), a
+A signal generator is a bench instrument: a waveform (`sine`, `square`, `triangle`, `sawtooth` or `dc`), a
 frequency, an amplitude (the peak, from the offset), and perhaps an offset and an output resistance,
 50 Ω unless the line says otherwise. It is placed by its output and its return, and a meter across
 them reads what reaches the circuit: the wave less what the output resistance drops. A `dc` generator
@@ -198,7 +198,8 @@ reads a SPICE netlist — the format published circuits and every other simulato
 analyses and prints their tables. The subset: `R`, `C` and `L` (with `IC=`), `K` coupling two
 inductors into a transformer (`K1 LP LS 0.999`), `V` and `I` sources
 (DC, `PULSE`, `SIN`, `PWL`, with SPICE's defaults; `AC magnitude [phase]` drives it for `.ac`; a triangle is a
-`PULSE` with no top, `PULSE(low high 0 T/2 T/2 0 T)`), `D` with `.model … D`
+`PULSE` with no top, `PULSE(low high 0 T/2 T/2 0 T)`, and a sawtooth one that is all rise,
+`PULSE(low high 0 0.999T T/1000 0 T)`), `D` with `.model … D`
 (`IS`, `N`, `RS`, `BV` and `IBV` for a zener's breakdown, and an area), `Q` bipolar transistors (collector, base, emitter, an optional
 substrate, a model and an area) with `.model … NPN` or `PNP` (`IS`, `BF`, `BR`, `NF`, `NR`, `VAF`,
 `VAR`), `M` MOSFETs (drain, gate, source, bulk, a model, and `L=`, `W=` and `M=`, SPICE's 100 µm when

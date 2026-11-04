@@ -354,7 +354,7 @@ panel_opens_and_closes()
     val p = m.panels[0]
 
     assert(p.title == "G1 signal generator")
-    assert(p.choices[0].options.len() == 4 && p.choices[0].options[2] == "triangle")
+    assert(p.choices[0].options.len() == 5 && p.choices[0].options[2] == "triangle" && p.choices[0].options[3] == "sawtooth")
     assert(p.choices[0].chosen.read() == 0)
     assert(close(p.knobs[0].value(), 1000.0))
     assert(close(p.knobs[1].value(), 1.0))
@@ -436,7 +436,17 @@ waveform_choice_reaches_the_circuit()
     assert(m.s.circuit.parts[usize(part)].kind == Generator(osc(m).wave(), 50.0))
     assert(m.waveform_of(part) == Some(Waveform.Square))
 
+    // The sawtooth, the next on the selector, picks up where the square was in its cycle.
+    val t = m.s.time
+    val phase = osc(m).phase_at(t)
+
     m.panels[0].choices[0].chosen.set(3)
+    assert(m.sync())
+    assert(osc(m).form == Waveform.Sawtooth && close(osc(m).phase_at(t), phase))
+    assert(m.s.circuit.parts[usize(part)].kind == Generator(osc(m).wave(), 50.0))
+    assert(m.panels[0].summary() == "sawtooth 1kHz 1V")
+
+    m.panels[0].choices[0].chosen.set(4)
     m.panels[0].knobs[2].set(2.0)
     m.sync()
     assert(m.s.circuit.parts[usize(part)].kind == Generator(Dc(2.0), 50.0))
@@ -490,7 +500,7 @@ generator_status()
     m.sync()
     assert(m.panels[0].summary() == "square 20kHz 1V -500mV offset")
 
-    m.panels[0].choices[0].chosen.set(3)
+    m.panels[0].choices[0].chosen.set(4)
     m.sync()
     assert(m.panels[0].summary() == "dc -500mV offset")
 
@@ -859,7 +869,7 @@ bode_square_and_undriven()
     m.refresh_bode()
     assert(m.bode.marker == 1e3 && m.bode.trouble == "")
     // A dc generator repeats at no frequency: nothing is marked.
-    m.panels[0].choices[0].chosen.set(3)
+    m.panels[0].choices[0].chosen.set(4)
     m.sync()
     m.refresh_bode()
     assert(m.bode.marker == 0.0 && m.bode.curves.len() == 1)

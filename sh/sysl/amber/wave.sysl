@@ -102,11 +102,25 @@ triangle(low: real, high: real, frequency: real, delay: real = 0.0) -> Wave
 
     Pulse(low, high, delay, half, half, 0.0, 2.0 * half)
 
+// A sawtooth wave between `low` and `high` at `frequency`: at `low` at `delay`, rising for all of each
+// period but the thousandth its fall back to `low` takes.
+//
+// **A sawtooth is a pulse that is all rise**, its width zero and its fall as short as a square's
+// edges, so the solver lands a step on the top and the bottom of each fall, and every harmonic is
+// there, odd and even, each at 1/n of the first: the bright, brassy wave a synthesizer's filter is
+// made to carve.
+sawtooth(low: real, high: real, frequency: real, delay: real = 0.0) -> Wave
+    val period = 1.0 / frequency
+    val edge = period / 1000.0
+
+    Pulse(low, high, delay, period - edge, edge, 0.0, period)
+
 // The shapes a signal generator puts out.
 enum Waveform: u8
     Sine
     Square
     Triangle
+    Sawtooth
     // A steady level: the generator's offset, alone.
     Dc
 
@@ -115,16 +129,18 @@ enum Waveform: u8
         Sine -> "sine"
         Square -> "square"
         Triangle -> "triangle"
+        Sawtooth -> "sawtooth"
         Dc -> "dc"
 
 // The waveforms in the order a generator's selector lists them.
-val WAVEFORMS = [Waveform.Sine, Waveform.Square, Waveform.Triangle, Waveform.Dc]
+val WAVEFORMS = [Waveform.Sine, Waveform.Square, Waveform.Triangle, Waveform.Sawtooth, Waveform.Dc]
 
 // The waveform called `word`, as a schematic writes it.
 waveform_named(word: string) -> Option[Waveform] = word match
     "sine" -> Some(Waveform.Sine)
     "square" -> Some(Waveform.Square)
     "triangle" -> Some(Waveform.Triangle)
+    "sawtooth" -> Some(Waveform.Sawtooth)
     "dc" -> Some(Waveform.Dc)
     _ -> None
 
@@ -132,7 +148,7 @@ waveform_named(word: string) -> Option[Waveform] = word match
 //
 // `amplitude` is the peak, measured from `offset`: a sine of amplitude 1 and offset 2 swings from 1 to
 // 3 volts. Every waveform's cycle starts where a sine's does, at the offset and rising: a square goes
-// high there, and a triangle is halfway up its rise.
+// high there, and a triangle and a sawtooth are halfway up their rise.
 //
 // **Its phase carries across a change of setting, as a bench generator's does.** `phase` is how far
 // through its cycle, in cycles, it is at time `start`; `retuned` moves both to the moment of a change,
@@ -167,6 +183,8 @@ struct Oscillator derives Eq
             Square -> square(low, high, self.frequency, delay = began)
             // At its low a quarter of a cycle before the sine's rising crossing.
             Triangle -> triangle(low, high, self.frequency, delay = began - period / 4.0)
+            // At its low half a rise before the sine's rising crossing.
+            Sawtooth -> sawtooth(low, high, self.frequency, delay = began - 0.4995 * period)
             Dc -> Dc(self.offset)
 
 // An oscillator set to `form` at `frequency`, `amplitude` and `offset`, starting its cycle at time 0.
