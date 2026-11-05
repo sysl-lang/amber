@@ -213,7 +213,7 @@ struct System[T: Entry]
 
             for c in 0..<n
                 if self.live_cols[usize(c)] && self.written[usize(r * n + c)]
-                    self.largest[usize(c)] = max(self.largest[usize(c)], self.a[usize(r * n + c)].size())
+                    self.largest[usize(c)] = self.largest[usize(c)].max(self.a[usize(r * n + c)].size())
 
         var best = -1
         var fewest = 0

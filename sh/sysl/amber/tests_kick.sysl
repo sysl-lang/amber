@@ -48,8 +48,8 @@ kick_rings()
             last = t
             crossings += 1
 
-        if t > 0.12 && t < 0.2 then peak_early = max(peak_early, v.abs())
-        if t > 0.5 && t < 0.6 then peak_late = max(peak_late, v.abs())
+        if t > 0.12 && t < 0.2 then peak_early = peak_early.max(v.abs())
+        if t > 0.5 && t < 0.6 then peak_late = peak_late.max(v.abs())
 
         was = v
 

@@ -519,16 +519,16 @@ struct Sim
     // Where the next step should end: no further than the step the error allows, the longest step the
     // caller and the waves allow, the next corner of any wave, or `until`.
     private step_end(self, until: real) -> real
-        var h = min(self.next_step, self.longest_step)
+        var h = self.next_step.min(self.longest_step)
 
         for i in 0..<self.circuit.parts.len()
-            if self.circuit.parts[i].kind.wave() is Some(w) then h = min(h, w.longest_step())
+            if self.circuit.parts[i].kind.wave() is Some(w) then h = h.min(w.longest_step())
 
-        var end = min(until, self.time + h)
+        var end = until.min(self.time + h)
 
         for i in 0..<self.circuit.parts.len()
             if self.circuit.parts[i].kind.wave() is Some(w)
-                if w.next_corner(self.time) is Some(c) then end = min(end, c)
+                if w.next_corner(self.time) is Some(c) then end = end.min(c)
 
         // A step ending a rounding error short of `until` would leave a remainder too short to take:
         // 2.5 ms + 0.5 ms is 2.9999999999999996 ms. It ends on `until` instead.
@@ -561,7 +561,7 @@ struct Sim
                     return Ok(())
 
                 self.rejected += 1
-                end = self.time + h * max(0.2, 0.9 * (1.0 / err).cbrt())
+                end = self.time + h * (0.9 * (1.0 / err).cbrt()).max(0.2)
             else
                 self.rejected += 1
                 end = self.time + h / 8.0
@@ -604,7 +604,7 @@ struct Sim
         var worst = 0.0
 
         for k in 0..<nodes
-            largest = max(largest, self.x[usize(k)].abs())
+            largest = largest.max(self.x[usize(k)].abs())
 
         for k in 0..<self.size
             if self.is_source_current(k) then continue
@@ -620,9 +620,9 @@ struct Sim
                 x2 * (end - t0) * (end - t1) / ((t2 - t0) * (t2 - t1))
             val got = self.x[usize(k)]
             // The trapezoidal rule's own error is about a twelfth of the parabola's miss.
-            val err = max(0.0, (got - predicted).abs() - floor) / 12.0 / (REL_TOL * max(got.abs(), x0.abs()) + ABS_TOL)
+            val err = ((got - predicted).abs() - floor).max(0.0) / 12.0 / (REL_TOL * got.abs().max(x0.abs()) + ABS_TOL)
 
-            worst = max(worst, err)
+            worst = worst.max(err)
 
         worst
 
@@ -671,11 +671,11 @@ struct Sim
         for i in 0..<self.circuit.parts.len()
             if self.circuit.parts[i].kind.wave() is Some(w)
                 if w.next_corner(self.time1) is Some(c)
-                    if (c - end).abs() <= 1e-15 * max(1.0, end.abs()) then on_corner = true
+                    if (c - end).abs() <= 1e-15 * end.abs().max(1.0) then on_corner = true
 
-        val grown = if err > 0.0 then h * min(2.0, 0.9 * (1.0 / err).cbrt()) else h * 2.0
+        val grown = if err > 0.0 then h * (0.9 * (1.0 / err).cbrt()).min(2.0) else h * 2.0
 
-        self.next_step = max(grown, FIRST_STEP)
+        self.next_step = grown.max(FIRST_STEP)
 
         if on_corner
             self.corner()
@@ -730,7 +730,7 @@ struct Sim
             var largest = 0.0
 
             for i in 0..<nodes
-                largest = max(largest, self.sys.z[usize(i)].abs())
+                largest = largest.max(self.sys.z[usize(i)].abs())
 
             var still = true
 
@@ -738,7 +738,7 @@ struct Sim
                 val was = self.x[usize(i)]
                 val now = self.sys.z[usize(i)]
 
-                if i < nodes && (now - was).abs() > max(1e-6 * max(now.abs(), was.abs()) + 1e-9, ROUNDING * largest) then still = false
+                if i < nodes && (now - was).abs() > (1e-6 * now.abs().max(was.abs()) + 1e-9).max(ROUNDING * largest) then still = false
 
                 self.x[usize(i)] = now
 
@@ -807,7 +807,7 @@ struct Sim
                     if m.bv > 0.0
                         val k = knee(m)
 
-                        if now < min(0.0, -k + 10.0 * nvt)
+                        if now < (-k + 10.0 * nvt).min(0.0)
                             self.junction[2 * i] = -limit(-(now + k), -(was + k), nvt, vcrit) - k
                             continue
 
@@ -825,14 +825,14 @@ struct Sim
                     val highest = self.voltage(p.d) - m.headroom + INNER_PAST
                     val lowest = self.voltage(p.e) + m.headroom - INNER_PAST
 
-                    self.junction[2 * i] = if highest > lowest then max(lowest, min(highest, inner)) else inner
-                    self.junction[2 * i + 1] += max(-reach, min(reach, drive - self.junction[2 * i + 1]))
+                    self.junction[2 * i] = if highest > lowest then inner.min(highest).max(lowest) else inner
+                    self.junction[2 * i + 1] += (drive - self.junction[2 * i + 1]).min(reach).max(-reach)
 
                     // The inputs' difference moves at most across the input stage's linear range.
                     val k = self.difference_slot(int(i))
                     val span = m.islew() / m.gm()
 
-                    self.junction[k] += max(-span, min(span, self.voltage(p.a) - self.voltage(p.b) - self.junction[k]))
+                    self.junction[k] += (self.voltage(p.a) - self.voltage(p.b) - self.junction[k]).min(span).max(-span)
                 Transistor(m) ->
                     // SPICE limits a transistor's junctions on the bare thermal voltage, whatever their
                     // emission coefficients.
@@ -1240,12 +1240,12 @@ private[amber] supply_line(s: PowerSupply, open: real, v: real) -> (real, real)
 const SUPPLY_ROUNDING: real = 1e-3
 
 // Whether a junction voltage moved so little between linearising and solving that it is settled.
-private close(was: real, now: real) -> bool = (now - was).abs() <= 1e-6 * max(now.abs(), was.abs()) + 1e-9
+private close(was: real, now: real) -> bool = (now - was).abs() <= 1e-6 * now.abs().max(was.abs()) + 1e-9
 
 // Whether `now`, the difference of voltages `x` and `y`, moved from `was` by no more than those voltages
 // are themselves known to: a millionth of the larger, and a nanovolt.
 private close_between(was: real, now: real, x: real, y: real) -> bool =
-    (now - was).abs() <= 1e-6 * max(max(now.abs(), was.abs()), max(x.abs(), y.abs())) + 1e-9
+    (now - was).abs() <= 1e-6 * now.abs().max(was.abs()).max(x.abs().max(y.abs())) + 1e-9
 
 // Whether a diode's current at the voltage it was solved at is what the line it was solved on says, to
 // a millionth and a picoamp, as SPICE judges a junction: `now` is the curve's current there, and the
@@ -1258,7 +1258,7 @@ private close_between(was: real, now: real, x: real, y: real) -> bool =
 private line_holds(now: real, was: real, slope: real, dv: real) -> bool
     val line = was + slope * dv
 
-    (now - line).abs() <= 1e-6 * max(now.abs(), line.abs()) + 1e-12
+    (now - line).abs() <= 1e-6 * now.abs().max(line.abs()) + 1e-12
 
 // How hard an op-amp's inner node is held inside its rails: the conductance it meets past one, which
 // lets it overshoot by its slew current over this, a few millivolts; and how softly the hold comes on,
@@ -1429,24 +1429,24 @@ private[amber] fetlim(want: real, was: real, vto: real) -> real
     if was >= on
         if step > 0.0 then return if step >= hi then was + hi else want
 
-        return if want >= on then want else max(want, vto + 2.0)
+        return if want >= on then want else want.max(vto + 2.0)
 
-    if was >= vto then return if step <= 0.0 then max(want, vto - 0.5) else min(want, vto + 4.0)
+    if was >= vto then return if step <= 0.0 then want.max(vto - 0.5) else want.min(vto + 4.0)
 
     if step <= 0.0 then return if -step > hi then was - hi else want
 
-    min(want, vto + 0.5)
+    want.min(vto + 0.5)
 
 // SPICE's limit on a step of a MOSFET's drain–source voltage: no more than about tripling it at a time
 // above 3.5 V, and within −0.5 V and 4 V below.
 private[amber] limvds(want: real, was: real) -> real
     if was >= 3.5
-        if want > was then return min(want, 3.0 * was + 2.0)
-        if want < 3.5 then return max(want, 2.0)
+        if want > was then return want.min(3.0 * was + 2.0)
+        if want < 3.5 then return want.max(2.0)
 
         return want
 
-    if want > was then min(want, 4.0) else max(want, -0.5)
+    if want > was then want.min(4.0) else want.max(-0.5)
 
 // Overwrite `to` with `from`'s numbers, element by element, so `to` stays its own buffer.
 private copy_into(to: *Buf[real], from: Buf[real])

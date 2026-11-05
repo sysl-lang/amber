@@ -334,7 +334,7 @@ val BENCH = """
 
 private bench() -> &Model = model("bench.amber", parse_schematic(BENCH).unwrap())
 
-private close(got: real, want: real) -> bool = (got - want).abs() <= 1e-9 * max(1.0, want.abs())
+private close(got: real, want: real) -> bool = (got - want).abs() <= 1e-9 * want.abs().max(1.0)
 
 // The generator's oscillator as its panel last handed it to the circuit.
 private osc(m: &Model) -> Oscillator = m.panels[0].instrument match
@@ -934,7 +934,7 @@ oscillator_sounds()
     var loudest = 0.0
 
     for k in from..<m.ear.heard.len()
-        loudest = max(loudest, real(m.ear.heard[k]).abs())
+        loudest = loudest.max(real(m.ear.heard[k]).abs())
 
     assert(hz > 480.0 && hz < 580.0)
     assert(loudest > 0.4 && loudest <= 1.0)
@@ -979,8 +979,8 @@ speaker_levels()
         val x = real(e.hear(v))
 
         if real(k) >= rate - rate / 1000.0
-            hi = max(hi, x)
-            lo = min(lo, x)
+            hi = hi.max(x)
+            lo = lo.min(x)
 
     assert(hi > 0.45 && hi < 0.55 && lo < -0.45 && lo > -0.55)
 
@@ -989,7 +989,7 @@ speaker_levels()
     var most = 0.0
 
     for k in 0..<4800
-        most = max(most, real(quiet.hear(1.0 + 1e-6 * (tau * 440.0 * real(k) / rate).sin())).abs())
+        most = most.max(real(quiet.hear(1.0 + 1e-6 * (tau * 440.0 * real(k) / rate).sin())).abs())
 
     assert(most < 1e-4)
 

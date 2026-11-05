@@ -24,8 +24,8 @@ private swing(s: *Sim, node: string, span: real) -> (real, real, real)
 
         val v = s.voltage_at(node)
 
-        lo = min(lo, v)
-        hi = max(hi, v)
+        lo = lo.min(v)
+        hi = hi.max(v)
         sum += v
         n += 1
 
@@ -73,7 +73,7 @@ supply_corner()
 
         s.operating_point().unwrap()
 
-        val want = min(10.0, 0.1 * load)
+        val want = (0.1 * load).min(10.0)
         // The corner is rounded over a thousandth of the limit, so right at it the supply gives up about
         // a tenth of a millivolt, and is on the edge of either mode.
         assert(near(s.across(0), want, 1e-3))

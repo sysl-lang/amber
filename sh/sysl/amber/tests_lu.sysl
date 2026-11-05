@@ -115,7 +115,7 @@ private residual(n: int, entries: Buf[(int, int, real)], rhs: Buf[real], x: Buf[
                 sum += v * x[usize(c)]
                 scale += (v * x[usize(c)]).abs()
 
-        worst = max(worst, sum.abs() / scale)
+        worst = worst.max(sum.abs() / scale)
 
     worst
 

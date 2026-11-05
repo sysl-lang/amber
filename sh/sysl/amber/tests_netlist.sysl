@@ -163,7 +163,7 @@ agree(net: Netlist, names: []const string, expected: []const real)
         var span = 0.0
 
         for r in 0..<rows
-            span = max(span, expected[r * width + 1 + j].abs())
+            span = span.max(expected[r * width + 1 + j].abs())
 
         for r in 0..<rows
             val got_row = if a == Op then t.rows[0] else t.rows[r]
@@ -174,7 +174,7 @@ agree(net: Netlist, names: []const string, expected: []const real)
             // ngspice writes nine figures, so a frequency a decade's tenth along, 125.892541179 Hz,
             // comes back as 125.892541.
             val scale = expected[r * width]
-            val near = if phasors then 1e-8 * scale.abs() else 1e-9 * max(1.0, scale.abs())
+            val near = if phasors then 1e-8 * scale.abs() else 1e-9 * scale.abs().max(1.0)
 
             if a != Op then assert((got_row[0] - scale).abs() <= near)
 

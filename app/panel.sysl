@@ -127,7 +127,7 @@ struct Panel
                 q.volts = now[2]
                 q.amps = now[3]
                 // A ripple deeper than the voltage would swing below nothing.
-                q.ripple = min(now[4], 2.0 * q.volts)
+                q.ripple = now[4].min(2.0 * q.volts)
                 s.set_supply(self.part, q)
                 BenchSupply(q)
 

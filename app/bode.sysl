@@ -140,14 +140,14 @@ bode_scale(curves: []const Curve) -> (real, real)
 
     for c in curves
         for g in c.gain
-            hi = max(hi, g)
-            lo = min(lo, g)
+            hi = hi.max(g)
+            lo = lo.min(g)
 
     if hi < lo then return (20.0, 10.0)
 
-    lo = max(lo, hi - BODE_DEPTH)
+    lo = lo.max(hi - BODE_DEPTH)
 
-    val per_div = max(step_125(max(hi - lo, 1.0) * 1.05 / real(BODE_DIVISIONS)), 1.0)
+    val per_div = step_125((hi - lo).max(1.0) * 1.05 / real(BODE_DIVISIONS)).max(1.0)
     // A twentieth of a division of room above the highest point, so a flat curve is not drawn on the
     // plot's edge.
     val top = ((hi + 0.05 * per_div) / per_div).ceil() * per_div

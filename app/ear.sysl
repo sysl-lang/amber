@@ -82,9 +82,9 @@ struct Ear
 
         val a = v - self.dc
 
-        self.peak = max(a.abs(), self.peak * (1.0 - 1.0 / (RELEASE_SECONDS * real(RATE))))
+        self.peak = a.abs().max(self.peak * (1.0 - 1.0 / (RELEASE_SECONDS * real(RATE))))
 
-        f32(max(-1.0, min(1.0, 0.5 * a / max(self.peak, QUIETEST))))
+        f32((0.5 * a / self.peak.max(QUIETEST)).min(1.0).max(-1.0))
 
     // Hand what has been heard to the sound output, opening it if it has not been, unless too much is
     // already waiting to be played. With no sound output, what was heard is let go.

@@ -261,7 +261,7 @@ opamp_example()
 
     for k in 0..<480
         s.advance_to(real(3491 + k) * dt).unwrap()
-        most_speaker = max(most_speaker, s.voltage_at("out").abs() / 8.0)
-        most_u1 = max(most_u1, s.current(3).abs())
+        most_speaker = most_speaker.max(s.voltage_at("out").abs() / 8.0)
+        most_u1 = most_u1.max(s.current(3).abs())
 
     assert(most_speaker > 0.06 && most_u1 < 0.05 * most_speaker)

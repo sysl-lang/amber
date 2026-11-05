@@ -8,7 +8,7 @@
 // The library is `sh.sysl.amber` and needs nothing but an allocator. The viewer, which draws a
 // schematic and the voltages on it, is the workspace member in `app/`, so a program taking the
 // library does not take SDL with it.
-package { name = "amber", version = "0.1.0", sysl = "0.8.9" }
+package { name = "amber", version = "0.1.0", sysl = "0.9.0" }
 
 optimization = "2"
 

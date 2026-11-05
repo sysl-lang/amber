@@ -121,7 +121,7 @@ private push_phasor(cells: *Buf[real], z: Complex[real])
 
 // A phasor's size in decibels, `20 log10 |z|`; a node the sine never reaches is given -300 dB rather
 // than minus infinity.
-decibels(z: Complex[real]) -> real = 20.0 * max(z.abs(), 1e-15).log10()
+decibels(z: Complex[real]) -> real = 20.0 * z.abs().max(1e-15).log10()
 
 private table(net: Netlist, first: string) -> Table
     var columns: Buf[string] = buf()

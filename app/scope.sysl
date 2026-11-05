@@ -77,7 +77,7 @@ impl View for Scope
 // voltage: a regulated 5 V with 10 mV of ripple is 5 V, while a first stage's 80 mV on its 2 V bias is
 // a swing.
 legend_value(lo: real, hi: real, now: real) -> string
-    if hi - lo < max(1e-3, 0.005 * max(lo.abs(), hi.abs())) then volts(now) else s"${volts(hi - lo)} p-p"
+    if hi - lo < (0.005 * lo.abs().max(hi.abs())).max(1e-3) then volts(now) else s"${volts(hi - lo)} p-p"
 
 // The lowest and highest reading meter `mt` has made since `from`, or zero for both if it has made none.
 reach(mt: Meter, from: real) -> (real, real)
@@ -89,8 +89,8 @@ reach(mt: Meter, from: real) -> (real, real)
         if mt.times[j] >= from
             val v = mt.readings[j]
 
-            lo = if any then min(lo, v) else v
-            hi = if any then max(hi, v) else v
+            lo = if any then lo.min(v) else v
+            hi = if any then hi.max(v) else v
             any = true
 
     (lo, hi)
@@ -102,7 +102,7 @@ reach(mt: Meter, from: real) -> (real, real)
 // millivolt across the whole height. The middle is put on a fifth of a division, so the trace stays
 // still while what it reads does.
 channel_scale(lo: real, hi: real) -> (real, real)
-    val span = max(max(hi - lo, 0.05 * max(lo.abs(), hi.abs())), 1e-3)
+    val span = (hi - lo).max(0.05 * lo.abs().max(hi.abs())).max(1e-3)
     val per_div = step_125(1.05 * span / real(DIVISIONS))
     val notch = per_div / 5.0
 

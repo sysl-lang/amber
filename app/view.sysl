@@ -162,7 +162,7 @@ private place(m: &Model, r: Rect) -> Place
 
     val span_x = real(x1 - x0) + 8.0
     val span_y = real(y1 - y0) + 8.0
-    val unit = min(90.0, min(real(r.w) / span_x, real(r.h) / span_y))
+    val unit = (real(r.w) / span_x).min(real(r.h) / span_y).min(90.0)
 
     Place(real(r.x) + (real(r.w) - unit * real(x1 - x0)) / 2.0 - unit * real(x0),
           real(r.y) + (real(r.h) - unit * real(y1 - y0)) / 2.0 - unit * real(y0), unit)
@@ -217,7 +217,7 @@ private hit(m: &Model, at: Place, wx: int, wy: int) -> int
 // The colour a voltage is drawn in: grey at ground, warming to amber as it rises and cooling to blue
 // as it falls, full at the largest voltage anywhere in the circuit.
 private wire_colour(v: real, most: real) -> u32
-    val t = min(1.0, v.abs() / max(most, 1e-9))
+    val t = (v.abs() / most.max(1e-9)).min(1.0)
     val (r, g, b) = if v >= 0.0 then (0xFF, 0xB0, 0x30) else (0x4A, 0x9C, 0xFF)
 
     mix(0x70, r, t) << 16 | mix(0x76, g, t) << 8 | mix(0x80, b, t)
@@ -232,7 +232,7 @@ private most_volts(m: &Model) -> real
     var most = 0.0
 
     for n in 0..<m.sch.circuit.node_count()
-        most = max(most, m.s.voltage(int(n)).abs())
+        most = most.max(m.s.voltage(int(n)).abs())
 
     most
 
@@ -403,7 +403,7 @@ private struct Pen
         val ux = dx / length
         val uy = dy / length
         // The symbol takes the middle of the part, at most a square and a half of it.
-        val body = min(1.5, length)
+        val body = length.min(1.5)
         val s0 = (length - body) / 2.0
         val s1 = s0 + body
         val va = m.s.voltage(e.a)
@@ -422,7 +422,7 @@ private struct Pen
         e.shape match
             Resistor ->
                 // Three zigzags, peak to peak, in a square of the middle, as a schematic draws one.
-                val zigzag = min(1.0, body)
+                val zigzag = body.min(1.0)
                 val r0 = (length - zigzag) / 2.0
                 val step = zigzag / 6.0
 
@@ -546,7 +546,7 @@ private struct Pen
                 self.dot(f.gx(s1 - 0.15, 0.0), f.gy(s1 - 0.15, 0.0), 3.5)
             Source ->
                 val mid = (s0 + s1) / 2.0
-                val radius = min(0.5, body / 2.0)
+                val radius = (body / 2.0).min(0.5)
 
                 f.line(s0, 0.0, mid - radius, 0.0)
                 f.line(mid + radius, 0.0, s1, 0.0)
@@ -595,7 +595,7 @@ private struct Pen
                 f.line(mid - 0.35, 0.32, mid - 0.35, 0.52)
             CurrentSource ->
                 val mid = (s0 + s1) / 2.0
-                val radius = min(0.5, body / 2.0)
+                val radius = (body / 2.0).min(0.5)
 
                 f.line(s0, 0.0, mid - radius, 0.0)
                 f.line(mid + radius, 0.0, s1, 0.0)
@@ -774,7 +774,7 @@ private struct Pen
     // An LED's light: a halo in its colour, as bright as its current is near 20 mA.
     glow(self, f: Frame, mid: real, e: Element)
         val i = self.m.s.current(e.part)
-        val t = min(1.0, max(0.0, i / 20e-3))
+        val t = (i / 20e-3).max(0.0).min(1.0)
 
         if t < 0.02 then return
 

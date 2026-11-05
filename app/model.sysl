@@ -445,11 +445,11 @@ struct Model
         for i in 0..<self.sch.elements.len()
             val e = self.sch.elements[i]
 
-            if e.part >= 0 then self.most_amps = max(self.most_amps, self.s.current(e.part).abs())
+            if e.part >= 0 then self.most_amps = self.most_amps.max(self.s.current(e.part).abs())
 
             // A transistor's emitter carries the most: its collector's current and its base's.
             if e.part >= 0 && e.shape.points() == 3
-                self.most_amps = max(self.most_amps, self.s.terminal_current(e.part, 2).abs())
+                self.most_amps = self.most_amps.max(self.s.terminal_current(e.part, 2).abs())
 
         // What was held fades by a factor of e in HOLD_SECONDS of the window's time.
         val keep = (-(self.s.time - self.held_at) / (HOLD_SECONDS * self.pace())).exp()
@@ -500,8 +500,8 @@ struct Hold
 
     // Take in a current of `amps`, after what was held has faded to `keep` of itself.
     see(*self, amps: real, keep: real)
-        self.forward = max(amps, self.forward * keep)
-        self.back = max(-amps, self.back * keep)
+        self.forward = amps.max(self.forward * keep)
+        self.back = (-amps).max(self.back * keep)
 
     // Whether the current has lately gone both ways, each more than a trickle beside `most`.
     alternating(self, most: real) -> bool = self.forward >= trickle(most) && self.back >= trickle(most)
@@ -517,7 +517,7 @@ struct Hold
     speed(self, amps: real, most: real) -> real
         if !self.alternating(most) then return dot_speed(amps, most)
 
-        3.0 * amps / min(most, max(self.forward, self.back))
+        3.0 * amps / self.forward.max(self.back).min(most)
 
 // Every hold in `holds` emptied.
 private forget(holds: *Buf[Hold])
@@ -526,7 +526,7 @@ private forget(holds: *Buf[Hold])
 
 // The smallest current that moves dots: a ten-thousandth of the largest the circuit has carried, and
 // never less than a nanoamp.
-private trickle(most: real) -> real = max(1e-9, 1e-4 * most)
+private trickle(most: real) -> real = (1e-4 * most).max(1e-9)
 
 // How fast dots move for a current of `amps`, in grid squares a second: three at the largest current
 // the circuit has carried, and none for a current too small to matter.
@@ -632,7 +632,7 @@ tick(m: &Model, dt: real)
     if !m.running then return
 
     // A frame late by more than a tenth of a second does not owe the time it lost.
-    val step = min(dt, 0.1)
+    val step = dt.min(0.1)
 
     // The circuit's own thread runs the clock and plays the sound; the window moves its dots.
     if m.remote

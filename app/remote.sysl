@@ -48,7 +48,7 @@ work(e: &Model, dt: real)
         e.ear.hush()
         return
 
-    val step = min(dt, LONGEST_SLICE)
+    val step = dt.min(LONGEST_SLICE)
 
     e.run(step * e.pace(), max(1, int(step * 60.0 * real(SAMPLES_PER_FRAME))))
 

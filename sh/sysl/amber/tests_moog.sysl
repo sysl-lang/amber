@@ -100,8 +100,8 @@ private swings(v: Buf[real]) -> (real, real)
 
     for k in 0..<v.len()
         sum += v[k]
-        hi = max(hi, v[k])
-        lo = min(lo, v[k])
+        hi = hi.max(v[k])
+        lo = lo.min(v[k])
 
     val mean = sum / real(v.len())
 
@@ -158,11 +158,11 @@ moog_no_thump_no_droop()
     var loudest = 0.0
 
     for k in 0..<start.len()
-        loudest = max(loudest, start[k].abs())
+        loudest = loudest.max(start[k].abs())
 
     // Struck, the ladder's two columns both fall by volts as its current comes on. Heard from one
     // column, that fall was a thump twice the note's own swing; heard as their difference, it cancels.
-    assert(loudest < 1.5 * max(up, down))
+    assert(loudest < 1.5 * up.max(down))
 
     // A square's half holds level: half way through a half-period and just before its end, the
     // speaker reads within a twentieth of the note's swing. Coupled to it through 2.2 µF, 2.2 ms against
@@ -175,7 +175,7 @@ moog_no_thump_no_droop()
         val middle = s_at(note, 0.03, dt, t + 0.5 * half)
         val end = s_at(note, 0.03, dt, t + 0.95 * half)
 
-        worst = max(worst, (end - middle).abs())
+        worst = worst.max((end - middle).abs())
 
     assert(worst < 0.05 * (up + down))
 

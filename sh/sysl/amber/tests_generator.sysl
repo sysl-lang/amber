@@ -399,8 +399,8 @@ amplifier_clips()
 
         val v = s.voltage_at("out")
 
-        lo = min(lo, v)
-        hi = max(hi, v)
+        lo = lo.min(v)
+        hi = hi.max(v)
 
     // Undistorted, half a volt in would be more than thirty volts out each way; the supply allows
     // no more than its own 12 V from top to bottom, and the two sides clip differently.
@@ -418,8 +418,8 @@ private first_cycle(s: *Sim) -> (real, real)
 
         val v = s.voltage_at("out")
 
-        lo = min(lo, v)
-        hi = max(hi, v)
+        lo = lo.min(v)
+        hi = hi.max(v)
 
     (lo, hi)
 
