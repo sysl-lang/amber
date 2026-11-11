@@ -95,7 +95,7 @@ struct Ear
             // Found empty while it was playing: the sound stopped for a moment before this arrived.
             if self.playing && v.queued() == 0 && self.heard.len() > 0 then self.dropouts += 1
 
-            if real(v.queued()) < MOST_QUEUED * real(RATE) * 4.0 then v.put(self.heard.view_mut())
+            if real(v.queued()) < MOST_QUEUED * real(RATE) * 4.0 then v.put(self.heard.view())
 
             self.playing = true
 
