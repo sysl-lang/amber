@@ -600,7 +600,7 @@ private positive(word: string, what: string) -> Result[real, string]
     Ok(v)
 
 // A value, then perhaps `ic = v`.
-private value_and_ic(name: string, rest: []string) -> Result[(real, real), string]
+private value_and_ic(name: string, rest: []const string) -> Result[(real, real), string]
     val v = parse_value(rest[0])?
 
     if rest.len == 1 then return Ok((v, 0.0))
@@ -612,7 +612,7 @@ private value_and_ic(name: string, rest: []string) -> Result[(real, real), strin
 
 // A source's `ac` part, `AC magnitude [phase]`, with the phase in degrees: how `.ac` drives it. A
 // source without one is not driven; SPICE's magnitude when the word stands alone is 1.
-private source_ac(words: []string) -> Option[(real, real)]
+private source_ac(words: []const string) -> Option[(real, real)]
     for k in 0..<words.len
         if words[k] == "ac"
             val mag = if k + 1 < words.len then parse_value(words[k + 1]).unwrap_or(1.0) else 1.0
@@ -624,7 +624,7 @@ private source_ac(words: []string) -> Option[(real, real)]
 
 // A source's value or wave: `[dc] v`, `pulse(…)`, `sin(…)` or `pwl(…)`, each perhaps with an `ac`
 // part, which `source_ac` reads.
-private source_wave(name: string, words: []string, tstep: real, tstop: real) -> Result[Wave, string]
+private source_wave(name: string, words: []const string, tstep: real, tstop: real) -> Result[Wave, string]
     var dc: Option[real] = None
     var wave: Option[Wave] = None
     var driven = false

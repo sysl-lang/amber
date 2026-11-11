@@ -5,8 +5,8 @@
 //     sysl run app -- examples/led.amber --shot led.png
 package {
   name    = "amber-app"
-  version = "0.1.0"
-  sysl    = "0.9.0"
+  version = "0.1.1"
+  sysl    = "0.10.0"
 }
 
 optimization = "2"
@@ -21,7 +21,7 @@ requires {
 
 dependencies {
   amber      { workspace = true }
-  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.23" }
+  syslui-sdl { git = "github.com/sysl-lang/syslui-sdl", version = "0.2.25" }
   // The schematic is drawn with PlutoVG directly; 0.2.7 takes a read-only dash pattern.
-  plutovg    { git = "github.com/sysl-lang/plutovg",    version = "0.2.7" }
+  plutovg    { git = "github.com/sysl-lang/plutovg",    version = "0.2.8" }
 }
