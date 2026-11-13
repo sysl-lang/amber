@@ -266,7 +266,7 @@ by the trapezoidal rule with its step chosen from the error it makes:
 
 ```
 dependencies {
-  amber { git = "github.com/sysl-lang/amber", version = "0.1.2" }
+  amber { git = "github.com/sysl-lang/amber", version = "0.1.3" }
 }
 ```
 

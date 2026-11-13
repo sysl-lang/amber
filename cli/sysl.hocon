@@ -1,7 +1,7 @@
 // amber on the command line: read a SPICE netlist, run its analyses, print what they answer.
 //
 //     sysl run cli -- oracle/rc_pulse.cir
-package { name = "amber-cli", version = "0.1.2", sysl = "0.10.0" }
+package { name = "amber-cli", version = "0.1.3", sysl = "0.10.7" }
 
 optimization = "2"
 

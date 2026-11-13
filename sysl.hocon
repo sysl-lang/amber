@@ -2,13 +2,13 @@
 // solved by modified nodal analysis with Newton–Raphson for the parts that are not linear.
 //
 //     dependencies {
-//       amber { git = "github.com/sysl-lang/amber", version = "0.1.1" }
+//       amber { git = "github.com/sysl-lang/amber", version = "0.1.3" }
 //     }
 //
 // The library is `sh.sysl.amber` and needs nothing but an allocator. The viewer, which draws a
 // schematic and the voltages on it, is the workspace member in `app/`, so a program taking the
 // library does not take SDL with it.
-package { name = "amber", version = "0.1.2", sysl = "0.10.0" }
+package { name = "amber", version = "0.1.3", sysl = "0.10.7" }
 
 optimization = "2"
 
