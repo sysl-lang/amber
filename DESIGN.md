@@ -111,6 +111,170 @@ the supply is set for.
 `IBV`, summed smoothly with the forward one, and junction limiting on that exponential measured back
 from the knee when the junction is reversed past it, as ngspice limits it.
 
+## Editing
+
+**The viewer becomes an editor of the file it opened, and the circuit keeps running while it is
+edited.** A beginner learns most from changing a value and watching what follows, so an edit reaches
+the running circuit as soon as it is made: drop a resistor, and its voltage and current dots are there
+a frame later. Saving writes the file back, in the format a person writes by hand.
+
+### Two modes on one board
+
+**`e` switches between running and editing**, because the same click already means something when
+running: two grid points make a meter, a switch flips, a generator opens its panel. Running is exactly
+as it is now, and looks exactly as it does now. Editing adds a palette of parts on the left and its own
+hint line, and gives clicks, drags and keys their editing meanings. The clock keeps running in both, so
+the board always shows the circuit as last committed. `amber-app new.amber`, where the file does not
+exist, opens an empty board already editing.
+
+### The document is the file's own lines
+
+**An edit changes lines of text, and the text is parsed again; nothing else holds the circuit.** The
+library gains a `Document` (`sh/sysl/amber/document.sysl`), which holds the file's lines exactly as read
+and records which line each element came from. A transformer is one line making two elements, and
+`Element` gains a `line` field to say which. Every operation is a change to lines:
+
+- **Moving, rotating or flipping** rewrites the coordinates on that element's line, leaving its name,
+  value, comment and column alignment as they were. A field that gets longer pushes the rest of the
+  line right rather than squeezing it.
+- **Changing a value or name** rewrites those words alone.
+- **A new element** is a new line at the end of the file, written in the examples' layout.
+- **Deleting** removes the line. A transformer goes as a whole.
+- `speed`, `start`, comments and blank lines are never touched.
+
+`doc.text()` is what is saved, and **a file opened and saved unchanged is byte-for-byte the file it
+was**. After each change, `parse_schematic` reads the whole text again. The one parser stays the single
+source of truth, and its messages (`line 12: '4.7q' is not a value`) are the editor's messages too.
+The whole `Document` is library code, tested in the library suite with no window.
+
+### Gestures
+
+| doing | what it does |
+|---|---|
+| click a part or wire | selects it; its grid points get handles |
+| shift-click | adds it to the selection, or takes it out |
+| drag on empty board | selects everything inside the box |
+| drag a selection | moves it by whole squares; the end of a wire touching it follows (rubber-banding), and a wire selected at both ends moves whole |
+| drag a handle | moves that one point: stretches a resistor, moves a transistor's base, ends a wire somewhere else |
+| press on a bare grid point and drag | draws a wire as an L, across then down; `space` mid-drag switches which leg goes first |
+| a palette part, or its key (`R`, `C`, `L`, `D`, `Q`, `G`, …) | the part follows the pointer as a ghost; a click places it and keeps the tool for another; `Escape` puts the tool down |
+| `r` / `f` | rotates the selection a quarter turn about its middle, snapped to the grid / mirrors it |
+| `Delete`, `Backspace` | deletes the selection |
+| double-click a part, or `Enter` | opens a popover at the part, with fields for its name and its value as written |
+| `⌘Z`, `⇧⌘Z` | undo, redo |
+| `⌘S`, `⇧⌘S` | save, save as |
+| right-click a part | its menu: rotate, flip, edit, duplicate, delete |
+
+- **Connecting is already in the format**: points join where they meet, and an end landing on a wire
+  joins the wire. So a drop *is* the connection, and there is no separate connect step. A drop that
+  makes a new junction is shown by the junction dot the board already draws.
+- **A new part is given the next free name for its kind** (`R4` after `R3`) and a value that runs:
+  1 kΩ, 1 µF, a red LED, a 2N3904, a 1 kHz sine of 1 V.
+- **A value field is checked as it is committed.** `Enter` or leaving the field commits; `Escape`
+  cancels. A value that does not parse is refused: the parser's message shows in red under the field,
+  and the field stays open.
+- **Undo keeps whole texts.** A file is a few kilobytes, so a stack of texts is simpler than a stack
+  of inverse operations, and nothing about it can drift. One drag is one step, however many frames it
+  took.
+- **The title shows `•` while there are unsaved changes.** Quitting with any asks (*Save*, *Don't
+  save*, *Cancel*), in a modal. In editing mode `Escape` cancels the tool or the drag in hand and
+  never quits. Save as uses the platform's own dialog, `sh.sysl.sdl3`'s `ask_save_file`.
+
+### The circuit follows each commit
+
+**A drop, a placement, a deletion or a committed value is a commit.** It sends the new text to the
+circuit's thread as a `Change.Replace(text)`. Both models build again from that text, and the circuit
+starts again the way its file says: from empty, or settled. **Restarting is the rule, not carrying
+the charge across**: a capacitor matched by name after its value or wiring changed holds a state the
+new circuit never reached, and a restart is the one answer that is always a true picture of the circuit
+as drawn. Some state has to survive the rebuild, and
+it is carried by what still means the same thing afterwards, since element indices do not:
+
+- meters, by their grid points;
+- panel settings and the selection, by element name;
+- the speed, the mute and the Bode plot, as they were.
+
+**A drag does not rebuild.** While it is moving, the selection is drawn as a ghost without its voltages
+or dots, and the rest of the circuit carries on. Rebuilding every frame would restart the circuit
+sixty times a second. A text that does not parse is never committed, so the board always holds a
+circuit that parses. One that parses but cannot be solved, such as a part left floating halfway
+through building, *is* committed, and the status line shows the trouble as it does now: an unfinished
+circuit is the normal state while editing one.
+
+### Turning an op-amp
+
+**An op-amp is the one part that cannot be turned today.** Its line gives only its middle, and its five
+pins are fixed around it. The line gains two optional trailing words: `turned 90|180|270` (a quarter
+turn clockwise for each 90) and `flipped` (its inverting input below rather than above). A line without
+them reads exactly as before, so no existing file changes. A two-point part turns by rotating its
+points. A transistor turns its three points, and flips by mirroring its base across the
+collector–emitter line, which the format can already say. A transformer's four points turn together.
+
+### The palette
+
+**Down the left, in a `split_row` so it can be made narrower, and only while editing.** It is grouped
+into collapsible `section`s: *Passive*, *Sources*, *Semiconductors*, *Instruments*, *Wiring*. Each part
+is a `button_with` an `icon` of its symbol, with a tooltip giving its name and its key. Each icon is a
+small vector drawing of the board's symbol, written once as syslui `Path`s. The board keeps drawing
+through PlutoVG, so the two drawings are kept alike by eye. The icons are a sketch, not the symbol at
+another size.
+
+### The view stays put
+
+**Running fits the drawing to the board every frame (`place`); editing must not**, or the board would
+lurch every time a part moved past the edge. Entering editing mode freezes the fit, with four squares
+more of room on each side. The wheel zooms around the pointer, a right-button drag pans, and `0` fits
+again. Leaving editing mode fits as running always has.
+
+### What syslui needs that it does not have
+
+Everything else is in syslui 0.2.3 and syslui-sdl 0.2.28 already: pointer capture (`grab`, `owns`),
+`drag` with a slop, `press_origin`, `pointer`, `modifiers`, `held`/`drag_by` for the right button,
+`wheel`, `cursor`, `tap_count`, `popover`, `modal`, `text_field` with `on_blur`, `menu_bar`, `icon`,
+`button_with`, `section`, `split_row` and `.tooltip`. Two pieces are missing, and each is added to its
+own package and released before amber uses it:
+
+1. **A menu at a point** (syslui). A dropdown today only exists under a `menu_bar` title, and the
+   drawing of it (`menu.sysl`'s `dropdown`) is private. Right-clicking a part needs that dropdown at
+   the pointer, closed by a tap elsewhere or by `Escape`, kept inside the window, reusing the menu's
+   rows, toggles and separators: something like `context_menu(items, at: &Signal[Option[(int, int)]])`.
+2. **Knowing a field has the keyboard** (syslui-sdl). `on_event` sees every key *before* the focused
+   view does, and cannot ask whether one is focused. Typing `r` into a value field would then also
+   rotate the part. The app loop already tracks focus (`c.focus()`, for the on-screen keyboard), so the
+   piece missing is handing that to the application: either a `typing: bool` beside the event, or an
+   `on_shortcut` called only for a key no field has taken.
+
+### Tests
+
+- **Library**: every file in `examples/` opened and saved unchanged is byte-identical. Each `Document`
+  operation (move, move one point, rotate, flip, add, delete, rename, revalue, on a transformer and an
+  op-amp too) yields the expected text and parses. A comment and the column alignment survive a move.
+  An element moved onto a wire's middle joins its node. An op-amp `turned` and `flipped` has its pins
+  where they should be, and the old lines still read the same.
+- **App**: the gestures driven headless through syslui's recording canvas (`point`, `press`,
+  `let_go`), which the app's tests have not used until now. Drag `R1` two squares and the text says
+  so. Undo gives back the bytes. A bad value is refused with the parser's message. A drag does not
+  rebuild, and a drop does. Meters and panel settings survive a commit.
+- **Running mode is unchanged**: a screenshot of every example before and after must match, and any
+  difference stops the work.
+
+### Not in this item
+
+Copy and paste between files, subcircuits, routing wires around parts, more than one file at once, and
+writing a SPICE netlist out. Each can follow once this has been used.
+
+### In what order
+
+Each step is a branch of its own, merged when its tests pass:
+
+1. **syslui**: a menu at a point. **syslui-sdl**: the focused field visible to the application. Both
+   are released, and amber's pins move to them.
+2. **Library**: `Document`, `Element.line`, the op-amp's `turned`/`flipped`, and the round-trip tests.
+3. **App**: editing mode, selection, moving, handles, rubber-banding, the frozen view, `Replace`,
+   undo, save. The most important step: everything after it is additions.
+4. **App**: drawing wires, the palette, placing parts, rotate/flip/delete, the value popover, the
+   right-click menu, the unsaved-changes modal.
+
 ## Roadmap
 
 Each is a piece of work of its own, in this order.
@@ -149,5 +313,6 @@ Each is a piece of work of its own, in this order.
    factorisation is 99 products where the numbered order made over 4,000, and the circuit runs 2.4×
    faster, about five times real time on an idle machine; `amber-app <file> --bench <seconds>`
    reports the products and how often the order was replanned.~~
-7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save.
+7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save. The design is
+   **Editing** above, in four steps.
 8. **Benchtop's analog layer**, measured against the H747 real-time bar.
