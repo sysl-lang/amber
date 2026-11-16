@@ -1,0 +1,99 @@
+module sh.sysl.amber
+@tests
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol * want.abs().max(1.0)
+
+// ## Its resistance
+
+@test
+private its_resistance_falls_as_the_light_to_the_power_gamma()
+    assert(near(ldr_ohms(10.0), 15e3, 1e-12), "15 kΩ at 10 lux")
+    assert(near(ldr_ohms(10.0 * 10.0.pow(1.0 / 0.7)), 1.5e3, 1e-12), "a tenth at about 270 lux")
+    assert(near(ldr_ohms(10.0 * 100.0.pow(1.0 / 0.7)), 150.0, 1e-12), "a hundredth at about 7,000 lux")
+    assert(near(ldr_ohms(100.0) / ldr_ohms(1000.0), 10.0.pow(0.7), 1e-12), "each tenfold of light divides it by 10^0.7")
+
+@test
+private in_the_dark_it_is_its_dark_resistance_and_no_more()
+    assert_eq(ldr_ohms(0.0), LDR_DARK_OHMS)
+    assert_eq(ldr_ohms(-3.0), LDR_DARK_OHMS)
+    assert_eq(ldr_ohms(1e-4), LDR_DARK_OHMS, "a ten-thousandth of a lux is darkness to it")
+    assert(ldr_ohms(0.1) < LDR_DARK_OHMS, "a tenth of a lux is not")
+
+// ## In a circuit
+
+// A photoresistor below a 10 kΩ resistor across 5 V, in `lux`: the light falls, the middle rises.
+private divider(lux: real) -> Circuit
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(5.0)), "top", "0")
+    c.connect("R1", Resistor(10e3), "top", "mid")
+    c.connect("LDR1", Photoresistor(lux), "mid", "0")
+    c
+
+@test
+private it_divides_a_voltage_as_a_resistor_of_its_resistance_does()
+    for lux in [0.0, 1.0, 10.0, 300.0, 1e4]
+        var s = sim(divider(lux))
+        val r = ldr_ohms(lux)
+
+        s.operating_point().unwrap()
+        assert(near(s.voltage_at("mid"), 5.0 * r / (r + 10e3), 1e-9), s"${lux} lux")
+        assert(near(s.current(2), s.voltage_at("mid") / r, 1e-9))
+        assert(near(s.power(2), s.voltage_at("mid") * s.voltage_at("mid") / r, 1e-9))
+
+@test
+private more_light_while_the_circuit_runs_lowers_it_from_then_on()
+    var c = divider(10.0)
+
+    c.connect("C1", Capacitor(1e-9), "mid", "0")
+
+    var s = sim(c)
+
+    s.power_on().unwrap()
+    s.advance_to(1e-3).unwrap()
+    assert(near(s.voltage_at("mid"), 5.0 * 15e3 / 25e3, 1e-6))
+
+    s.set_light(2, 0.0)
+    s.advance_to(2e-3).unwrap()
+    assert(near(s.voltage_at("mid"), 5.0 * 1e6 / (1e6 + 10e3), 1e-6), "dark")
+    assert(s.circuit.parts[2].kind == Photoresistor(0.0))
+
+    // Anything but a photoresistor is left as it is.
+    s.set_light(1, 50.0)
+    assert(s.circuit.parts[1].kind == Resistor(10e3))
+end more_light_while_the_circuit_runs_lowers_it_from_then_on
+
+@test
+private a_small_sine_through_it_is_divided_as_the_steady_voltage_is()
+    var s = sim(divider(10.0))
+    val r = s.response(1e3, [drive(0, 1.0, 0.0)][..]).unwrap()
+
+    assert(near(r.voltage(s.circuit.find_node("mid").unwrap()).abs(), 15e3 / 25e3, 1e-9))
+
+// ## In a schematic
+
+@test
+private an_ldr_line_gives_the_light_on_it_in_lux()
+    val sch = parse_schematic("ldr LDR1  0 0  0 6  1klux\nldr LDR2  2 0  2 6  0lux\nldr LDR3  4 0  4 6\n").unwrap()
+
+    assert_eq(sch.elements[0].shape, Shape.Photoresistor)
+    assert_eq(sch.circuit.parts[0].kind, Photoresistor(1e3))
+    assert_eq(sch.circuit.parts[1].kind, Photoresistor(0.0))
+    assert_eq(sch.circuit.parts[2].kind, Photoresistor(ROOM_LUX), "a lit room's, unless it says")
+    assert_eq(sch.elements[0].value, "1klux")
+    assert_eq(sch.elements[2].value, "300lux")
+
+@test
+private an_ldr_line_says_what_is_wrong_with_it()
+    assert_eq(parse_schematic("ldr LDR1  0 0  0 6  -5lux\n").err(), Some("line 1: '-5lux' is not a light level: lux, 0 or more"))
+    assert_eq(parse_schematic("ldr LDR1  0 0  0 6  bright\n").err(), Some("line 1: 'bright' is not a number"))
+    assert_eq(parse_schematic("ldr LDR1  0 0  0 6  10lux 20lux\n").err(), Some("line 1: '20lux' is more than an ldr takes"))
+    assert_eq(parse_schematic("ldr LDR1  0 0  0 0\n").err(), Some("line 1: an ldr needs two different points"))
+
+@test
+private a_document_relights_an_ldr_line()
+    var doc = document("ldr LDR1  0 0  0 6  10lux\n")
+
+    doc.revalue(1, "2klux").unwrap()
+    assert_eq(doc.text(), "ldr LDR1  0 0  0 6  2klux\n")
+    assert_eq(doc.schematic().unwrap().circuit.parts[0].kind, Photoresistor(2e3))

@@ -130,6 +130,7 @@ struct Sim
                 Switch(closed) -> self.circuit.parts[i].kind = Switch(closed)
                 Pin(d) -> self.circuit.parts[i].kind = Pin(d)
                 Potentiometer(ohms, position) -> self.circuit.parts[i].kind = Potentiometer(ohms, position)
+                Photoresistor(lux) -> self.circuit.parts[i].kind = Photoresistor(lux)
                 _ -> ()
 
     // The voltage at node `node` against ground.
@@ -161,6 +162,7 @@ struct Sim
 
         p.kind match
             Resistor(r) -> self.across(i) / r
+            Photoresistor(lux) -> self.across(i) / ldr_ohms(lux)
             Capacitor(_) -> self.held_i[usize(i)]
             Inductor(_) -> self.x[usize(self.extra[usize(i)])]
             VoltageSource(_) -> self.x[usize(self.extra[usize(i)])]
@@ -313,6 +315,15 @@ struct Sim
             if was == position then return
 
             self.circuit.parts[usize(i)].kind = Potentiometer(ohms, position)
+            self.corner()
+
+    // Shine `lux` of light on photoresistor `i` from now on; a corner, as `set_switch` is. Anything but
+    // a photoresistor is left as it is.
+    set_light(*self, i: int, lux: real)
+        if self.circuit.parts[usize(i)].kind is Photoresistor(was)
+            if was == lux then return
+
+            self.circuit.parts[usize(i)].kind = Photoresistor(lux)
             self.corner()
 
     // Have pin `i` do `mode` with its pull `pull` from now on; a corner, as `set_switch` is. Anything
@@ -901,6 +912,7 @@ struct Sim
 
             p.kind match
                 Resistor(r) -> self.conductance(a, b, 1.0 / r)
+                Photoresistor(lux) -> self.conductance(a, b, 1.0 / ldr_ohms(lux))
                 Potentiometer(ohms, position) ->
                     val (r1, r2) = pot_halves(ohms, position)
 

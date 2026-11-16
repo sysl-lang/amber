@@ -1,0 +1,24 @@
+# A night light: an LED that comes on by itself when it gets dark. Click LDR1 and turn the light down.
+#
+# R1 and the photoresistor LDR1 share the 9 V between them, and Q1's base sits where they meet. In a
+# lit room LDR1 is about 1.4 kΩ, so it holds the base at a quarter of a volt, too low for Q1 to
+# conduct, and the LED is dark. As the light falls LDR1's resistance climbs: past about 3.4 kΩ, near
+# 85 lux, dusk, the base reaches the 0.6 V Q1 needs and the LED begins to glow, and in darkness LDR1
+# is a megohm, R1 pours its whole 0.2 mA into the base, and Q1 lights the LED fully.
+#
+# The meter reads Q1's base.
+
+battery  B1    0 0  0 10  9V
+wire           0 0  12 0
+resistor R1    4 0  4 6   47k
+ldr      LDR1  4 6  4 10  300lux
+wire           4 6  10 6
+
+resistor R2    12 0  12 2  470
+led      D1    12 2  12 4  yellow
+npn      Q1    12 4  10 6  12 8  2N3904
+wire           12 8  12 10
+wire           0 10  12 10
+ground         0 10
+
+meter    BASE  7 6  7 10

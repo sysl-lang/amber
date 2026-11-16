@@ -320,8 +320,9 @@ Each is a piece of work of its own, in this order.
    ngspice where ngspice has the part, and one at a time in this order: ~~a **potentiometer** (two
    resistors and a wiper, turned by a knob while the clock runs)~~ — `pot`, `Potentiometer(ohms,
    position)` and `Sim.set_position`, the `dimmer` example; ngspice has no potentiometer, so it is held
-   to the divider's arithmetic instead; a **photoresistor** (its resistance
-   following a light level, a slider in the viewer); an **ammeter** (a zero-volt source read for its
+   to the divider's arithmetic instead; ~~a **photoresistor** (its resistance following a light
+   level, a slider in the viewer)~~ — `ldr`, `Photoresistor(lux)` with a GL5528's law, and
+   `Sim.set_light`, the `nightlight` example, held to the law and the divider; an **ammeter** (a zero-volt source read for its
    current); an **SPDT switch**; a **lamp** (a filament whose resistance rises as it heats, glowing);
    the **555 timer**; a **relay** (a coil that closes a switch); a **DC motor** (a back-EMF, spun on
    screen); and after them, as wanted, a 7805 regulator, a thermistor, a fuse and a crystal.

@@ -1400,3 +1400,94 @@ pot_dots()
     // Into the other end, at 9 V, is positive, and its dots run toward the wiper, against the
     // drawing's direction from the wiper to that end.
     assert(m.emitter_flow[i] < 0.0)
+
+// ## A photoresistor
+
+private nightlight() -> &Model = model("nightlight.amber", parse_schematic(str_cast(embed("../examples/nightlight.amber"))).unwrap())
+
+// The current through the night light's LED.
+private night_led_amps(m: &Model) -> real = m.s.current(m.sch.elements[usize(m.sch.find("D1").unwrap())].part)
+
+@test("clicking a photoresistor opens its light's panel, set as its line says, and the status line gives its resistance")
+light_panel_opens()
+    val m = nightlight()
+    val ldr = m.sch.find("LDR1").unwrap()
+
+    assert(m.panels.len() == 1)
+    m.select(ldr)
+    assert(m.open_panel() == Some(0))
+
+    val p = m.panels[0]
+
+    assert(p.title == "LDR1 photoresistor")
+    assert(p.choices.len() == 0 && p.knobs.len() == 1)
+    assert(p.knobs[0].label == "light" && p.knobs[0].log)
+    assert(close(p.knobs[0].value(), 300.0))
+    assert(p.summary() == "300lux")
+    assert(status(m).contains("LDR1 photoresistor in 300lux, 1.39kΩ: 258mV across, "))
+    assert(labelled_when_crowded(Shape.Photoresistor))
+
+@test("turning the light down on a night light's photoresistor while it runs lights its LED, and turning it up puts it out")
+light_knob_reaches_the_circuit()
+    val m = nightlight()
+    val part = m.panels[0].part
+
+    tick(m, 0.1)
+    assert(night_led_amps(m) < 1e-6, "dark in a lit room")
+    assert(!m.sync())
+
+    m.panels[0].knobs[0].set(LEAST_LUX)
+    assert(m.sync())
+    assert(m.s.circuit.parts[usize(part)].kind == Kind.Photoresistor(LEAST_LUX))
+    tick(m, 0.1)
+    assert(night_led_amps(m) > 10e-3, s"lit at night: ${night_led_amps(m)}")
+    assert(m.panels[0].summary() == "dark")
+    m.select(m.sch.find("LDR1").unwrap())
+    assert(status(m).contains("LDR1 photoresistor in the dark, 1MΩ: "))
+
+    m.panels[0].knobs[0].set(10e3)
+    m.sync()
+    tick(m, 0.1)
+    assert(night_led_amps(m) < 1e-6, "out again in daylight")
+    assert(m.panels[0].summary() == "10klux")
+
+@test("at dusk the night light's base reaches the 0.6 V its transistor needs and the LED begins to glow")
+night_light_at_dusk()
+    val m = nightlight()
+
+    m.panels[0].knobs[0].set(150.0)
+    m.sync()
+    tick(m, 0.1)
+
+    val dim = night_led_amps(m)
+
+    m.panels[0].knobs[0].set(60.0)
+    m.sync()
+    tick(m, 0.1)
+
+    val glowing = night_led_amps(m)
+
+    assert(dim < 1e-4, s"above dusk: ${dim}")
+    assert(glowing > 10.0 * dim && glowing > 1e-4, s"below dusk: ${glowing}")
+    assert(m.reading(m.meters[0]) > 0.6 && m.reading(m.meters[0]) < 0.75, s"the base at a diode's drop: ${m.reading(m.meters[0])}")
+
+@test("a restart keeps the light the panel was set to")
+light_restart_keeps_it()
+    val m = nightlight()
+    val part = m.panels[0].part
+
+    m.panels[0].knobs[0].set(20.0)
+    m.sync()
+    m.restart()
+    assert(m.s.circuit.parts[usize(part)].kind == Kind.Photoresistor(m.panels[0].knobs[0].value()))
+    assert(close(m.panels[0].knobs[0].value(), 20.0))
+    assert(!m.sync())
+
+@test("the light's colour runs from grey in the dark to yellow in daylight, each tenfold of light a fifth of the way")
+light_colours()
+    assert(light_colour(0.0) == 0x505258)
+    assert(light_colour(0.1) == 0x505258)
+    assert(light_colour(1e4) == 0xFFD60A)
+    assert(light_colour(1e6) == 0xFFD60A)
+    assert(light_colour(1.0) != light_colour(10.0))
+    assert(light_words(LEAST_LUX) == "dark" && light_words(0.0) == "dark" && light_words(0.5) == "500mlux")

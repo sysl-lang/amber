@@ -71,20 +71,23 @@ const INSTRUMENT_HINT: string = "two points: a meter · a generator: tune it · 
 const SPEAKER_HINT: string = "two points: a meter · space pause · +/- speed · r restart · s settle · m mute · b bode · v values · c clear"
 const SUPPLY_HINT: string = "two points: a meter · a supply: set it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
 const POT_HINT: string = "two points: a meter · a pot: turn it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
+const LIGHT_HINT: string = "two points: a meter · an LDR: light it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
 
 // The line of hints under the board, naming the instrument there is to click.
 private hint(m: &Model) -> string
     var generator = false
     var supply = false
     var pot = false
+    var light = false
 
     for k in 0..<m.panels.len()
         m.panels[k].instrument match
             SignalGenerator(_) -> generator = true
             BenchSupply(_) -> supply = true
             Pot(_) -> pot = true
+            Light -> light = true
 
-    if m.ear.speaker >= 0 then SPEAKER_HINT elif generator then INSTRUMENT_HINT elif supply then SUPPLY_HINT elif pot then POT_HINT else HINT
+    if m.ear.speaker >= 0 then SPEAKER_HINT elif generator then INSTRUMENT_HINT elif supply then SUPPLY_HINT elif pot then POT_HINT elif light then LIGHT_HINT else HINT
 
 // --- The board --------------------------------------------------------------------------------------
 
@@ -429,7 +432,7 @@ private struct Pen
         self.width(2.5)
 
         e.shape match
-            Resistor ->
+            Resistor | Photoresistor ->
                 // Three zigzags, peak to peak, in a square of the middle, as a schematic draws one.
                 val zigzag = body.min(1.0)
                 val r0 = (length - zigzag) / 2.0
@@ -445,6 +448,8 @@ private struct Pen
                 f.to(r0 + zigzag, 0.0)
                 f.to(s1, 0.0)
                 self.vg.stroke()
+
+                if e.shape == Photoresistor then self.light_arrows(f, length / 2.0, e)
             Capacitor ->
                 val mid = (s0 + s1) / 2.0
 
@@ -780,7 +785,26 @@ private struct Pen
         f.to_across(mid, -w, h)
         self.vg.close_path()
 
+    // A photoresistor's two arrows: light falling on it from the side its label is not on, grey in the
+    // dark and brightening to yellow as the light on it rises, so turning its panel's knob shows on the
+    // board.
+    light_arrows(self, f: Frame, mid: real, e: Element)
+        val lux = self.m.s.circuit.parts[usize(e.part)].kind match
+            Kind.Photoresistor(lux) -> lux
+            _ -> 0.0
+
+        set(self.vg, light_colour(lux))
+        self.width(1.8)
+
+        for k in 0..<2
+            val o = real(k) * 0.24 - 0.12
+
+            f.line(mid - 0.2 + o, -0.72, mid + o, -0.34)
+            f.line(mid + o, -0.34, mid + o - 0.13, -0.4)
+            f.line(mid + o, -0.34, mid + o + 0.02, -0.47)
+
     // An LED's light: a halo in its colour, as bright as its current is near 20 mA.
+
     glow(self, f: Frame, mid: real, e: Element)
         val i = self.m.s.current(e.part)
         val t = (i / 20e-3).max(0.0).min(1.0)
@@ -1117,6 +1141,13 @@ private led_colour(c: Colour) -> u32 = c match
     Green -> 0x30D158
     Blue -> 0x409CFF
 
+// The colour of the light falling on a photoresistor: a dim grey at a tenth of a lux and below,
+// warming evenly with each tenfold of light to full yellow at 10,000 lux, daylight in the shade.
+light_colour(lux: real) -> u32
+    val t = if lux <= 0.0 then 0.0 else ((lux.log10() + 1.0) / 5.0).max(0.0).min(1.0)
+
+    mix(0x50, 0xFF, t) << 16 | mix(0x52, 0xD6, t) << 8 | mix(0x58, 0x0A, t)
+
 // Four loops of wire along `body` from `s0`, each a half circle standing on the line on `side` of it:
 // 1 to the left, -1 to the right.
 private coil(f: Frame, s0: real, body: real, side: real)
@@ -1235,7 +1266,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor -> true
     _ -> false
 
 // The text over the picture: each part's name and value, the voltage across it when values are on,
@@ -1301,7 +1332,7 @@ private labels(m: &Model, c: *Canvas, at: Place)
             Led -> colour_name(e.colour)
             Switch | Button -> ""
             // What it is set to now, which its panel may have changed.
-            Generator | Supply -> m.panel_of(int(i)) match
+            Generator | Supply | Photoresistor -> m.panel_of(int(i)) match
                 Some(k) -> m.panels[k].summary()
                 None -> e.value
             Zener -> s"${e.value}V"

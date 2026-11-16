@@ -40,6 +40,7 @@ import sysl.text.{Search, fields, split}
 // | `pin` | two: the pin, then the chip's ground | the chip, `RP2040` (the default); an input, floating, until a program sets it |
 // | `button` | two | — a push button, open but while it is pressed |
 // | `pot` | three: one end, the wiper, the other end | ohms end to end, then perhaps how far the wiper is turned from the first end, `30%` (50% if not given) |
+// | `ldr` | two | the light on it, `300lux` (300 lux, a lit room, if not given; `0lux` is darkness) |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -142,6 +143,8 @@ enum Shape: u8
     Button
     // A potentiometer: a resistor's track between its two ends, and a wiper turned along it.
     Potentiometer
+    // A photoresistor: a resistor that falls as the light on it rises.
+    Photoresistor
     Ground
     Label
     Meter
@@ -506,6 +509,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     val value = shape match
         Npn | Pnp | Nmos | Pmos -> if rest.len == 0 then default_model(shape) else rest[0]
         Speaker -> if rest.len == 0 then "8" else rest[0]
+        Photoresistor -> if rest.len == 0 then "300lux" else rest[0]
         Pin -> "RP2040"
         _ -> rest.join(" ")
 
@@ -513,6 +517,9 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
 
 // A speaker's voice coil when its line gives none: the usual 8 Ω.
 const SPEAKER_OHMS: real = 8.0
+
+// The light on a photoresistor when its line gives none: a lit room's.
+const ROOM_LUX: real = 300.0
 
 // A transformer's primary inductance when its line gives none: about 30 mA drawn from 120 V at 60 Hz
 // with nothing on the secondary, a small mains transformer's.
@@ -647,12 +654,12 @@ private[amber] opamp_pin(x: int, y: int, k: int, quarters: int, flipped: bool) -
     (x + dx, y + dy)
 end opamp_pin
 
-// "a resistor", "an inductor", "an npn": the kind with its article.
+// "a resistor", "an inductor", "an npn", "an ldr": the kind with its article, as it is read aloud.
 private a_word(word: string) -> string
     val b = word.bytes
     val vowel = b.len > 0 && (b[0] == u8('a') || b[0] == u8('e') || b[0] == u8('i') || b[0] == u8('o') || b[0] == u8('u'))
 
-    if vowel || word == "npn" || word == "nmos" then s"an ${word}" else s"a ${word}"
+    if vowel || word == "npn" || word == "nmos" || word == "ldr" then s"an ${word}" else s"a ${word}"
 
 // A transistor's three points, collector, base and emitter (a MOSFET's drain, gate and source, a
 // potentiometer's end, wiper and other end), in `xy`: its two ends apart, and its base or gate a square
@@ -700,6 +707,7 @@ private[amber] shape_named(word: string) -> Result[Shape, string] = word match
     "pin" -> Ok(Pin)
     "button" -> Ok(Button)
     "pot" -> Ok(Potentiometer)
+    "ldr" -> Ok(Photoresistor)
     _ -> Err(s"'${word}' is not a kind of element")
 
 private colour_named(word: string) -> Result[Colour, string] = word match
@@ -713,7 +721,7 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
     val optional = shape match
         // A generator and a supply say for themselves what they are missing.
-        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin | Button -> true
+        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin | Button | Photoresistor -> true
         _ -> false
 
     if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
@@ -744,6 +752,14 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
             Ok(Pin(RP2040_PIN))
         Button -> Ok(Switch(false))
         Potentiometer -> Ok(Potentiometer(positive(rest[0], "a potentiometer's resistance")?, if rest.len == 2 then turned(rest[1])? else 0.5))
+        Photoresistor ->
+            if rest.len == 0 then return Ok(Photoresistor(ROOM_LUX))
+
+            val lux = parse_value(rest[0])?
+
+            if lux < 0.0 then return Err(s"'${rest[0]}' is not a light level: lux, 0 or more")
+
+            Ok(Photoresistor(lux))
         Diode -> Ok(Diode(SILICON))
         Led -> Ok(Diode(colour.model()))
         Zener -> Ok(Diode(zener_model(positive(rest[0], "a breakdown voltage")?)))

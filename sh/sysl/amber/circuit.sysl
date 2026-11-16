@@ -281,6 +281,9 @@ enum Kind derives Eq
     // the other end. A real one's track does not quite reach its wiper at either end, and neither does
     // this: each half is at least `WIPER_OHMS`.
     Potentiometer(ohms: real, position: real)
+    // A photoresistor — a light-dependent resistor, a cadmium-sulphide cell — in `lux` of light: its
+    // resistance falls as the light on it rises, as `ldr_ohms` says.
+    Photoresistor(lux: real)
 
     // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor or a
     // potentiometer, 2 for the rest.
@@ -307,6 +310,23 @@ pot_halves(ohms: real, position: real) -> (real, real)
     val p = position.max(0.0).min(1.0)
 
     ((ohms * p).max(WIPER_OHMS), (ohms * (1.0 - p)).max(WIPER_OHMS))
+
+// A photoresistor's resistance at 10 lux, a dim room's light, and how steeply it falls as the light
+// rises: as the light to the power `LDR_GAMMA`. These are a GL5528's, the common 5 mm cell, from the
+// middle of its datasheet's ranges.
+const LDR_OHMS_AT_10_LUX: real = 15e3
+const LDR_GAMMA: real = 0.7
+
+// A photoresistor's resistance in the dark, which no light below a few hundredths of a lux lowers.
+const LDR_DARK_OHMS: real = 1e6
+
+// A photoresistor's resistance in `lux` of light: 15 kΩ at 10 lux, a tenth of that at about 270 lux
+// (a bright room), a hundredth at about 7,000 (shade outdoors), and in darkness its dark resistance.
+//
+// **It follows the light at once.** A real cell is slow, tens of milliseconds to brighten and longer
+// to darken, which a viewer's knob turned by hand would never show.
+ldr_ohms(lux: real) -> real =
+    if lux <= 0.0 then LDR_DARK_OHMS else (LDR_OHMS_AT_10_LUX * (lux / 10.0).pow(-LDR_GAMMA)).min(LDR_DARK_OHMS)
 
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and
 // `b` and has the rest at -1; a transistor's collector, base and emitter are `a`, `b` and `c`, and a

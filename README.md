@@ -69,7 +69,8 @@ to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command
 plot in place of the scope.
 
 The examples: `led` (a battery, a resistor and an LED), `dimmer` (a potentiometer's knob dimming an
-LED; click RV1 and turn it), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
+LED; click RV1 and turn it), `nightlight` (a photoresistor and a transistor lighting an LED when it
+gets dark; click LDR1 and turn the light down), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
@@ -118,7 +119,7 @@ meter     OUT 6 0  6 6                     # red lead first
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
 `gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
-`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
+`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
 `TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).
@@ -206,6 +207,17 @@ along its track as it turns:
 pot       RV1 6 8  8 4  6 0  10k 30%       # end, wiper, end: 3 kΩ from the first end to the wiper
 ```
 
+A photoresistor (a light-dependent resistor, a cadmium-sulphide cell) is placed by its two ends, and
+its value is the light on it, 300 lux (a lit room) unless it says. It is a GL5528's: 15 kΩ at 10 lux,
+falling as the light to the power 0.7, so a tenth of that at about 270 lux, and a megohm in the
+dark. It follows the light at once, where a real cell takes tens of milliseconds. Clicked in the
+viewer, it opens a panel whose knob sets the light, from darkness to full sun, while the circuit
+runs, and its symbol's arrows brighten with it:
+
+```
+ldr       LDR1 4 6  4 10  300lux           # 0lux is darkness
+```
+
 ## SPICE netlists
 
 ```
@@ -285,7 +297,7 @@ by the trapezoidal rule with its step chosen from the error it makes:
 
 ```
 dependencies {
-  amber { git = "github.com/sysl-lang/amber", version = "0.1.7" }
+  amber { git = "github.com/sysl-lang/amber", version = "0.1.8" }
 }
 ```
 

@@ -1,6 +1,6 @@
 // What the viewer knows: the circuit and its simulation, the clock, the meters and what they have read.
 
-import sh.sysl.amber.{Schematic, Element, Shape, Kind, Sim, Colour, Switch, Supply, Waveform, Pin, PinMode, PinDrive, sim, engineering, parse_generator}
+import sh.sysl.amber.{Schematic, Element, Shape, Kind, Sim, Colour, Switch, Supply, Waveform, Pin, PinMode, PinDrive, sim, engineering, parse_generator, ldr_ohms}
 import sh.sysl.ui_sdl.stop
 import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_B, SCANCODE_C, SCANCODE_M, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
@@ -220,7 +220,7 @@ struct Model
             if self.panels[k].part == part
                 return self.panels[k].instrument match
                     SignalGenerator(o) -> Some(o.form)
-                    BenchSupply(_) | Pot(_) -> None
+                    BenchSupply(_) | Pot(_) | Light -> None
 
         None
 
@@ -591,6 +591,9 @@ private panels(sch: Schematic) -> Buf[Panel]
         if e.shape == Shape.Potentiometer && sch.circuit.parts[usize(e.part)].kind is Kind.Potentiometer(ohms, position)
             out.push(pot_panel(e.name, int(i), e.part, ohms, position))
 
+        if e.shape == Shape.Photoresistor && sch.circuit.parts[usize(e.part)].kind is Kind.Photoresistor(lux)
+            out.push(light_panel(e.name, int(i), e.part, lux))
+
     out
 
 // The speed nearest `seconds` a second, real time if the file does not say.
@@ -763,6 +766,13 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Pnp -> s"${e.value} PNP transistor"
     Nmos -> s"${e.value} N-channel MOSFET"
     Pmos -> s"${e.value} P-channel MOSFET"
+    // The light on it now, which its panel may have changed, and the resistance that light gives it.
+    Photoresistor -> m.s.circuit.parts[usize(e.part)].kind match
+        Kind.Photoresistor(lux) ->
+            val light = light_words(lux)
+
+            s"photoresistor in ${if light == "dark" then "the dark" else light}, ${engineering(ldr_ohms(lux))}Ω"
+        _ -> "photoresistor"
     // What its knob is turned to now, which its panel may have changed.
     Potentiometer -> m.panel_of(m.selected) match
         Some(k) -> s"${m.panels[k].summary()} potentiometer"

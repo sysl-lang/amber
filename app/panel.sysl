@@ -61,6 +61,8 @@ enum Instrument
     BenchSupply(supply: PowerSupply)
     // A potentiometer of `ohms`, whose knob turns its wiper.
     Pot(ohms: real)
+    // A lamp shining on a photoresistor, whose knob sets how much light falls on it.
+    Light
 
 // The controls of one instrument on the bench: element `element` of the schematic, part `part` of the
 // circuit.
@@ -136,6 +138,9 @@ struct Panel
             Pot(ohms) ->
                 s.set_position(self.part, now[0] / 100.0)
                 Pot(ohms)
+            Light ->
+                s.set_light(self.part, now[0])
+                Light
 
         self.applied = now
 
@@ -151,7 +156,29 @@ struct Panel
 
             if p.raw then s"${limit} raw ${engineering(p.ripple)}V ${engineering(2.0 * p.mains)}Hz" else limit
         Pot(ohms) -> s"${engineering(ohms)}Ω ${percent(self.knobs[0].value())}"
+        Light -> light_words(self.knobs[0].value())
 end Panel
+
+// The least and the most light a photoresistor's knob sets: darkness to the cell, and full daylight.
+const LEAST_LUX: real = 0.01
+const MOST_LUX: real = 100e3
+
+// A light level as a label gives it: `300lux`, or `dark` at the knob's least and below, which is
+// darkness to a photoresistor.
+light_words(lux: real) -> string = if lux <= LEAST_LUX * 1.001 then "dark" else s"${engineering(lux)}lux"
+
+// A photoresistor's panel: the light on it, on a logarithmic knob from a hundredth of a lux, which is
+// darkness to it, to 100,000, full sun, starting at `lux`. A line's `0lux` starts at the knob's least.
+light_panel(name: string, element: int, part: int, lux: real) -> Panel
+    var knobs: Buf[Knob] = buf()
+
+    knobs.push(knob("light", "lux", LEAST_LUX, MOST_LUX, lux.max(LEAST_LUX).min(MOST_LUX), log = true))
+
+    var p = Panel(s"${name} photoresistor", element, part, Light, buf(), knobs, buf())
+
+    p.applied = p.settings()
+    p
+end light_panel
 
 // A knob's 0 to 100 as a whole percentage: `30%`.
 percent(value: real) -> string = s"${int(value.round())}%"
