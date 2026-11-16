@@ -6,7 +6,7 @@
 // board, draws the lines into it, hands it to the canvas as an image, and writes the labels over it
 // through the canvas, in the window's own font.
 
-import sh.sysl.amber.{Element, Shape, Colour, Wave, Waveform, Pulse, Sine, Switch, Pin, PinMode, engineering}
+import sh.sysl.amber.{Element, Shape, Kind, Colour, Wave, Waveform, Pulse, Sine, Switch, Pin, PinMode, engineering}
 import sh.sysl.ui.{View, Canvas, Size, Rect, Image, column, row, text, spacer}
 import sh.sysl.plutovg
 import sysl.buf.{Buf, buf}
@@ -70,18 +70,21 @@ const HINT: string = "two points: a meter · a switch: flip it · space pause ·
 const INSTRUMENT_HINT: string = "two points: a meter · a generator: tune it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
 const SPEAKER_HINT: string = "two points: a meter · space pause · +/- speed · r restart · s settle · m mute · b bode · v values · c clear"
 const SUPPLY_HINT: string = "two points: a meter · a supply: set it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
+const POT_HINT: string = "two points: a meter · a pot: turn it · space pause · +/- speed · r restart · s settle · b bode · v values · c clear"
 
 // The line of hints under the board, naming the instrument there is to click.
 private hint(m: &Model) -> string
     var generator = false
     var supply = false
+    var pot = false
 
     for k in 0..<m.panels.len()
         m.panels[k].instrument match
             SignalGenerator(_) -> generator = true
             BenchSupply(_) -> supply = true
+            Pot(_) -> pot = true
 
-    if m.ear.speaker >= 0 then SPEAKER_HINT elif generator then INSTRUMENT_HINT elif supply then SUPPLY_HINT else HINT
+    if m.ear.speaker >= 0 then SPEAKER_HINT elif generator then INSTRUMENT_HINT elif supply then SUPPLY_HINT elif pot then POT_HINT else HINT
 
 // --- The board --------------------------------------------------------------------------------------
 
@@ -185,7 +188,7 @@ private hit(m: &Model, at: Place, wx: int, wy: int) -> int
             continue
 
         // A transistor is hit anywhere in its circle.
-        if e.shape.points() == 3
+        if e.shape.points() == 3 && e.shape != Potentiometer
             val g = transistor_frame(e)
             val (cx, cy) = (at.x(g.gx(0.0, HUB)), at.y(g.gy(0.0, HUB)))
 
@@ -193,12 +196,15 @@ private hit(m: &Model, at: Place, wx: int, wy: int) -> int
 
             continue
 
-        if e.shape.points() != 2 || e.shape == Meter then continue
+        // A potentiometer is hit along its track, from end to end, as a two-ended part is.
+        val pot = e.shape == Potentiometer
+
+        if (e.shape.points() != 2 && !pot) || e.shape == Meter then continue
 
         val ax = at.x(real(e.x1))
         val ay = at.y(real(e.y1))
-        val bx = at.x(real(e.x2))
-        val by = at.y(real(e.y2))
+        val bx = at.x(real(if pot then e.x3 else e.x2))
+        val by = at.y(real(if pot then e.y3 else e.y2))
         val dx = bx - ax
         val dy = by - ay
         val t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
@@ -269,6 +275,7 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
             Npn | Pnp -> pen.transistor(e, most, hot)
             Nmos | Pmos -> pen.mosfet(e, most, hot)
             OpAmp -> pen.opamp(e, most, hot)
+            Potentiometer -> pen.pot(e, pot_position(m, e), most, hot)
             _ -> pen.part(e, most, hot)
 
     // A dot wherever three or more ends meet, as a draughtsman marks a junction.
@@ -304,6 +311,8 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
 
             if e.part >= 0 && (e.shape == Nmos || e.shape == Pmos)
                 pen.mosfet_dots(e, i, m.part_flow[i])
+            elif e.part >= 0 && e.shape == Potentiometer
+                pen.pot_dots(e, i, pot_position(m, e), m.part_flow[i], m.base_flow[i], m.emitter_flow[i])
             elif e.part >= 0 && e.shape.points() == 3
                 pen.transistor_dots(e, i, m.part_flow[i], m.base_flow[i], m.emitter_flow[i])
             elif e.part >= 0 && m.part_hold[i].carrying(m.s.current(e.part), m.most_amps)
@@ -886,6 +895,73 @@ private struct Pen
             self.dots(sx, sy, ex, ey, emitter)
             self.dots(ex, ey, real(e.x3), real(e.y3), emitter - distance(sx, sy, ex, ey))
 
+    // A potentiometer: a resistor's zigzag between its two ends, each end's lead in its node's colour,
+    // and the wiper's lead from its point to an arrow on the zigzag, as far along it from the first end
+    // as the wiper is turned — so the arrow slides along the track as its knob is turned. It is drawn
+    // in a transistor's frame: centred between its ends, across toward its wiper.
+    pot(self, e: Element, position: real, most: real, hot: bool)
+        val g = transistor_frame(e)
+        val m = self.m
+        val half = distance(real(e.x1), real(e.y1), real(e.x3), real(e.y3)) / 2.0
+        val body = (2.0 * half).min(1.5) / 2.0
+        val zigzag = body.min(0.5)
+        val tip = pot_tip(e, position)
+
+        self.width(3.0)
+        set(self.vg, wire_colour(m.s.voltage(e.a), most))
+        self.line(real(e.x1), real(e.y1), g.gx(body, 0.0), g.gy(body, 0.0))
+        set(self.vg, wire_colour(m.s.voltage(e.c), most))
+        self.line(real(e.x3), real(e.y3), g.gx(-body, 0.0), g.gy(-body, 0.0))
+        set(self.vg, wire_colour(m.s.voltage(e.b), most))
+        self.line(real(e.x2), real(e.y2), g.gx(tip, WIPER_BACK), g.gy(tip, WIPER_BACK))
+
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+
+        // Three zigzags, peak to peak, as a resistor's, from the first end's side.
+        val step = 2.0 * zigzag / 6.0
+
+        self.vg.begin()
+        self.vg.move_to(self.px(g.gx(body, 0.0)), self.py(g.gy(body, 0.0)))
+        self.vg.line_to(self.px(g.gx(zigzag, 0.0)), self.py(g.gy(zigzag, 0.0)))
+
+        for k in 0..<6
+            val s = zigzag - (real(k) + 0.5) * step
+            val t = if k % 2 == 0 then 0.2 else -0.2
+
+            self.vg.line_to(self.px(g.gx(s, t)), self.py(g.gy(s, t)))
+
+        self.vg.line_to(self.px(g.gx(-zigzag, 0.0)), self.py(g.gy(-zigzag, 0.0)))
+        self.vg.line_to(self.px(g.gx(-body, 0.0)), self.py(g.gy(-body, 0.0)))
+        self.vg.stroke()
+
+        // The arrow, pointing at the track from the wiper's side.
+        self.vg.begin()
+        self.vg.move_to(self.px(g.gx(tip, WIPER_TIP)), self.py(g.gy(tip, WIPER_TIP)))
+        self.vg.line_to(self.px(g.gx(tip - 0.13, WIPER_BACK)), self.py(g.gy(tip - 0.13, WIPER_BACK)))
+        self.vg.line_to(self.px(g.gx(tip + 0.13, WIPER_BACK)), self.py(g.gy(tip + 0.13, WIPER_BACK)))
+        self.vg.close_path()
+        self.vg.fill()
+    end pot
+
+    // A potentiometer's current dots: along the track from its first end to where the wiper touches it,
+    // in from the wiper's point to there, and on from there to its other end, each moved its own `flow`
+    // squares.
+    pot_dots(self, e: Element, i: usize, position: real, first: real, wiper: real, other: real)
+        val g = transistor_frame(e)
+        val m = self.m
+        val tip = pot_tip(e, position)
+        val (tx, ty) = (g.gx(tip, 0.0), g.gy(tip, 0.0))
+
+        if m.part_hold[i].carrying(m.s.terminal_current(e.part, 0), m.most_amps)
+            self.dots(real(e.x1), real(e.y1), tx, ty, first)
+
+        if m.base_hold[i].carrying(m.s.terminal_current(e.part, 1), m.most_amps)
+            self.dots(real(e.x2), real(e.y2), g.gx(tip, WIPER_TIP), g.gy(tip, WIPER_TIP), wiper)
+
+        if m.emitter_hold[i].carrying(m.s.terminal_current(e.part, 2), m.most_amps)
+            self.dots(tx, ty, real(e.x3), real(e.y3), other)
+
     // A MOSFET: a lead from each of its three points in its node's colour, the gate's plate, the channel
     // in three pieces with the drain's and source's stubs, and the body's line from the channel's middle
     // down to the source with its arrow, pointing in for an N-channel and out for a P-channel.
@@ -1129,6 +1205,24 @@ private transistor_frame(e: Element) -> TransistorFrame
 
     TransistorFrame(mx, my, ux, uy, -uy * side, ux * side)
 
+// How far across a potentiometer's track its wiper's arrow reaches, and where the arrow's back and the
+// wiper's lead meet, in squares from the track toward the wiper.
+const WIPER_TIP: real = 0.25
+const WIPER_BACK: real = 0.55
+
+// Where along a potentiometer's track its wiper's arrow points, in its transistor frame: the zigzag's
+// first-end side at 0 and its other end's at 1.
+private pot_tip(e: Element, position: real) -> real
+    val half = distance(real(e.x1), real(e.y1), real(e.x3), real(e.y3)) / 2.0
+    val zigzag = half.min(0.75).min(0.5)
+
+    zigzag * (1.0 - 2.0 * position.max(0.0).min(1.0))
+
+// What potentiometer `e`'s knob is turned to now.
+private pot_position(m: &Model, e: Element) -> real = m.s.circuit.parts[usize(e.part)].kind match
+    Kind.Potentiometer(_, p) -> p
+    _ -> 0.5
+
 private distance(x1: real, y1: real, x2: real, y2: real) -> real = ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)).sqrt()
 
 // --- Labels -----------------------------------------------------------------------------------------
@@ -1141,7 +1235,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer -> true
     _ -> false
 
 // The text over the picture: each part's name and value, the voltage across it when values are on,
@@ -1228,12 +1322,19 @@ private labels(m: &Model, c: *Canvas, at: Place)
         dial(m, c, at, m.meters[k])
 
 // A transistor's name and model on the side of its circle away from the base, and with values on, the
-// voltage from its collector to its emitter under them.
+// voltage from its collector to its emitter under them. A potentiometer is labelled the same way, on
+// the side of its track away from the wiper, with what its knob is turned to and its wiper's voltage.
 private transistor_label(m: &Model, c: *Canvas, at: Place, e: Element)
     val g = transistor_frame(e)
-    val x = at.x(g.gx(0.0, -0.75))
-    val y = at.y(g.gy(0.0, -0.75))
-    val name = s"${e.name} ${e.value}"
+    val pot = e.shape == Potentiometer
+    val away = if pot then -0.4 else -0.75
+    val x = at.x(g.gx(0.0, away))
+    val y = at.y(g.gy(0.0, away))
+    val knob = if pot then m.panel_of(m.sch.find(e.name).unwrap_or(-1)) else None
+    val name = knob match
+        Some(k) -> s"${e.name} ${m.panels[k].summary()}"
+        None -> s"${e.name} ${e.value}"
+    val reading = if pot then volts(m.s.voltage(e.b)) else volts(m.s.across(e.part))
     // Beside an upright one, flush against the circle; above or below one lying down, centred.
     val upright = g.nx.abs() >= g.ny.abs()
     val left = if upright && g.nx > 0.0 then x - real(c.text_size(name).w) else x
@@ -1242,7 +1343,7 @@ private transistor_label(m: &Model, c: *Canvas, at: Place, e: Element)
     put(c, left, top, name, INK, !upright)
 
     if m.values && m.trouble == ""
-        put(c, left, top + 18.0, volts(m.s.across(e.part)), 0xFFB030, !upright)
+        put(c, left, top + 18.0, reading, 0xFFB030, !upright)
 
 // A bench supply's readout under its name, whether or not values are on, as its front panel always
 // shows it: the voltage across its posts, the current it is delivering, and the mode it is in, in its

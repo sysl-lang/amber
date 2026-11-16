@@ -1,6 +1,6 @@
 @tests
 
-import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator, Shape}
+import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator, Shape, Kind}
 import sh.sysl.sdl3.{SCANCODE_B, SCANCODE_C, SCANCODE_R, SCANCODE_S, SCANCODE_M, SCANCODE_SPACE, SCANCODE_MINUS, SCANCODE_EQUALS}
 import sysl.buf.{Buf, buf}
 import sysl.math.{max, min, tau}
@@ -1322,3 +1322,81 @@ remote_rapid_presses()
     work(e, 1.0 / 60.0)
     exchange(ui, e)
     assert(e.pressed.len() == 0 && ui.s.circuit.parts[part].kind == Switch(false))
+
+// ## A potentiometer
+
+private dimmer() -> &Model = model("dimmer.amber", parse_schematic(str_cast(embed("../examples/dimmer.amber"))).unwrap())
+
+// The current through the dimmer's LED.
+private led_amps(m: &Model) -> real = m.s.current(m.sch.elements[usize(m.sch.find("D1").unwrap())].part)
+
+@test("clicking a potentiometer opens its knob's panel, turned as its line says, and the status line gives its wiper")
+pot_panel_opens()
+    val m = dimmer()
+    val rv1 = m.sch.find("RV1").unwrap()
+
+    assert(m.panels.len() == 1)
+    m.select(rv1)
+    assert(m.open_panel() == Some(0))
+
+    val p = m.panels[0]
+
+    assert(p.title == "RV1 potentiometer")
+    assert(p.choices.len() == 0 && p.knobs.len() == 1)
+    assert(p.knobs[0].label == "turned" && p.knobs[0].ends() == (0.0, 100.0))
+    assert(close(p.knobs[0].value(), 50.0))
+    assert(p.summary() == "10kΩ 50%")
+    assert(status(m).contains("RV1 10kΩ 50% potentiometer: wiper at 2V, -9V end to end, "))
+    assert(status(m).ends_with("A into the other"))
+    assert(labelled_when_crowded(Shape.Potentiometer))
+
+@test("turning a potentiometer's knob moves its wiper while the circuit runs: up, the LED brightens, and down, it goes dark")
+pot_knob_reaches_the_circuit()
+    val m = dimmer()
+    val part = m.panels[0].part
+
+    tick(m, 0.1)
+
+    val halfway = led_amps(m)
+
+    assert(halfway > 0.8e-3 && halfway < 1.1e-3)
+    assert(!m.sync())
+
+    m.panels[0].knobs[0].set(100.0)
+    assert(m.sync())
+    assert(m.s.circuit.parts[usize(part)].kind == Kind.Potentiometer(10e3, 1.0))
+    tick(m, 0.1)
+    assert(led_amps(m) > 20e-3, s"${led_amps(m)}")
+    assert((m.reading(m.meters[0]) - 9.0).abs() < 1e-3, "the wiper is on the 9 V end")
+    assert(m.panels[0].summary() == "10kΩ 100%")
+
+    m.panels[0].knobs[0].set(0.0)
+    m.sync()
+    tick(m, 0.1)
+    assert(led_amps(m) < 1e-9, "dark")
+    assert(m.reading(m.meters[0]).abs() < 1e-3, "the wiper is on the grounded end")
+
+@test("a restart keeps where the potentiometer's knob was turned")
+pot_restart_keeps_its_turn()
+    val m = dimmer()
+    val part = m.panels[0].part
+
+    m.panels[0].knobs[0].set(75.0)
+    m.sync()
+    m.restart()
+    assert(m.s.circuit.parts[usize(part)].kind == Kind.Potentiometer(10e3, 0.75))
+    assert(!m.sync())
+
+@test("a potentiometer's dots run in at the 9 V end, out of the grounded end, and out of the wiper to the LED")
+pot_dots()
+    val m = dimmer()
+    val i = usize(m.sch.find("RV1").unwrap())
+
+    m.flow(0.1)
+    // Into the first end, the grounded one, is negative: its dots run out along the track to it.
+    assert(m.part_flow[i] < 0.0)
+    // Into the wiper is negative too: its current leaves for the LED.
+    assert(m.base_flow[i] < 0.0)
+    // Into the other end, at 9 V, is positive, and its dots run toward the wiper, against the
+    // drawing's direction from the wiper to that end.
+    assert(m.emitter_flow[i] < 0.0)

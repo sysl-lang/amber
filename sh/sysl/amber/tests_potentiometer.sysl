@@ -1,0 +1,150 @@
+module sh.sysl.amber
+@tests
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol
+
+// 10 V across a 10 kΩ potentiometer, its first end on the 10 V and its other end on ground, and the
+// wiper loaded with `load` ohms to ground (none for 0).
+private divider(position: real, load: real) -> Circuit
+    var c = circuit()
+
+    c.connect("B1", VoltageSource(Dc(10.0)), "top", "0")
+    c.connect3("RV1", Potentiometer(10e3, position), "top", "wiper", "0")
+
+    if load > 0.0 then c.connect("RL", Resistor(load), "wiper", "0")
+
+    c
+end divider
+
+// ## The circuit
+
+@test
+private the_wiper_divides_the_voltage_by_how_far_it_is_turned()
+    for (position, want) in [(0.5, 5.0), (0.3, 7.0), (0.9, 1.0)]
+        var s = sim(divider(position, 0.0))
+
+        s.operating_point().unwrap()
+        assert(near(s.voltage_at("wiper"), want, 1e-4), s"${position}: ${s.voltage_at("wiper")}")
+
+@test
+private turned_to_either_end_the_wiper_is_on_that_end_and_nothing_divides_by_zero()
+    var top = sim(divider(0.0, 1e3))
+
+    top.operating_point().unwrap()
+    assert(near(top.voltage_at("wiper"), 10.0, 1e-3), "at the first end")
+    assert(near(top.current(1), 10.0 / 1e3 + 10.0 / 10e3, 1e-5), "the load's and the whole track's current")
+
+    var bottom = sim(divider(1.0, 1e3))
+
+    bottom.operating_point().unwrap()
+    assert(near(bottom.voltage_at("wiper"), 0.0, 1e-4), "at the other end")
+end turned_to_either_end_the_wiper_is_on_that_end_and_nothing_divides_by_zero
+
+@test
+private a_load_on_the_wiper_takes_its_current_through_the_first_half()
+    var s = sim(divider(0.5, 5e3))
+
+    s.operating_point().unwrap()
+
+    // 5 kΩ above the wiper, and 5 kΩ below it in parallel with the 5 kΩ load: 2.5 kΩ.
+    val v = 10.0 * 2.5e3 / 7.5e3
+
+    assert(near(s.voltage_at("wiper"), v, 1e-4))
+    assert(near(s.terminal_current(1, 0), (10.0 - v) / 5e3, 1e-8), "into the first end")
+    assert(near(s.terminal_current(1, 1), -v / 5e3, 1e-8), "into the wiper: the load's current, out")
+    assert(near(s.terminal_current(1, 2), -v / 5e3, 1e-8), "into the other end: the lower half's, out")
+    assert(near(s.terminal_current(1, 0) + s.terminal_current(1, 1) + s.terminal_current(1, 2), 0.0, 1e-15))
+    assert(near(s.current(1), s.terminal_current(1, 0), 0.0))
+    assert(near(s.power(1), (10.0 - v) * (10.0 - v) / 5e3 + v * v / 5e3, 1e-9), "what the two halves burn")
+end a_load_on_the_wiper_takes_its_current_through_the_first_half
+
+@test
+private turning_it_while_the_circuit_runs_moves_the_wiper_from_then_on()
+    var c = divider(0.5, 0.0)
+
+    c.connect("CW", Capacitor(1e-9), "wiper", "0")
+
+    var s = sim(c)
+
+    s.power_on().unwrap()
+    s.advance_to(1e-3).unwrap()
+    assert(near(s.voltage_at("wiper"), 5.0, 1e-3))
+
+    s.set_position(1, 0.8)
+    s.advance_to(2e-3).unwrap()
+    assert(near(s.voltage_at("wiper"), 2.0, 1e-3))
+
+    // Turned to where it already is, nothing changes and no corner is taken.
+    val steps = s.accepted
+
+    s.set_position(1, 0.8)
+    s.advance_to(2e-3 + 1e-9).unwrap()
+    assert(s.accepted <= steps + 1)
+
+    // Anything but a potentiometer is left as it is.
+    s.set_position(0, 0.1)
+    assert(s.circuit.parts[0].kind == VoltageSource(Dc(10.0)))
+end turning_it_while_the_circuit_runs_moves_the_wiper_from_then_on
+
+@test
+private a_small_sine_through_it_is_divided_as_the_steady_voltage_is()
+    var s = sim(divider(0.25, 0.0))
+    val r = s.response(1e3, [drive(0, 1.0, 0.0)][..]).unwrap()
+
+    assert(near(r.voltage(s.circuit.find_node("wiper").unwrap()).abs(), 0.75, 1e-5))
+
+@test
+private its_halves_are_never_less_than_a_contacts_resistance()
+    assert_eq(pot_halves(8e3, 0.25), (2e3, 6e3))
+    assert_eq(pot_halves(10e3, 0.0), (WIPER_OHMS, 10e3))
+    assert_eq(pot_halves(10e3, 1.0), (10e3, WIPER_OHMS))
+    assert_eq(pot_halves(10e3, -1.0), (WIPER_OHMS, 10e3), "turned past an end is that end")
+    assert_eq(pot_halves(10e3, 2.0), (10e3, WIPER_OHMS))
+    assert_eq(Kind.Potentiometer(1.0, 0.5).terminals(), 3)
+
+// ## In a schematic
+
+@test
+private a_pot_line_is_placed_by_its_ends_and_its_wiper()
+    val sch = parse_schematic("battery B1  0 0  0 6  10\npot RV1  0 0  2 3  0 6  10k 30%\nground 0 6\nlabel w 2 3\n").unwrap()
+    val e = sch.elements[1]
+
+    assert_eq(e.shape, Potentiometer)
+    assert_eq((e.x2, e.y2), (2, 3), "the wiper")
+    assert_eq((e.x3, e.y3), (0, 6), "the other end")
+    assert_eq(e.value, "10k 30%")
+    assert_eq(sch.circuit.parts[usize(e.part)].kind, Potentiometer(10e3, 0.3))
+
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+    assert(near(s.voltage_at("w"), 7.0, 1e-4))
+end a_pot_line_is_placed_by_its_ends_and_its_wiper
+
+@test
+private a_pot_line_without_a_position_is_turned_halfway()
+    val sch = parse_schematic("pot RV1  0 0  2 3  0 6  4.7k\n").unwrap()
+
+    assert_eq(sch.circuit.parts[0].kind, Potentiometer(4.7e3, 0.5))
+
+@test
+private a_pot_line_says_what_is_wrong_with_it()
+    val line = (rest: string) -> parse_schematic(s"pot RV1  0 0  2 3  0 6${rest}\n").err()
+
+    assert_eq(line(""), Some("line 1: a pot needs a value"))
+    assert_eq(line("  10k 130%"), Some("line 1: '130%' is not how far a wiper is turned: a percentage from 0% to 100%"))
+    assert_eq(line("  10k 30"), Some("line 1: '30' is not how far a wiper is turned: a percentage from 0% to 100%"))
+    assert_eq(line("  10k abc%"), Some("line 1: 'abc%' is not how far a wiper is turned: a percentage from 0% to 100%"))
+    assert_eq(line("  0 50%"), Some("line 1: a potentiometer's resistance is more than zero"))
+    assert_eq(line("  10k 50% loud"), Some("line 1: 'loud' is more than a pot takes"))
+    assert_eq(parse_schematic("pot RV1  0 0  0 3  0 6  10k\n").err(), Some("line 1: a pot's wiper stands a square or more off the line from its first end to its other end"))
+end a_pot_line_says_what_is_wrong_with_it
+
+@test
+private a_document_moves_and_revalues_a_pot_line()
+    var doc = document("pot RV1  0 0  2 3  0 6  10k 30%\n")
+
+    doc.move(1, 1, 0).unwrap()
+    doc.revalue(1, "1k 80%").unwrap()
+    assert_eq(doc.text(), "pot RV1  1 0  3 3  1 6  1k 80%\n")
+    assert_eq(doc.schematic().unwrap().circuit.parts[0].kind, Potentiometer(1e3, 0.8))

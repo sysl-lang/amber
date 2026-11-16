@@ -1,0 +1,23 @@
+# A knob that dims an LED. Click RV1 and turn it.
+#
+# The potentiometer's track runs across the 9 V battery, its first end on ground and its other on
+# the 9 V, so its wiper is anywhere from 0 V to 9 V as it is turned: halfway, 4.5 V. The wiper feeds
+# the LED through R1, which keeps the current safe with the knob all the way up.
+#
+# Turned down, the wiper is below the 1.8 V the LED needs before it lights, and it stays dark. Turned
+# up, the current rises with every step past that: about 1 mA halfway, and about 20 mA at the top,
+# where only R1 holds it back.
+#
+# The meter reads the wiper.
+
+battery  B1   0 0  0 8  9V
+wire          0 0  6 0
+pot      RV1  6 8  8 4  6 0  10k 50%
+wire          0 8  6 8
+ground        0 8
+
+resistor R1   8 4  16 4  330
+led      D1   16 4  16 8  red
+wire          16 8  6 8
+
+meter    WIPER  8 4  8 8

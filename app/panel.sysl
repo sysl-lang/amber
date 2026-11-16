@@ -4,7 +4,8 @@
 // setting in a signal its control writes, draws them beside the board, and says when one has moved.
 // What the settings do is the instrument's: an `Instrument` is told the settings and the time, and puts
 // its part in the circuit right from that moment, without the circuit being switched on again. A
-// signal generator is one instrument and a bench power supply another.
+// signal generator is one instrument, a bench power supply another, and a potentiometer's knob a
+// third.
 
 import sh.sysl.amber.{Sim, Waveform, Oscillator, WAVEFORMS, oscillator, engineering, PowerSupply}
 import sh.sysl.ui.{View, Signal, signal, column, row, text, spacer, slider, radio, button}
@@ -58,6 +59,8 @@ enum Instrument
     SignalGenerator(osc: Oscillator)
     // A bench power supply, which remembers its internal resistance, a setting no knob turns.
     BenchSupply(supply: PowerSupply)
+    // A potentiometer of `ohms`, whose knob turns its wiper.
+    Pot(ohms: real)
 
 // The controls of one instrument on the bench: element `element` of the schematic, part `part` of the
 // circuit.
@@ -130,6 +133,9 @@ struct Panel
                 q.ripple = now[4].min(2.0 * q.volts)
                 s.set_supply(self.part, q)
                 BenchSupply(q)
+            Pot(ohms) ->
+                s.set_position(self.part, now[0] / 100.0)
+                Pot(ohms)
 
         self.applied = now
 
@@ -144,7 +150,24 @@ struct Panel
             val limit = s"${engineering(p.volts)}V ${engineering(p.amps)}A"
 
             if p.raw then s"${limit} raw ${engineering(p.ripple)}V ${engineering(2.0 * p.mains)}Hz" else limit
+        Pot(ohms) -> s"${engineering(ohms)}Ω ${percent(self.knobs[0].value())}"
 end Panel
+
+// A knob's 0 to 100 as a whole percentage: `30%`.
+percent(value: real) -> string = s"${int(value.round())}%"
+
+// A potentiometer's panel: its knob, from 0% at its first end to 100% at its other, starting at
+// `position`.
+pot_panel(name: string, element: int, part: int, ohms: real, position: real) -> Panel
+    var knobs: Buf[Knob] = buf()
+
+    knobs.push(knob("turned", "%", 0.0, 100.0, 100.0 * position))
+
+    var p = Panel(s"${name} potentiometer", element, part, Pot(ohms), buf(), knobs, buf())
+
+    p.applied = p.settings()
+    p
+end pot_panel
 
 // A bench power supply's panel, starting from `p`: regulated or raw, the mains frequency a raw supply's
 // ripple runs at twice, its voltage on a straight knob up to 30 V, its current limit on a logarithmic
@@ -220,6 +243,6 @@ panel_view(p: Panel, close: &Fn() -> unit) -> &View
         val (lo, hi) = n.ends()
 
         lines.push(row([text(n.label).frame(LABEL_WIDTH, LINE_HEIGHT), slider(n.position, lo, hi, SLIDER_WIDTH),
-                        text(s"${engineering(n.value())}${n.unit}").frame(VALUE_WIDTH, LINE_HEIGHT)], 10))
+                        text(if n.unit == "%" then percent(n.value()) else s"${engineering(n.value())}${n.unit}").frame(VALUE_WIDTH, LINE_HEIGHT)], 10))
 
     column(lines.view(), 8).padding(12).background(PANEL_GROUND)

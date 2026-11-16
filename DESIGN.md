@@ -317,8 +317,10 @@ Each is a piece of work of its own, in this order.
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save. The design is
    **Editing** above, in four steps.
 8. **The parts a beginner reaches for next**, each in the library, schematics and the viewer, held to
-   ngspice where ngspice has the part, and one at a time in this order: a **potentiometer** (two
-   resistors and a wiper, turned by a knob while the clock runs); a **photoresistor** (its resistance
+   ngspice where ngspice has the part, and one at a time in this order: ~~a **potentiometer** (two
+   resistors and a wiper, turned by a knob while the clock runs)~~ — `pot`, `Potentiometer(ohms,
+   position)` and `Sim.set_position`, the `dimmer` example; ngspice has no potentiometer, so it is held
+   to the divider's arithmetic instead; a **photoresistor** (its resistance
    following a light level, a slider in the viewer); an **ammeter** (a zero-volt source read for its
    current); an **SPDT switch**; a **lamp** (a filament whose resistance rises as it heats, glowing);
    the **555 timer**; a **relay** (a coil that closes a switch); a **DC motor** (a back-EMF, spun on

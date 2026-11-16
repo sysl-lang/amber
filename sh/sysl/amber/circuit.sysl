@@ -275,11 +275,18 @@ enum Kind derives Eq
     // output resistance, or an input, with its pull-up or pull-down if one is on. A program running on
     // the chip sets it as it runs, as `PinDrive` says.
     Pin(drive: PinDrive)
+    // A potentiometer of `ohms` from end to end, with three terminals: one end, its wiper and its other
+    // end, in that order. `position` is how far along the wiper is from the first end, from 0 to 1, so
+    // `ohms · position` lies between the first end and the wiper, and the rest between the wiper and
+    // the other end. A real one's track does not quite reach its wiper at either end, and neither does
+    // this: each half is at least `WIPER_OHMS`.
+    Potentiometer(ohms: real, position: real)
 
-    // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor, 2 for the rest.
+    // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor or a
+    // potentiometer, 2 for the rest.
     terminals(self) -> int = self match
         OpAmp(_) -> 5
-        Transistor(_) | Mosfet(_, _, _) -> 3
+        Transistor(_) | Mosfet(_, _, _) | Potentiometer(_, _) -> 3
         _ -> 2
 
     // A source's wave; `None` for a part that is not a source.
@@ -289,6 +296,17 @@ enum Kind derives Eq
         Generator(w, _) -> Some(w)
         Supply(s) -> Some(s.wave())
         _ -> None
+
+// The least either half of a potentiometer's track is: what is left between the wiper and the end it
+// is turned all the way to, a closed switch's contact.
+const WIPER_OHMS: real = 0.01
+
+// A potentiometer's two halves: from its first end to its wiper, and from its wiper to its other end.
+// `position` beyond 0 or 1 is taken as that end.
+pot_halves(ohms: real, position: real) -> (real, real)
+    val p = position.max(0.0).min(1.0)
+
+    ((ohms * p).max(WIPER_OHMS), (ohms * (1.0 - p)).max(WIPER_OHMS))
 
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and
 // `b` and has the rest at -1; a transistor's collector, base and emitter are `a`, `b` and `c`, and a

@@ -39,6 +39,7 @@ import sysl.text.{Search, fields, split}
 // | `opamp` | one, its middle; its pins are around it | a model: `741` (the default) or `TL072`, then perhaps `turned 90`, `180` or `270`, and `flipped` |
 // | `pin` | two: the pin, then the chip's ground | the chip, `RP2040` (the default); an input, floating, until a program sets it |
 // | `button` | two | — a push button, open but while it is pressed |
+// | `pot` | three: one end, the wiper, the other end | ohms end to end, then perhaps how far the wiper is turned from the first end, `30%` (50% if not given) |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -52,6 +53,11 @@ import sysl.text.{Search, fields, split}
 // channel is the library's default width and length:
 //
 //     nmos     M1  3 9  1 11  3 13  2N7000
+//
+// A potentiometer is placed the same way too, its two ends and its wiper off to one side; turned 30%
+// of the way from its first end, 3 kΩ of its 10 kΩ lie between that end and the wiper:
+//
+//     pot      RV1 0 0  2 3  0 6  10k 30%
 //
 // A transformer is two windings, each placed by its two ends, the first its dotted end, where the two
 // rise together. Its primary is 10 H unless the line gives another inductance after the ratio, and its
@@ -134,6 +140,8 @@ enum Shape: u8
     Pin
     // A push button: a switch, open until it is pressed, and open again as soon as it is let go.
     Button
+    // A potentiometer: a resistor's track between its two ends, and a wiper turned along it.
+    Potentiometer
     Ground
     Label
     Meter
@@ -141,7 +149,7 @@ enum Shape: u8
     // The number of grid points it is placed by.
     points(self) -> int = self match
         Ground | Label -> 1
-        Npn | Pnp | Nmos | Pmos -> 3
+        Npn | Pnp | Nmos | Pmos | Potentiometer -> 3
         OpAmp -> 5
         _ -> 2
 
@@ -490,6 +498,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     val most = shape match
         Wire | Ground | Label | Meter | Diode | Button -> 0
         Source | CurrentSource | Generator | Supply -> rest.len
+        Potentiometer -> 2
         _ -> 1
 
     if rest.len > usize(most) then return Err(s"'${rest[usize(most)]}' is more than ${one} takes")
@@ -645,14 +654,16 @@ private a_word(word: string) -> string
 
     if vowel || word == "npn" || word == "nmos" then s"an ${word}" else s"a ${word}"
 
-// A transistor's three points, collector, base and emitter (a MOSFET's drain, gate and source), in `xy`:
-// its two ends apart, and its base or gate a square or more off the line between them, where its symbol
-// has room.
+// A transistor's three points, collector, base and emitter (a MOSFET's drain, gate and source, a
+// potentiometer's end, wiper and other end), in `xy`: its two ends apart, and its base or gate a square
+// or more off the line between them, where its symbol has room.
 private transistor_placed(shape: Shape, one: string, xy: [6]int) -> Result[unit, string]
     val dx = xy[4] - xy[0]
     val dy = xy[5] - xy[1]
-    val mos = shape == Nmos || shape == Pmos
-    val (first, middle, last) = if mos then ("drain", "gate", "source") else ("collector", "base", "emitter")
+    val (first, middle, last) = shape match
+        Nmos | Pmos -> ("drain", "gate", "source")
+        Potentiometer -> ("first end", "wiper", "other end")
+        _ -> ("collector", "base", "emitter")
 
     if dx == 0 && dy == 0 then return Err(s"${one} needs its ${first} and ${last} at different points")
 
@@ -688,6 +699,7 @@ private[amber] shape_named(word: string) -> Result[Shape, string] = word match
     "speaker" -> Ok(Speaker)
     "pin" -> Ok(Pin)
     "button" -> Ok(Button)
+    "pot" -> Ok(Potentiometer)
     _ -> Err(s"'${word}' is not a kind of element")
 
 private colour_named(word: string) -> Result[Colour, string] = word match
@@ -731,12 +743,26 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
 
             Ok(Pin(RP2040_PIN))
         Button -> Ok(Switch(false))
+        Potentiometer -> Ok(Potentiometer(positive(rest[0], "a potentiometer's resistance")?, if rest.len == 2 then turned(rest[1])? else 0.5))
         Diode -> Ok(Diode(SILICON))
         Led -> Ok(Diode(colour.model()))
         Zener -> Ok(Diode(zener_model(positive(rest[0], "a breakdown voltage")?)))
         Npn | Pnp -> Ok(Transistor(transistor_model(shape, if rest.len == 0 then default_model(shape) else rest[0])?))
         Nmos | Pmos -> Ok(Mosfet(mosfet_model(shape, if rest.len == 0 then default_model(shape) else rest[0])?, DEFAULT_W, DEFAULT_L))
         _ -> Err(s"${a_word(kind_word)} is not a part")
+
+// How far a potentiometer's wiper is turned, `30%`, as a fraction of the way from its first end.
+private turned(word: string) -> Result[real, string]
+    val wrong = s"'${word}' is not how far a wiper is turned: a percentage from 0% to 100%"
+
+    if !word.ends_with("%") then return Err(wrong)
+
+    val percent = parse_value(word[0..<word.len - 1]).map_err(_ -> wrong)?
+
+    if percent < 0.0 || percent > 100.0 then return Err(wrong)
+
+    Ok(percent / 100.0)
+end turned
 
 // The model a transistor is when its line names none.
 private default_model(shape: Shape) -> string = shape match

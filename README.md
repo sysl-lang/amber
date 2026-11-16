@@ -68,8 +68,8 @@ to a PNG without a window; `--meter x1,y1,x2,y2` places a meter from the command
 `--select G1` clicks an element, so a generator's panel can be drawn too, and `--bode` draws the Bode
 plot in place of the scope.
 
-The examples: `led` (a battery, a resistor and an LED), `rc` (a capacitor charging when you close the
-switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
+The examples: `led` (a battery, a resistor and an LED), `dimmer` (a potentiometer's knob dimming an
+LED; click RV1 and turn it), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
@@ -118,7 +118,7 @@ meter     OUT 6 0  6 6                     # red lead first
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
 `gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
-`closed`), `button` (a push button, open but while pressed), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
+`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
 `TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).
@@ -194,6 +194,16 @@ line between the other two; its width and length are the library's defaults (100
 
 ```
 nmos      M1  4 10  2 12  4 14  2N7000     # drain, gate, source
+```
+
+A potentiometer is placed the same way too, by one end, its wiper and its other end, with its wiper a
+square or more off the line between its ends. Its value is its resistance end to end, then perhaps
+how far its knob is turned from the first end toward the other, 50% unless it says. Clicked in the
+viewer, it opens a panel whose knob turns it while the circuit runs, and its wiper's arrow slides
+along its track as it turns:
+
+```
+pot       RV1 6 8  8 4  6 0  10k 30%       # end, wiper, end: 3 kΩ from the first end to the wiper
 ```
 
 ## SPICE netlists
@@ -275,7 +285,7 @@ by the trapezoidal rule with its step chosen from the error it makes:
 
 ```
 dependencies {
-  amber { git = "github.com/sysl-lang/amber", version = "0.1.6" }
+  amber { git = "github.com/sysl-lang/amber", version = "0.1.7" }
 }
 ```
 
