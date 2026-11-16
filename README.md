@@ -173,6 +173,15 @@ rate (0.5 and 13 V/µs), an output a volt and a half short of each supply, 75 Ω
 opamp     U1  12 8  TL072                  # − at 10 7, + at 10 9, out at 14 8, V+ at 12 6, V− at 12 10
 ```
 
+After its model it may say `turned 90`, `180` or `270`, a quarter turn clockwise for each 90, and
+`flipped`, which mirrors it top to bottom so its inverting input is below; flipped first, then
+turned. The viewer still draws every op-amp facing right, so these are for the library until it
+learns to draw the others:
+
+```
+opamp     U1  12 8  TL072 turned 90        # out at 12 10, pointing down
+```
+
 A transistor is placed by three points — collector, base, emitter — with its base a square or more
 off the line between the other two, which is where its symbol is drawn:
 
@@ -266,7 +275,7 @@ by the trapezoidal rule with its step chosen from the error it makes:
 
 ```
 dependencies {
-  amber { git = "github.com/sysl-lang/amber", version = "0.1.5" }
+  amber { git = "github.com/sysl-lang/amber", version = "0.1.6" }
 }
 ```
 
@@ -299,6 +308,21 @@ of a change, carries its phase across it. `Supply(regulated(12.0, 1.0))` or
 each source in `drives` (`drive(part, amplitude, degrees)`) driven at that frequency, every voltage
 and current comes back as a `Complex[real]` phasor, the circuit linearised at its operating point. It
 needs nothing but an allocator. What is planned is in [DESIGN.md](DESIGN.md).
+
+**A schematic's file can be edited a line at a time** through a `Document`, which is how an editor
+changes one without losing what a person wrote. `document(text)` holds the file's lines; `move`,
+`move_point`, `turn`, `mirror`, `rename`, `revalue`, `add` and `delete` each rewrite the words of one
+element's line (`Element.line` says which), keeping its comment and its columns; and `schematic()`
+reads the text again with the one parser, whose messages are the editor's. A file read and written
+back unchanged is the same bytes:
+
+```sysl
+var doc = document("resistor R1  0 0  6 0  470   # the load\nground 0 0\n")
+
+doc.move(1, 2, 1).unwrap()
+doc.revalue(1, "1k").unwrap()
+print(doc.text())               // resistor R1  2 1  8 1  1k    # the load
+```
 
 ```
 sysl test .

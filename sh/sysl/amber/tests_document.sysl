@@ -1,0 +1,359 @@
+module sh.sysl.amber
+@tests
+
+import sysl.raw.str_cast
+import sysl.text.{fields, join}
+
+// The text after one change to its document, which must also still read as a schematic.
+private changed(text: string, change: &Fn(&Document) -> Result[unit, string]) -> string
+    var doc = document(text)
+
+    change(doc).unwrap()
+    assert(doc.schematic().is_ok(), s"still a schematic: ${doc.text()}")
+    doc.text()
+end changed
+
+// ## Reading and writing back
+
+@test
+private every_example_written_back_unchanged_is_the_same_bytes()
+    val examples = [
+        str_cast(embed("../../../examples/adder.amber")), str_cast(embed("../../../examples/amplifier.amber")),
+        str_cast(embed("../../../examples/astable.amber")), str_cast(embed("../../../examples/blink.amber")),
+        str_cast(embed("../../../examples/charge.amber")), str_cast(embed("../../../examples/cmos.amber")),
+        str_cast(embed("../../../examples/filter.amber")), str_cast(embed("../../../examples/kick.amber")),
+        str_cast(embed("../../../examples/led.amber")), str_cast(embed("../../../examples/moog.amber")),
+        str_cast(embed("../../../examples/opamp.amber")), str_cast(embed("../../../examples/oscillator.amber")),
+        str_cast(embed("../../../examples/pins.amber")), str_cast(embed("../../../examples/rc.amber")),
+        str_cast(embed("../../../examples/regulator.amber")), str_cast(embed("../../../examples/ring.amber")),
+        str_cast(embed("../../../examples/sine.amber")), str_cast(embed("../../../examples/two_stage.amber")),
+        str_cast(embed("../../../examples/wallwart.amber")), str_cast(embed("../../../examples/zener.amber"))
+    ]
+
+    for text in examples
+        val doc = document(text)
+
+        assert_eq(doc.text(), text)
+        assert(doc.schematic().is_ok())
+end every_example_written_back_unchanged_is_the_same_bytes
+
+@test
+private a_text_with_no_final_line_break_and_an_empty_text_are_written_back_as_they_were()
+    assert_eq(document("ground 0 0").text(), "ground 0 0")
+    assert_eq(document("").text(), "")
+    assert_eq(document("\n\n# only a comment\n").text(), "\n\n# only a comment\n")
+
+@test
+private each_element_knows_its_line_and_a_transformers_two_windings_share_one()
+    val sch = parse_schematic("# a comment\nspeed 1\n\nbattery B1  0 0  0 6  9\ntransformer T1  10 2  10 10  12 2  12 10  120:9\nground 0 6\n").unwrap()
+
+    assert_eq(sch.elements[0].line, 4)
+    assert_eq(sch.elements[1].line, 5)
+    assert_eq(sch.elements[2].line, 5)
+    assert_eq(sch.elements[1].shape, Winding)
+    assert_eq(sch.elements[2].shape, Winding)
+    assert_eq(sch.elements[3].line, 6)
+end each_element_knows_its_line_and_a_transformers_two_windings_share_one
+
+// ## Moving
+
+@test
+private moving_rewrites_the_coordinates_and_keeps_the_name_value_comment_and_spacing()
+    val text = "battery  B1  0 0  0 6  9V\nresistor R1  0 0  6 0  470   # the load\nground       0 6\n"
+    val got = changed(text, d -> d.move(2, 2, 1))
+
+    assert_eq(got, "battery  B1  0 0  0 6  9V\nresistor R1  2 1  8 1  470   # the load\nground       0 6\n")
+
+@test
+private a_shorter_coordinate_is_padded_so_the_columns_after_it_stay()
+    assert_eq(changed("wire  10 0  12 0   # top\n", d -> d.move(1, -2, 0)), "wire  8  0  10 0   # top\n")
+
+@test
+private a_longer_coordinate_pushes_the_rest_of_the_line_right()
+    assert_eq(changed("wire  9 0  9 4  # side\n", d -> d.move(1, 1, 0)), "wire  10 0  10 4  # side\n")
+
+@test
+private a_shorter_last_word_leaves_no_spaces_at_the_end_of_the_line()
+    assert_eq(changed("wire  0 0  0 10\n", d -> d.move(1, 0, -2)), "wire  0 -2  0 8\n")
+
+@test
+private moving_one_point_moves_only_that_point()
+    val text = "npn Q1  4 2  6 4  4 6  2N3904\n"
+
+    assert_eq(changed(text, d -> d.move_point(1, 1, 7, 4)), "npn Q1  4 2  7 4  4 6  2N3904\n")
+    assert_eq(changed(text, d -> d.move_point(1, 2, 4, 8)), "npn Q1  4 2  6 4  4 8  2N3904\n")
+
+    var doc = document(text)
+
+    assert(doc.move_point(1, 3, 0, 0).is_err(), "a transistor has three points")
+end moving_one_point_moves_only_that_point
+
+@test
+private a_transformers_points_are_counted_along_its_line()
+    val text = "transformer T1  10 2  10 10  12 2  12 10  120:9\n"
+
+    assert_eq(changed(text, d -> d.move(1, 1, 1)), "transformer T1  11 3  11 11  13 3  13 11  120:9\n")
+    assert_eq(changed(text, d -> d.move_point(1, 2, 14, 2)), "transformer T1  10 2  10 10  14 2  12 10  120:9\n")
+
+@test
+private an_element_moved_onto_the_middle_of_a_wire_joins_its_node()
+    val text = "battery B1  0 0  0 6  9\nwire  0 0  10 0\nresistor R1  4 3  4 6  1k\nwire  0 6  10 6\nground 0 6\n"
+    var doc = document(text)
+    val before = doc.schematic().unwrap()
+
+    assert(before.elements[2].a != before.elements[1].a, "not joined yet")
+
+    doc.move_point(3, 0, 4, 0).unwrap()
+
+    val after = doc.schematic().unwrap()
+
+    assert_eq(after.elements[2].a, after.elements[1].a)
+end an_element_moved_onto_the_middle_of_a_wire_joins_its_node
+
+@test
+private lines_that_are_not_elements_are_never_changed()
+    var doc = document("# a comment\nspeed 1\nstart settled\n\nground 0 0\n")
+
+    for line in 1..<5
+        assert(doc.move(line, 1, 1).is_err(), s"line ${line}")
+        assert(doc.delete(line).is_err(), s"line ${line}")
+        assert(doc.rename(line, "X").is_err(), s"line ${line}")
+
+    assert(doc.move(9, 1, 1).is_err(), "there is no line 9")
+    assert_eq(doc.text(), "# a comment\nspeed 1\nstart settled\n\nground 0 0\n")
+end lines_that_are_not_elements_are_never_changed
+
+// ## Turning and mirroring
+
+@test
+private turning_goes_a_quarter_clockwise_about_the_point_given()
+    val text = "resistor R1  0 0  2 0  1k\n"
+
+    assert_eq(changed(text, d -> d.turn(1, 0, 0)), "resistor R1  0 0  0 2  1k\n")
+    assert_eq(changed(text, d -> d.turn(1, 1, 0)), "resistor R1  1 -1  1 1  1k\n")
+
+@test
+private four_turns_and_two_mirrors_give_back_the_text()
+    val text = "npn      Q1  3 9  5 11  3 13  2N3904\n"
+    var doc = document(text)
+
+    // A coordinate that changes width on the way round moves the spacing after it, so the words are
+    // what come back.
+    for _ in 0..<4
+        doc.turn(1, 4, 11).unwrap()
+        assert(doc.schematic().is_ok(), doc.text())
+
+    assert_eq(join(fields(doc.text()), " "), join(fields(text), " "))
+
+    var flip = document(text)
+
+    flip.mirror(1, 8).unwrap()
+    assert_eq(flip.text(), "npn      Q1  5 9  3 11  5 13  2N3904\n")
+    flip.mirror(1, 8).unwrap()
+    assert_eq(flip.text(), text)
+end four_turns_and_two_mirrors_give_back_the_text
+
+@test
+private mirroring_can_fall_between_two_columns()
+    assert_eq(changed("resistor R1  0 0  3 0  1k\n", d -> d.mirror(1, 3)), "resistor R1  3 0  0 0  1k\n")
+
+@test
+private a_transformer_turns_all_four_points_together()
+    val got = changed("transformer T1  0 0  0 8  2 0  2 8  120:9\n", d -> d.turn(1, 0, 0))
+
+    assert_eq(got, "transformer T1  0 0  -8 0  0 2  -8 2  120:9\n")
+
+// ## Names and values
+
+@test
+private renaming_rewrites_the_name_alone()
+    assert_eq(changed("resistor R1  0 0  2 0  1k\n", d -> d.rename(1, "RLOAD")), "resistor RLOAD  0 0  2 0  1k\n")
+    assert_eq(changed("resistor RLOAD  0 0  2 0  1k\n", d -> d.rename(1, "R1")), "resistor R1     0 0  2 0  1k\n")
+
+    var doc = document("wire  0 0  2 0\n")
+
+    assert(doc.rename(1, "W").is_err(), "a wire has no name")
+end renaming_rewrites_the_name_alone
+
+@test
+private revaluing_rewrites_the_value_and_keeps_a_comment_in_its_column()
+    assert_eq(changed("resistor R1  0 0  2 0  1k\n", d -> d.revalue(1, "4.7k")), "resistor R1  0 0  2 0  4.7k\n")
+    assert_eq(changed("resistor R1  0 0  2 0  4.7k  # x\n", d -> d.revalue(1, "1k")), "resistor R1  0 0  2 0  1k    # x\n")
+
+@test
+private a_value_of_several_words_is_replaced_whole()
+    assert_eq(changed("source V1  0 0  0 6  sine 5 1k\nground 0 6\n", d -> d.revalue(1, "dc 3")), "source V1  0 0  0 6  dc 3\nground 0 6\n")
+
+@test
+private a_value_can_be_given_where_there_was_none_and_taken_away_where_it_may_be()
+    assert_eq(changed("led D1  0 0  0 6\n", d -> d.revalue(1, "green")), "led D1  0 0  0 6  green\n")
+    assert_eq(changed("led D1  0 0  0 6  green\n", d -> d.revalue(1, "")), "led D1  0 0  0 6\n")
+
+@test
+private a_value_the_parser_refuses_is_the_parsers_message()
+    var doc = document("battery B1  0 0  0 6  9\nresistor R1  0 0  0 6  1k\nground 0 6\n")
+
+    doc.revalue(2, "abc").unwrap()
+    assert_eq(doc.schematic().err(), Some("line 2: 'abc' is not a number"))
+
+// ## Adding and deleting
+
+@test
+private an_added_element_goes_at_the_end_in_the_examples_layout()
+    var doc = document("battery  B1  0 0  0 6  9V\nground       0 6\n")
+    val line = doc.add("resistor", "R1", [(0, 0), (6, 0)], "470")
+
+    assert_eq(line, 3)
+    assert_eq(doc.text(), "battery  B1  0 0  0 6  9V\nground       0 6\nresistor  R1    0 0   6 0   470\n")
+
+    val sch = doc.schematic().unwrap()
+
+    assert_eq(sch.elements[2].name, "R1")
+    assert_eq(sch.elements[2].line, 3)
+end an_added_element_goes_at_the_end_in_the_examples_layout
+
+@test
+private a_wire_or_a_ground_is_added_without_a_name_and_a_text_with_no_final_break_gets_none()
+    var doc = document("battery B1  0 0  0 6  9")
+
+    assert_eq(doc.add("wire", "", [(0, 6), (4, 6)], ""), 2)
+    assert_eq(doc.add("ground", "", [(4, 6)], ""), 3)
+    assert_eq(doc.text(), "battery B1  0 0  0 6  9\nwire            0 6   4 6\nground          4 6")
+    assert(doc.schematic().is_ok())
+end a_wire_or_a_ground_is_added_without_a_name_and_a_text_with_no_final_break_gets_none
+
+@test
+private an_element_added_to_an_empty_board_is_its_first_line()
+    var doc = document("")
+
+    assert_eq(doc.add("ground", "", [(0, 0)], ""), 1)
+    assert_eq(doc.text(), "ground          0 0\n", "and the board's file ends in a line break")
+
+@test
+private deleting_takes_the_line_out_and_a_transformer_goes_whole()
+    var doc = document("ground 0 10\ntransformer T1  10 2  10 10  12 2  12 10  120:9\nground 12 10\n")
+
+    doc.delete(2).unwrap()
+    assert_eq(doc.text(), "ground 0 10\nground 12 10\n")
+
+    val sch = doc.schematic().unwrap()
+
+    assert_eq(sch.elements.len(), 2)
+    assert_eq(sch.elements[1].line, 2)
+end deleting_takes_the_line_out_and_a_transformer_goes_whole
+
+// ## Op-amps
+
+@test
+private an_op_amp_line_without_a_turn_reads_as_it_always_has()
+    val e = parse_schematic("opamp U1 12 8 TL072\n").unwrap().elements[0]
+
+    assert_eq((e.x1, e.y1), (10, 9), "the non-inverting input, two left and one down")
+    assert_eq((e.x2, e.y2), (10, 7), "the inverting input, two left and one up")
+    assert_eq((e.x3, e.y3), (14, 8), "the output")
+    assert_eq((e.x4, e.y4), (12, 6), "the positive supply")
+    assert_eq((e.x5, e.y5), (12, 10), "the negative supply")
+    assert_eq(e.value, "TL072")
+end an_op_amp_line_without_a_turn_reads_as_it_always_has
+
+@test
+private a_turned_op_amp_has_its_pins_a_quarter_round_for_each_ninety()
+    val e = parse_schematic("opamp U1 12 8 741 turned 90\n").unwrap().elements[0]
+
+    assert_eq((e.x3, e.y3), (12, 10), "the output points down")
+    assert_eq((e.x1, e.y1), (11, 6), "the non-inverting input")
+    assert_eq((e.x2, e.y2), (13, 6), "the inverting input")
+    assert_eq((e.x4, e.y4), (14, 8), "the positive supply")
+    assert_eq((e.x5, e.y5), (10, 8), "the negative supply")
+
+    val half = parse_schematic("opamp U1 12 8 turned 180\n").unwrap().elements[0]
+
+    assert_eq((half.x3, half.y3), (10, 8), "the output points left")
+    assert_eq(half.value, "741", "the model left out is still the default")
+end a_turned_op_amp_has_its_pins_a_quarter_round_for_each_ninety
+
+@test
+private a_flipped_op_amp_has_its_inverting_input_below()
+    val e = parse_schematic("opamp U1 12 8 flipped\n").unwrap().elements[0]
+
+    assert_eq((e.x2, e.y2), (10, 9), "the inverting input")
+    assert_eq((e.x1, e.y1), (10, 7), "the non-inverting input")
+    assert_eq((e.x3, e.y3), (14, 8), "the output still points right")
+
+    val both = parse_schematic("opamp U1 12 8 flipped turned 270\n").unwrap().elements[0]
+    val same = parse_schematic("opamp U1 12 8 turned 270 flipped\n").unwrap().elements[0]
+
+    assert_eq((both.x2, both.y2), (same.x2, same.y2), "flipped first, then turned, in either order")
+    assert_eq((both.x3, both.y3), (12, 6), "the output points up")
+    assert_eq((both.x2, both.y2), (13, 10), "the inverting input")
+end a_flipped_op_amp_has_its_inverting_input_below
+
+@test
+private an_op_amp_line_says_what_is_wrong_with_its_turn()
+    assert_eq(parse_schematic("opamp U1 12 8 turned 45\n").err(), Some("line 1: '45' is not a turn: 90, 180 or 270"))
+    assert_eq(parse_schematic("opamp U1 12 8 turned\n").err(), Some("line 1: turned takes 90, 180 or 270"))
+    assert_eq(parse_schematic("opamp U1 12 8 741 turned 90 turned 90\n").err(), Some("line 1: 'turned' is more than an opamp takes"))
+    assert_eq(parse_schematic("opamp U1 12 8 741 sideways\n").err(), Some("line 1: 'sideways' is more than an opamp takes"))
+
+@test
+private turning_an_op_amp_moves_its_middle_and_writes_its_turn()
+    var doc = document("opamp U1 12 8 TL072\n")
+
+    doc.turn(1, 12, 8).unwrap()
+    assert_eq(doc.text(), "opamp U1 12 8 TL072 turned 90\n")
+    doc.turn(1, 10, 8).unwrap()
+    assert_eq(doc.text(), "opamp U1 10 10 TL072 turned 180\n")
+    doc.turn(1, 10, 10).unwrap()
+    doc.turn(1, 10, 10).unwrap()
+    assert_eq(doc.text(), "opamp U1 10 10 TL072\n", "a whole turn writes no turn")
+end turning_an_op_amp_moves_its_middle_and_writes_its_turn
+
+@test
+private mirroring_an_op_amp_puts_every_pin_where_the_mirror_says()
+    val text = "opamp U1 12 8\n"
+    val before = parse_schematic(text).unwrap().elements[0]
+    var doc = document(text)
+
+    // Across 24, the middle stays at 12, so only the turn changes.
+    doc.mirror(1, 24).unwrap()
+    assert_eq(doc.text(), "opamp U1 12 8  turned 180 flipped\n")
+
+    val after = doc.schematic().unwrap().elements[0]
+
+    for k in 0..<5
+        val (x, y) = before.point(k)
+
+        assert_eq(after.point(k), (24 - x, y), s"pin ${k}")
+
+    doc.mirror(1, 24).unwrap()
+    assert_eq(doc.text(), "opamp U1 12 8\n", "mirrored back")
+end mirroring_an_op_amp_puts_every_pin_where_the_mirror_says
+
+@test
+private a_turned_op_amp_mirrors_to_the_right_pins_too()
+    val text = "opamp U1 12 8 741 turned 90 flipped  # sideways\n"
+    val before = parse_schematic(text).unwrap().elements[0]
+    var doc = document(text)
+
+    doc.mirror(1, 24).unwrap()
+
+    val after = doc.schematic().unwrap().elements[0]
+
+    for k in 0..<5
+        val (x, y) = before.point(k)
+
+        assert_eq(after.point(k), (24 - x, y), s"pin ${k}")
+end a_turned_op_amp_mirrors_to_the_right_pins_too
+
+@test
+private revaluing_an_op_amp_changes_its_model_and_keeps_its_turn()
+    assert_eq(changed("opamp U1 12 8 741 turned 90\n", d -> d.revalue(1, "TL072")), "opamp U1 12 8 TL072 turned 90\n")
+    assert_eq(changed("opamp U1 12 8 turned 90\n", d -> d.revalue(1, "TL072")), "opamp U1 12 8  TL072 turned 90\n")
+
+@test
+private the_readmes_example_does_what_it_says()
+    var doc = document("resistor R1  0 0  6 0  470   # the load\nground 0 0\n")
+
+    doc.move(1, 2, 1).unwrap()
+    doc.revalue(1, "1k").unwrap()
+    assert_eq(doc.text(), "resistor R1  2 1  8 1  1k    # the load\nground 0 0\n")

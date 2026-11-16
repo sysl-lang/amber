@@ -1,0 +1,300 @@
+module sh.sysl.amber
+
+import sysl.buf.{Buf, buf}
+import sysl.text.{Search, fields, join, repeat, split}
+
+// A schematic's file as text, changed a line at a time: what an editor holds, and what it saves.
+//
+// **The text is the circuit.** Nothing else is kept: each change rewrites the words of one line, and
+// `schematic()` reads the whole text again with `parse_schematic`, so the parser is the one judge of
+// what a file means and its messages are the editor's. An element knows its line (`Element.line`), and
+// the changes take that line.
+//
+// **A change touches only the words it is about.** Moving a part rewrites its coordinates and leaves
+// its kind, name, value, comment and spacing as they were. A word that gets shorter is padded so the
+// words after it stay in their columns; one that gets longer pushes the rest of the line right. Lines
+// that are not elements — `speed`, `start`, comments and blank lines — are never changed, so **a file
+// read and written back unchanged is the same bytes**.
+struct Document
+    // The file's lines, without the line breaks between them. A text ending in a line break ends with
+    // an empty line here, so joining them gives the text back exactly.
+    lines: Buf[string]
+
+    // The whole text, as it would be saved.
+    text(self) -> string = join(self.lines.view(), "\n")
+
+    // The schematic the text reads as, or the parser's message.
+    schematic(self) -> Result[Schematic, string] = parse_schematic(self.text())
+
+    // Move every point of the element on `line` by (`dx`, `dy`) squares.
+    move(*self, line: int, dx: int, dy: int) -> Result[unit, string]
+        self.remap(line, (x, y) -> (x + dx, y + dy), 0, false)
+
+    // Put point `k` of the element on `line` at (`x`, `y`), the others staying where they are. The
+    // points are counted along the line, so a transformer's are its primary's two and then its
+    // secondary's, and an op-amp's one point is its middle.
+    move_point(*self, line: int, k: int, x: int, y: int) -> Result[unit, string]
+        val (words, spans) = self.words_of(line)?
+        val (first, count) = placed(words.view())?
+
+        if k < 0 || k >= count then return Err(s"line ${line} has no point ${k}")
+
+        val at = first + usize(2 * k)
+
+        self.lines[usize(line - 1)] = rewrite(self.lines[usize(line - 1)], spans, [at, at + 1], [s"${x}", s"${y}"])
+        Ok(())
+    end move_point
+
+    // Turn the element on `line` a quarter turn clockwise about the grid point (`cx`, `cy`). An op-amp's
+    // middle goes round, and the op-amp turns about it.
+    turn(*self, line: int, cx: int, cy: int) -> Result[unit, string]
+        self.remap(line, (x, y) -> (cx + cy - y, cy - cx + x), 1, false)
+
+    // Mirror the element on `line` left to right, each `x` becoming `across - x`: `across` is the sum of
+    // the two columns that trade places, such as a selection's left and right, so the mirror can fall
+    // between two columns. An op-amp's middle is mirrored, and the op-amp with it.
+    mirror(*self, line: int, across: int) -> Result[unit, string]
+        self.remap(line, (x, y) -> (across - x, y), 0, true)
+
+    // Call the element on `line` `name`.
+    rename(*self, line: int, name: string) -> Result[unit, string]
+        val (words, spans) = self.words_of(line)?
+        val (first, _) = placed(words.view())?
+
+        if first < 2 then return Err(s"${words[0]} has no name")
+
+        self.lines[usize(line - 1)] = rewrite(self.lines[usize(line - 1)], spans, [1], [name])
+        Ok(())
+    end rename
+
+    // Give the element on `line` the value `value`, as it would be written: `4.7k`, `sine 1 1k`. Empty
+    // takes the value away, for a part whose value may be left out. An op-amp's value is its model,
+    // and its turn stays as it was.
+    revalue(*self, line: int, value: string) -> Result[unit, string]
+        val (words, spans) = self.words_of(line)?
+        val (first, count) = placed(words.view())?
+        val after = first + usize(2 * count)
+        var end = words.len()
+
+        if words[0] == "opamp"
+            end = after
+
+            if end < words.len() && words[end] != "turned" && words[end] != "flipped" then end += 1
+
+        val old = self.lines[usize(line - 1)]
+
+        self.lines[usize(line - 1)] = if end > after
+            replace_span(old, spans[after].0, spans[end - 1].1, value, spans, end)
+        elif value != ""
+            insert_after(old, spans[after - 1].1, value)
+        else
+            old
+        Ok(())
+    end revalue
+
+    // Add a line at the end of the text, in the examples' layout: its kind, its name for a kind that
+    // has one, its points, then its value. Answers the line's number.
+    add(*self, kind: string, name: string, points: []const (int, int), value: string) -> int
+        var words: Buf[string] = buf()
+
+        words.push(pad(kind, 10))
+
+        if kind != "wire" && kind != "ground" then words.push(pad(name, 6)) else words.push(repeat(" ", 6))
+
+        for (x, y) in points
+            words.push(pad(s"${x} ${y}", 6))
+
+        val text = trim_end(s"${join(words.view(), "")}${value}")
+        // A text ending in a line break keeps it: the new line goes before the empty line after it.
+        val last = self.lines.len()
+
+        if last > 0 && self.lines[last - 1] == ""
+            self.lines.insert(last - 1, text)
+            return int(last)
+
+        self.lines.push(text)
+        int(self.lines.len())
+    end add
+
+    // Take the line `line` out, and the element on it: both of a transformer's windings.
+    delete(*self, line: int) -> Result[unit, string]
+        val (words, _) = self.words_of(line)?
+
+        _ = placed(words.view())?
+        _ = self.lines.remove(usize(line - 1))
+        Ok(())
+    end delete
+
+    // Send every point of the element on `line` through `to`. An op-amp's one point is its middle, and
+    // the op-amp itself is turned `quarters` more and mirrored if `mirrored`.
+    private remap(*self, line: int, to: &Fn(int, int) -> (int, int), quarters: int, mirrored: bool) -> Result[unit, string]
+        val (words, spans) = self.words_of(line)?
+        val (first, count) = placed(words.view())?
+        var at: Buf[usize] = buf()
+        var now: Buf[string] = buf()
+
+        for k in 0..<count
+            val i = first + usize(2 * k)
+            val (x, y) = to(parse_coordinate(words[i])?, parse_coordinate(words[i + 1])?)
+
+            at.push(i)
+            now.push(s"${x}")
+            at.push(i + 1)
+            now.push(s"${y}")
+
+        var text = rewrite(self.lines[usize(line - 1)], spans, at.view(), now.view())
+
+        if words[0] == "opamp" && (quarters != 0 || mirrored) then text = reorient(text, quarters, mirrored)?
+
+        self.lines[usize(line - 1)] = text
+        Ok(())
+    end remap
+
+    // The words of `line` and where each is, the comment left out; an error if there is no such line.
+    private words_of(self, line: int) -> Result[(Buf[string], Buf[(usize, usize)]), string]
+        if line < 1 || usize(line) > self.lines.len() then return Err(s"there is no line ${line}")
+
+        val text = self.lines[usize(line - 1)]
+        val spans = spans_of(text)
+
+        Ok((words_in(text, spans), spans))
+    end words_of
+end Document
+
+// A document holding `text`.
+document(text: string) -> &Document
+    var lines: Buf[string] = buf()
+
+    lines.extend(split(text, "\n"))
+    Document(lines)
+
+// Where an element line's points are: the word its first coordinate is, and how many points. An error
+// for a line that is not an element.
+private placed(words: []const string) -> Result[(usize, int), string]
+    if words.len == 0 then return Err("that line is not an element")
+
+    words[0] match
+        "transformer" -> return Ok((2, 4))
+        "opamp" -> return Ok((2, 1))
+        _ -> ()
+
+    val shape = shape_named(words[0]).map_err(_ -> "that line is not an element")?
+    val first: usize = if shape == Wire || shape == Ground then 1 else 2
+
+    if words.len < first + usize(2 * shape.points()) then return Err("that line's points are not all there")
+
+    Ok((first, shape.points()))
+end placed
+
+// Where each word of `line` begins and ends, up to a `#` comment.
+private spans_of(line: string) -> Buf[(usize, usize)]
+    val b = line.bytes
+    val stop = line.index_of_byte('#').unwrap_or(b.len)
+    var out: Buf[(usize, usize)] = buf()
+    var i: usize = 0
+
+    loop
+        while i < stop && blank(b[i])
+            i += 1
+
+        if i == stop then return out
+
+        val from = i
+
+        while i < stop && !blank(b[i])
+            i += 1
+
+        out.push((from, i))
+end spans_of
+
+// The words of `line` that `spans` mark.
+private words_in(line: string, spans: Buf[(usize, usize)]) -> Buf[string]
+    var words: Buf[string] = buf()
+
+    for (from, to) in spans.view()
+        words.push(line[from..<to])
+
+    words
+
+private blank(c: u8) -> bool = c == u8(' ') || c == u8('\t') || c == u8('\r')
+
+// `line` with word `at[k]` replaced by `now[k]` for each `k`, the others kept where they were.
+private rewrite(line: string, spans: Buf[(usize, usize)], at: []const usize, now: []const string) -> string
+    var text = line
+
+    // Right to left, so the spans of the words still to change are still true.
+    var k = spans.len()
+
+    while k > 0
+        k -= 1
+
+        for j in 0..<at.len
+            if at[j] == k
+                text = replace_span(text, spans[k].0, spans[k].1, now[j], spans, k + 1)
+    text
+end rewrite
+
+// `line` with the bytes from `from` to `to` replaced by `word`. Shorter, it is padded with spaces so
+// the next word, `spans[next]`, stays in its column (where one follows, or a comment does); longer, the
+// rest moves right.
+private replace_span(line: string, from: usize, to: usize, word: string, spans: Buf[(usize, usize)], next: usize) -> string
+    val old = to - from
+    val follows = next < spans.len() || line.index_of_byte('#').is_some()
+    val padding = if word.len < old && follows then repeat(" ", old - word.len) else ""
+    val tail = line[to..<line.len]
+
+    if !follows && word == "" then return trim_end(line[0..<from])
+
+    s"${line[0..<from]}${word}${padding}${tail}"
+end replace_span
+
+// `line` with `word` added after the byte `after`, two spaces from what is before it.
+private insert_after(line: string, after: usize, word: string) -> string =
+    s"${line[0..<after]}  ${word}${line[after..<line.len]}"
+
+// `text` padded with spaces to `width`, or with one space where it is already as wide.
+private pad(text: string, width: usize) -> string =
+    if text.len < width then s"${text}${repeat(" ", width - text.len)}" else s"${text} "
+
+private trim_end(text: string) -> string
+    var n = text.len
+
+    while n > 0 && blank(text.bytes[n - 1])
+        n -= 1
+
+    text[0..<n]
+end trim_end
+
+// An op-amp's line turned a further `quarters` clockwise, then mirrored left to right if `mirrored`,
+// its middle already moved: the `turned` and `flipped` words after its model are written again.
+//
+// **Mirroring left to right is a half turn of the op-amp flipped top to bottom**, so it takes the turn
+// to `2 - t` and toggles `flipped`; a turn after a flip goes the other way round, which is why the
+// turn is subtracted rather than added.
+private reorient(line: string, quarters: int, mirrored: bool) -> Result[string, string]
+    val spans = spans_of(line)
+    val words = words_in(line, spans)
+    val after: usize = 4
+    val (_, t0, f0) = opamp_tail(words.view()[after..<words.len()])?
+    var t = (t0 + quarters) % 4
+    var f = f0
+
+    if mirrored
+        t = (6 - t) % 4
+        f = !f
+
+    var tail: Buf[string] = buf()
+
+    if after < words.len() && words[after] != "turned" && words[after] != "flipped" then tail.push(words[after])
+
+    if t != 0 then tail.push(s"turned ${t * 90}")
+
+    if f then tail.push("flipped")
+
+    val written = join(tail.view(), " ")
+
+    if after < words.len()
+        return Ok(replace_span(line, spans[after].0, spans[words.len() - 1].1, written, spans, words.len()))
+
+    Ok(if written == "" then line else insert_after(line, spans[after - 1].1, written))
+end reorient

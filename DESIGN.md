@@ -144,7 +144,7 @@ and records which line each element came from. A transformer is one line making 
 
 `doc.text()` is what is saved, and **a file opened and saved unchanged is byte-for-byte the file it
 was**. After each change, `parse_schematic` reads the whole text again. The one parser stays the single
-source of truth, and its messages (`line 12: '4.7q' is not a value`) are the editor's messages too.
+source of truth, and its messages (`line 12: 'abc' is not a number`) are the editor's messages too.
 The whole `Document` is library code, tested in the library suite with no window.
 
 ### Gestures
@@ -267,9 +267,10 @@ writing a SPICE netlist out. Each can follow once this has been used.
 
 Each step is a branch of its own, merged when its tests pass:
 
-1. **syslui**: a menu at a point. **syslui-sdl**: the focused field visible to the application. Both
-   are released, and amber's pins move to them.
-2. **Library**: `Document`, `Element.line`, the op-amp's `turned`/`flipped`, and the round-trip tests.
+1. ~~**syslui**: a menu at a point. **syslui-sdl**: the focused field visible to the application. Both
+   are released, and amber's pins move to them.~~ syslui 0.2.6, syslui-sdl 0.2.32 (`typing()`).
+2. ~~**Library**: `Document`, `Element.line`, the op-amp's `turned`/`flipped`, and the round-trip tests.~~
+   The viewer still draws every op-amp facing right; drawing a turned one comes with step 3.
 3. **App**: editing mode, selection, moving, handles, rubber-banding, the frozen view, `Replace`,
    undo, save. The most important step: everything after it is additions.
 4. **App**: drawing wires, the palette, placing parts, rotate/flip/delete, the value popover, the
@@ -315,4 +316,11 @@ Each is a piece of work of its own, in this order.
    reports the products and how often the order was replanned.~~
 7. **Editing in the viewer**: place, move, rotate and delete parts; edit values; save. The design is
    **Editing** above, in four steps.
-8. **Benchtop's analog layer**, measured against the H747 real-time bar.
+8. **The parts a beginner reaches for next**, each in the library, schematics and the viewer, held to
+   ngspice where ngspice has the part, and one at a time in this order: a **potentiometer** (two
+   resistors and a wiper, turned by a knob while the clock runs); a **photoresistor** (its resistance
+   following a light level, a slider in the viewer); an **ammeter** (a zero-volt source read for its
+   current); an **SPDT switch**; a **lamp** (a filament whose resistance rises as it heats, glowing);
+   the **555 timer**; a **relay** (a coil that closes a switch); a **DC motor** (a back-EMF, spun on
+   screen); and after them, as wanted, a 7805 regulator, a thermistor, a fuse and a crystal.
+9. **Benchtop's analog layer**, measured against the H747 real-time bar.

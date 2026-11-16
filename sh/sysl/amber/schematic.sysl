@@ -36,7 +36,7 @@ import sysl.text.{Search, fields, split}
 // | `nmos`, `pmos` | three: drain, gate, source | a model: `2N7000` (an nmos's, the default) or `BS250` (a pmos's) |
 // | `transformer` | four: the primary's two ends, then the secondary's | a turns ratio, `120:9`, and perhaps the primary's inductance |
 // | `speaker` | two | its voice coil's resistance, 8 Ω if not given; a viewer plays the voltage across it |
-// | `opamp` | one, its middle; its pins are around it | a model: `741` (the default) or `TL072` |
+// | `opamp` | one, its middle; its pins are around it | a model: `741` (the default) or `TL072`, then perhaps `turned 90`, `180` or `270`, and `flipped` |
 // | `pin` | two: the pin, then the chip's ground | the chip, `RP2040` (the default); an input, floating, until a program sets it |
 // | `button` | two | — a push button, open but while it is pressed |
 // | `ground` | one | — |
@@ -60,6 +60,13 @@ import sysl.text.{Search, fields, split}
 // losses, 10 kΩ across its primary.
 //
 //     transformer T1  10 2  10 10  12 2  12 10  120:9
+//
+// An op-amp's pins are around its middle: its inverting input two squares left and one up, its
+// non-inverting input two left and one down, its output two right, and its supplies two up and two
+// down. `flipped` mirrors that top to bottom, so the inverting input is below, and `turned 90` turns
+// it a quarter turn clockwise, so the output points down; flipped first, then turned:
+//
+//     opamp    U1  12 8  TL072 turned 90 flipped
 //
 // A wave is one of
 //
@@ -184,6 +191,9 @@ struct Element
     // Which of the circuit's parts it is; -1 for anything that is not a part.
     part: int
     colour: Colour
+    // The line of the text it was read from, counting from 1 as an error does. A transformer's line is
+    // both its windings'.
+    line: int
 
     // Grid point `k` it is placed by, from 0.
     point(self, k: int) -> (int, int) = k match
@@ -419,7 +429,10 @@ parse_schematic(text: string) -> Result[Schematic, string]
                 if elements[k].name == name then return Err(s"line ${line_no}: '${name}' is already the name of another element")
 
         for (e, kind) in parts
-            elements.push(e)
+            var placed = e
+
+            placed.line = line_no
+            elements.push(placed)
             kinds.push(kind)
 
     join(&elements)
@@ -487,7 +500,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
         Pin -> "RP2040"
         _ -> rest.join(" ")
 
-    Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5], -1, -1, -1, -1, -1, -1, colour), kind))
+    Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5], -1, -1, -1, -1, -1, -1, colour, 0), kind))
 
 // A speaker's voice coil when its line gives none: the usual 8 Ω.
 const SPEAKER_OHMS: real = 8.0
@@ -544,33 +557,86 @@ private transformer(words: []string) -> Result[Buf[(Element, Option[Kind])], str
     val primary = if rest.len == 2 then positive(rest[1], "an inductance")? else PRIMARY_HENRIES
     var out: Buf[(Element, Option[Kind])] = buf()
 
-    out.push((Element(Winding, name, rest[0], xy[0], xy[1], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], -1, -1, -1, -1, -1, -1, Red),
+    out.push((Element(Winding, name, rest[0], xy[0], xy[1], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], -1, -1, -1, -1, -1, -1, Red, 0),
               Some(Inductor(primary))))
-    out.push((Element(Winding, name, "", xy[4], xy[5], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], -1, -1, -1, -1, -1, -1, Red),
+    out.push((Element(Winding, name, "", xy[4], xy[5], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], -1, -1, -1, -1, -1, -1, Red, 0),
               Some(Inductor(primary / (ratio * ratio)))))
     Ok(out)
 
-// An op-amp's line: its name, the grid point at its middle, and perhaps its model, `741` (the
-// default) or `TL072`. Its pins are around that point: the inverting input two squares left and one up,
-// the non-inverting input two left and one down, the output two right, and the positive and negative
-// supplies two up and two down.
+// An op-amp's line: its name, the grid point at its middle, perhaps its model, `741` (the default) or
+// `TL072`, and perhaps how it is turned and whether it is flipped.
 private opamp(words: []string) -> Result[(Element, Option[Kind]), string]
     if words.len < 2 then return Err("an opamp needs a name")
 
     if words.len < 4 then return Err("an opamp is placed by 1 point, its middle")
 
-    if words.len > 5 then return Err(s"'${words[5]}' is more than an opamp takes")
-
     val name = words[1]
     val x = parse_coordinate(words[2])?
     val y = parse_coordinate(words[3])?
-    val model = if words.len == 5 then words[4] else "741"
+    val (model, quarters, flipped) = opamp_tail(words[4..<words.len])?
     val m = model match
         "741" -> OPAMP_741
         "TL072" -> OPAMP_TL072
         _ -> return Err(s"'${model}' is not an op-amp model: 741 or TL072")
+    val pin = (k: int) -> opamp_pin(x, y, k, quarters, flipped)
+    val (x1, y1) = pin(0)
+    val (x2, y2) = pin(1)
+    val (x3, y3) = pin(2)
+    val (x4, y4) = pin(3)
+    val (x5, y5) = pin(4)
 
-    Ok((Element(OpAmp, name, model, x - 2, y + 1, x - 2, y - 1, x + 2, y, x, y - 2, x, y + 2, -1, -1, -1, -1, -1, -1, Red), Some(OpAmp(m))))
+    Ok((Element(OpAmp, name, model, x1, y1, x2, y2, x3, y3, x4, y4, x5, y5, -1, -1, -1, -1, -1, -1, Red, 0), Some(OpAmp(m))))
+end opamp
+
+// The words after an op-amp's middle: its model (`741` where none is written), its quarter turns
+// clockwise, and whether it is flipped. The model comes first; `turned` and `flipped` may come in
+// either order, each once.
+private[amber] opamp_tail(rest: []const string) -> Result[(string, int, bool), string]
+    var at: usize = 0
+    var model = "741"
+    var quarters = -1
+    var flipped = false
+
+    if rest.len > 0 && rest[0] != "turned" && rest[0] != "flipped"
+        model = rest[0]
+        at = 1
+
+    while at < rest.len
+        if rest[at] == "turned" && quarters < 0
+            if at + 1 == rest.len then return Err("turned takes 90, 180 or 270")
+
+            quarters = rest[at + 1] match
+                "90" -> 1
+                "180" -> 2
+                "270" -> 3
+                _ -> return Err(s"'${rest[at + 1]}' is not a turn: 90, 180 or 270")
+            at += 2
+        elif rest[at] == "flipped" && !flipped
+            flipped = true
+            at += 1
+        else
+            return Err(s"'${rest[at]}' is more than an opamp takes")
+
+    Ok((model, if quarters < 0 then 0 else quarters, flipped))
+end opamp_tail
+
+// Pin `k` of an op-amp at (`x`, `y`) — non-inverting input, inverting input, output, positive supply,
+// negative supply — flipped top to bottom if it is, then turned `quarters` times clockwise.
+private[amber] opamp_pin(x: int, y: int, k: int, quarters: int, flipped: bool) -> (int, int)
+    var (dx, dy) = k match
+        0 -> (-2, 1)
+        1 -> (-2, -1)
+        2 -> (2, 0)
+        3 -> (0, -2)
+        _ -> (0, 2)
+
+    if flipped then dy = -dy
+
+    for _ in 0..<quarters
+        (dx, dy) = (-dy, dx)
+
+    (x + dx, y + dy)
+end opamp_pin
 
 // "a resistor", "an inductor", "an npn": the kind with its article.
 private a_word(word: string) -> string
@@ -598,7 +664,7 @@ private transistor_placed(shape: Shape, one: string, xy: [6]int) -> Result[unit,
 
     Ok(())
 
-private shape_named(word: string) -> Result[Shape, string] = word match
+private[amber] shape_named(word: string) -> Result[Shape, string] = word match
     "wire" -> Ok(Wire)
     "resistor" -> Ok(Resistor)
     "capacitor" -> Ok(Capacitor)
@@ -814,7 +880,7 @@ parse_supply(words: []string) -> Result[PowerSupply, string]
 
     Ok(raw_supply(volts, amps, ripple, mains, ohms))
 
-private parse_coordinate(word: string) -> Result[int, string]
+private[amber] parse_coordinate(word: string) -> Result[int, string]
     val b = word.bytes
     var i: usize = 0
     var negative = false
