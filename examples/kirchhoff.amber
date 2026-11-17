@@ -1,0 +1,24 @@
+# Kirchhoff's current law, read off three ammeters.
+#
+# A 9 V battery feeds two resistors side by side. Each resistor has an ammeter in series with it, and
+# a third ammeter sits in the battery's own lead, so it reads what both take together.
+#
+# Ohm's law gives each branch: 9 V across R1 (1 kΩ) is 9 mA, and across R2 (500 Ω) is 18 mA. The
+# current into the junction equals the current out of it, so the total is the sum: A3 reads 27 mA.
+#
+# An ammeter reads positive when current flows in at the end it was drawn from.
+
+battery  B1   0 0  0 8  9V
+ammeter  A3   0 0  6 0
+wire          6 0  12 0
+wire          12 0  22 0
+
+ammeter  A1   12 0  12 4
+resistor R1   12 4  12 8  1k
+
+ammeter  A2   22 0  22 4
+resistor R2   22 4  22 8  500
+
+wire          0 8  12 8
+wire          12 8  22 8
+ground        0 8

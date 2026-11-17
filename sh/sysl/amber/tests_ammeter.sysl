@@ -1,0 +1,88 @@
+module sh.sysl.amber
+@tests
+
+import sysl.text.replace_all
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol * want.abs().max(1.0)
+
+// A 9 V battery driving 1 kΩ through an ammeter, its first point on the battery's `+`.
+val SERIES = """
+    battery  B1  0 0  0 6  9V
+    ammeter  A1  0 0  3 0
+    resistor R1  3 0  6 0  1k
+    wire         6 0  6 6
+    wire         6 6  0 6
+    ground       0 6
+    """
+
+// ## In a schematic
+
+@test
+private an_ammeter_line_is_a_source_of_no_volts_with_no_value()
+    val sch = parse_schematic(SERIES).unwrap()
+    val a = sch.elements[sch.find("A1").unwrap()]
+
+    assert_eq(a.shape, Shape.Ammeter)
+    assert_eq(a.value, "")
+    assert(a.shape.is_part(), "unlike a voltmeter, it is in the circuit")
+    assert_eq(sch.circuit.parts[usize(a.part)].kind, VoltageSource(Dc(0.0)))
+    assert(a.a != a.b, "its two ends are two nodes")
+
+@test
+private an_ammeter_line_says_what_is_wrong_with_it()
+    assert_eq(parse_schematic("ammeter A1  0 0  3 0  10m\n").err(), Some("line 1: '10m' is more than an ammeter takes"))
+    assert_eq(parse_schematic("ammeter A1  0 0  0 0\n").err(), Some("line 1: an ammeter needs two different points"))
+    assert_eq(parse_schematic("ammeter  0 0  3 0\n").err(), Some("line 1: an ammeter is placed by 2 points"))
+
+// ## Its reading
+
+@test
+private it_reads_the_current_flowing_in_at_its_first_point_and_drops_nothing()
+    val sch = parse_schematic(SERIES).unwrap()
+    var s = sim(sch.circuit)
+    val a = sch.elements[sch.find("A1").unwrap()].part
+    val r = sch.elements[sch.find("R1").unwrap()].part
+
+    s.operating_point().unwrap()
+    assert(near(s.current(a), 9e-3, 1e-9), s"9 V across 1 kΩ, not ${s.current(a)}")
+    assert(near(s.current(r), s.current(a), 1e-9), "what the resistor carries")
+    assert_eq(s.across(a), 0.0)
+    assert(near(s.across(r), 9.0, 1e-9), "the whole battery is across the resistor")
+
+@test
+private turned_round_it_reads_the_same_current_negative()
+    val sch = parse_schematic(replace_all(SERIES, "ammeter  A1  0 0  3 0", "ammeter  A1  3 0  0 0")).unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+    assert(near(s.current(sch.elements[sch.find("A1").unwrap()].part), -9e-3, 1e-9))
+
+@test
+private it_follows_a_capacitor_charging_through_it()
+    val sch = parse_schematic(replace_all(SERIES, "wire         6 0  6 6", "capacitor C1  6 0  6 6  1u")).unwrap()
+    var s = sim(sch.circuit)
+    val a = sch.elements[sch.find("A1").unwrap()].part
+
+    s.power_on().unwrap()
+    s.advance_to(1e-3).unwrap()
+
+    // One time constant in, the current has fallen to 1/e of its first 9 mA.
+    assert(near(s.current(a), 9e-3 * (-1.0).exp(), 2e-3), s"${s.current(a)}")
+    assert(near(s.current(a), s.current(sch.elements[sch.find("R1").unwrap()].part), 1e-9))
+
+@test
+private a_small_sine_through_it_is_read_as_the_steady_current_is()
+    val sch = parse_schematic(SERIES).unwrap()
+    var s = sim(sch.circuit)
+    val a = sch.elements[sch.find("A1").unwrap()].part
+    val r = s.response(1e3, [drive(sch.elements[sch.find("B1").unwrap()].part, 1.0, 0.0)][..]).unwrap()
+
+    assert(near(r.current(a).abs(), 1e-3, 1e-9), "a volt across 1 kΩ")
+
+@test
+private a_document_adds_an_ammeter_line()
+    var doc = document("battery  B1  0 0  0 6  9V\n")
+
+    assert_eq(doc.add("ammeter", "A1", [(0, 0), (3, 0)], ""), 2)
+    assert_eq(doc.text(), "battery  B1  0 0  0 6  9V\nammeter   A1    0 0   3 0\n")
+    assert_eq(doc.schematic().unwrap().elements[1].shape, Shape.Ammeter)

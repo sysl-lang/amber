@@ -593,6 +593,28 @@ private struct Pen
                 // `+` beside the first end.
                 f.line(mid - radius - 0.3, 0.32, mid - radius - 0.1, 0.32)
                 f.line(mid - radius - 0.2, 0.22, mid - radius - 0.2, 0.42)
+            Ammeter ->
+                val mid = (s0 + s1) / 2.0
+                val radius = (body / 2.0).min(0.5)
+                val w = radius * 0.4
+                val h = radius * 0.5
+
+                f.line(s0, 0.0, mid - radius, 0.0)
+                f.line(mid + radius, 0.0, s1, 0.0)
+                self.vg.begin()
+                self.vg.circle(f.x(mid, 0.0), f.y(mid, 0.0), self.len(radius))
+                self.vg.stroke()
+                // An upright A inside it, whichever way it runs.
+                self.vg.begin()
+                f.move_across(mid, -w, -h)
+                f.to_across(mid, 0.0, h)
+                f.to_across(mid, w, -h)
+                f.move_across(mid, -w * 0.55, -h * 0.2)
+                f.to_across(mid, w * 0.55, -h * 0.2)
+                self.vg.stroke()
+                // `+` beside the first end, where a current flowing in reads positive.
+                f.line(mid - radius - 0.3, 0.32, mid - radius - 0.1, 0.32)
+                f.line(mid - radius - 0.2, 0.22, mid - radius - 0.2, 0.42)
             Generator -> self.generator(f, (s0 + s1) / 2.0, s0, s1, m.waveform_of(e.part), hot)
             Supply -> self.supply(f, (s0 + s1) / 2.0, s0, s1, m.s.current_limited(e.part), hot)
             Battery ->
@@ -1266,8 +1288,11 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor | Ammeter -> true
     _ -> false
+
+// An ammeter's name and its reading, or a dash while the circuit has no solution.
+ammeter_label(m: &Model, e: Element) -> string = s"${e.name} ${if m.trouble == "" then amps(m.s.current(e.part)) else "—"}"
 
 // The text over the picture: each part's name and value, the voltage across it when values are on,
 // each label, and each meter's reading. A drawing too large to fit at a readable size keeps only the
@@ -1337,6 +1362,11 @@ private labels(m: &Model, c: *Canvas, at: Place)
                 None -> e.value
             Zener -> s"${e.value}V"
             _ -> e.value
+
+        // An ammeter is an instrument: its name and its reading, however crowded the drawing.
+        if e.shape == Ammeter
+            put(c, lx, ly, ammeter_label(m, e), INK, across)
+            continue
 
         put(c, lx, ly, if crowded then e.name else s"${e.name} ${value}", INK, across)
 

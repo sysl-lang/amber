@@ -719,6 +719,13 @@ status(m: &Model) -> string
 
         return s"${clock} · ${e.name} ${described(m, e)}: output at ${volts(m.s.voltage(e.c))}, ${engineering(io.abs())}A ${if io < 0.0 then "into" else "out of"} it; + at ${volts(m.s.voltage(e.a))}, − at ${volts(m.s.voltage(e.b))}; supplies ${volts(m.s.voltage(e.d))} and ${volts(m.s.voltage(e.e))}"
 
+    // An ammeter drops nothing and takes nothing, so its current is all there is to say: how much, and
+    // which of its ends it flows in at.
+    if e.shape == Shape.Ammeter
+        val i = m.s.current(e.part)
+
+        return s"${clock} · ${e.name} ammeter reads ${amps(i)}: ${amps(i.abs())} flowing in at its ${if i < 0.0 then "second" else "first"} end"
+
     // The wiper's voltage, and the current along each half of the track toward it.
     if e.shape == Shape.Potentiometer
         val first = m.s.terminal_current(e.part, 0)
@@ -758,6 +765,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Supply -> m.panel_of(m.selected) match
         Some(k) -> s"${m.panels[k].summary()} power supply in ${if m.s.current_limited(e.part) then "CC" else "CV"}"
         None -> "power supply"
+    Ammeter -> "ammeter"
     Zener -> s"${e.value}V zener"
     Switch -> if m.s.circuit.parts[usize(e.part)].kind == Switch(true) then "closed switch" else "open switch"
     Diode -> "diode"
@@ -789,3 +797,5 @@ colour_name(c: Colour) -> string = c match
     Blue -> "blue"
 
 volts(v: real) -> string = s"${engineering(v)}V"
+
+amps(i: real) -> string = s"${engineering(i)}A"

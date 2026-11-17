@@ -41,6 +41,7 @@ import sysl.text.{Search, fields, split}
 // | `button` | two | — a push button, open but while it is pressed |
 // | `pot` | three: one end, the wiper, the other end | ohms end to end, then perhaps how far the wiper is turned from the first end, `30%` (50% if not given) |
 // | `ldr` | two | the light on it, `300lux` (300 lux, a lit room, if not given; `0lux` is darkness) |
+// | `ammeter` | two: the current is read flowing in at the first and out at the second | — |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -145,6 +146,9 @@ enum Shape: u8
     Potentiometer
     // A photoresistor: a resistor that falls as the light on it rises.
     Photoresistor
+    // An ammeter, in series with what it measures: to the circuit a source of no volts, so it drops
+    // nothing, and its reading is the current through it.
+    Ammeter
     Ground
     Label
     Meter
@@ -499,7 +503,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
 
     val kind = if shape.is_part() then Some(part_kind(shape, words[0], rest, colour)?) else None
     val most = shape match
-        Wire | Ground | Label | Meter | Diode | Button -> 0
+        Wire | Ground | Label | Meter | Diode | Button | Ammeter -> 0
         Source | CurrentSource | Generator | Supply -> rest.len
         Potentiometer -> 2
         _ -> 1
@@ -708,6 +712,7 @@ private[amber] shape_named(word: string) -> Result[Shape, string] = word match
     "button" -> Ok(Button)
     "pot" -> Ok(Potentiometer)
     "ldr" -> Ok(Photoresistor)
+    "ammeter" -> Ok(Ammeter)
     _ -> Err(s"'${word}' is not a kind of element")
 
 private colour_named(word: string) -> Result[Colour, string] = word match
@@ -721,7 +726,7 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
     val optional = shape match
         // A generator and a supply say for themselves what they are missing.
-        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin | Button | Photoresistor -> true
+        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin | Button | Photoresistor | Ammeter -> true
         _ -> false
 
     if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
@@ -760,6 +765,9 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
             if lux < 0.0 then return Err(s"'${rest[0]}' is not a light level: lux, 0 or more")
 
             Ok(Photoresistor(lux))
+        // A source of no volts, as SPICE measures a current: its own current, from its first terminal
+        // to its second, is what flows through it.
+        Ammeter -> Ok(VoltageSource(Dc(0.0)))
         Diode -> Ok(Diode(SILICON))
         Led -> Ok(Diode(colour.model()))
         Zener -> Ok(Diode(zener_model(positive(rest[0], "a breakdown voltage")?)))

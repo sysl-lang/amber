@@ -1491,3 +1491,38 @@ light_colours()
     assert(light_colour(1e6) == 0xFFD60A)
     assert(light_colour(1.0) != light_colour(10.0))
     assert(light_words(LEAST_LUX) == "dark" && light_words(0.0) == "dark" && light_words(0.5) == "500mlux")
+
+// ## An ammeter
+
+private kirchhoff() -> &Model = model("kirchhoff.amber", parse_schematic(str_cast(embed("../examples/kirchhoff.amber"))).unwrap())
+
+@test("the kirchhoff example's ammeters read each branch by Ohm's law and the total as their sum")
+kirchhoff_readings()
+    val m = kirchhoff()
+
+    tick(m, 0.1)
+    assert(ammeter_label(m, m.sch.elements[usize(m.sch.find("A1").unwrap())]) == "A1 9mA")
+    assert(ammeter_label(m, m.sch.elements[usize(m.sch.find("A2").unwrap())]) == "A2 18mA")
+    assert(ammeter_label(m, m.sch.elements[usize(m.sch.find("A3").unwrap())]) == "A3 27mA")
+
+    m.select(m.sch.find("A3").unwrap())
+    assert(status(m).contains("A3 ammeter reads 27mA: 27mA flowing in at its first end"))
+    assert(m.open_panel() == None)
+
+@test("an ammeter wired the other way round reads negative and the status line says it flows in at its second end")
+ammeter_backwards()
+    val m = model("back.amber", parse_schematic("battery B1 0 0 0 6 9V\nammeter A1 3 0 0 0\nresistor R1 3 0 3 6 1k\nwire 3 6 0 6\nground 0 6").unwrap())
+
+    tick(m, 0.1)
+    assert(ammeter_label(m, m.sch.elements[usize(m.sch.find("A1").unwrap())]) == "A1 -9mA")
+    m.select(m.sch.find("A1").unwrap())
+    assert(status(m).contains("A1 ammeter reads -9mA: 9mA flowing in at its second end"))
+
+@test("an ammeter is labelled when the drawing is crowded, and reads a dash when the circuit cannot be solved")
+ammeter_labels()
+    assert(labelled_when_crowded(Shape.Ammeter))
+
+    val m = model("bad.amber", parse_schematic("battery B1 0 0 0 1 5\nwire 0 0 0 1\nammeter A1 3 0 4 0\nground 0 1").unwrap())
+
+    assert(m.trouble != "")
+    assert(ammeter_label(m, m.sch.elements[usize(m.sch.find("A1").unwrap())]) == "A1 —")
