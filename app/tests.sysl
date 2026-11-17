@@ -1692,6 +1692,25 @@ flasher_blinks()
     // Lit from the start, off at 0.86 s, then on and off each half second or so: by 4 s, seven changes.
     assert(changes >= 6 && changes <= 8, s"${changes} changes in 4 s")
 
+@test("a voltage below the solver's microvolt is shown as 0V, so the dark flasher's resistor reads nothing")
+below_a_microvolt_reads_zero()
+    assert_eq(volts(47e-12), "0V")
+    assert_eq(volts(-9.9e-7), "0V")
+    assert_eq(volts(0.0), "0V")
+    assert_eq(volts(1.5e-6), "1.5µV")
+    assert_eq(volts(-2e-6), "-2µV")
+
+    val m = flasher()
+    val r3 = element_named(m, "R3")
+
+    // Lit for its first 0.86 s, then dark until about 1.33 s.
+    for _ in 0..<20
+        tick(m, 0.05)
+
+    assert(!timer_high(m), s"dark at ${m.s.time} s")
+    assert(m.s.across(r3.part) != 0.0, "the solver leaves a leak across the resistor")
+    assert_eq(volts(m.s.across(r3.part)), "0V")
+
 @test("a timer's status line says whether its output is high and its discharge off, and the voltages its comparators read")
 timer_status()
     val m = flasher()

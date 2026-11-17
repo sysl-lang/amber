@@ -861,6 +861,9 @@ colour_name(c: Colour) -> string = c match
     Green -> "green"
     Blue -> "blue"
 
-volts(v: real) -> string = s"${engineering(v)}V"
+// A voltage as a meter shows it. One smaller than a microvolt, the solver's own tolerance on a node's
+// voltage, is shown as 0V: below that it is what the solver's leak conductances and rounding leave, not
+// a reading of anything in the circuit.
+volts(v: real) -> string = if v.abs() < 1e-6 then "0V" else s"${engineering(v)}V"
 
 amps(i: real) -> string = s"${engineering(i)}A"

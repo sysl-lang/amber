@@ -43,6 +43,8 @@ so a small signal beside a large bias still rocks where it can be seen.
   says (from empty, or settled where it says `start settled`), `s` starts it again settled at its DC
   operating point with every capacitor already charged, `v`
   toggles the voltage beside every part, `c` clears the meters, Escape quits.
+- A voltage smaller than a microvolt, the solver's own tolerance, is shown as `0V`: what is left
+  across a dark LED's resistor, or at a sine's zero crossing, is the solver's rounding, not a reading.
 - **A speaker is heard.** A circuit with a `speaker` plays the voltage across it through the
   computer's sound output, sampled 24,000 times a second of the circuit's time, whenever the clock runs
   at a second a second — the only speed its sound is the right pitch at; `m` mutes it. Its DC is
@@ -358,7 +360,7 @@ by the trapezoidal rule with its step chosen from the error it makes:
 
 ```
 dependencies {
-  amber { git = "github.com/sysl-lang/amber", version = "0.1.12" }
+  amber { git = "github.com/sysl-lang/amber", version = "0.1.13" }
 }
 ```
 
