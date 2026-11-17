@@ -1,6 +1,6 @@
 @tests
 
-import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator, Shape, Kind}
+import sh.sysl.amber.{parse_schematic, Switch, Oscillator, Waveform, Generator, Dc, oscillator, Shape, Kind, Element}
 import sh.sysl.sdl3.{SCANCODE_B, SCANCODE_C, SCANCODE_R, SCANCODE_S, SCANCODE_M, SCANCODE_SPACE, SCANCODE_MINUS, SCANCODE_EQUALS}
 import sysl.buf.{Buf, buf}
 import sysl.math.{max, min, tau}
@@ -1594,3 +1594,73 @@ remote_spdt()
     assert(throw_of(ui, "S1") == Kind.Spdt(false) && throw_of(e, "S1") == Kind.Spdt(false), "nothing moves until the handover")
     exchange(ui, e)
     assert(throw_of(ui, "S1") == Kind.Spdt(true) && throw_of(e, "S1") == Kind.Spdt(true))
+
+// ## A lamp
+
+private torch() -> &Model = model("torch.amber", parse_schematic(str_cast(embed("../examples/torch.amber"))).unwrap())
+
+private element_named(m: &Model, name: string) -> Element = m.sch.elements[usize(m.sch.find(name).unwrap())]
+
+@test("the torch's lamp is dark until its switch is clicked, then brightens as its ammeter's inrush falls away to 417 mA")
+torch_inrush()
+    val m = torch()
+    val l1 = element_named(m, "L1")
+
+    tick(m, 0.1)
+    assert(lamp_glow(m, l1) == 0.0, "dark with its switch open")
+    assert(m.s.current(element_named(m, "A1").part).abs() < 1e-9)
+
+    m.select(m.sch.find("S1").unwrap())
+    tick(m, 0.1)
+
+    val first = m.s.current(element_named(m, "A1").part)
+
+    assert(first > 1.0, s"amps at first, from a cold filament: ${first}")
+
+    var was = lamp_glow(m, l1)
+
+    // A tenth of a second of the window is 2 ms of the circuit's: it warms through some tens of them.
+    for _ in 0..<20
+        tick(m, 0.1)
+        assert(lamp_glow(m, l1) > was, "brightening as it heats")
+        was = lamp_glow(m, l1)
+
+    for _ in 0..<80
+        tick(m, 0.1)
+
+    assert(lamp_glow(m, l1) > 0.99, s"lit at its rated power: ${lamp_glow(m, l1)}")
+    assert(ammeter_label(m, element_named(m, "A1")) == "A1 417mA")
+
+@test("a lamp's status line gives its rating, the power in it, its current and its voltage")
+lamp_status()
+    val lit = model("t.amber", parse_schematic("start settled\nbattery B1 0 0 0 8 12V\nlamp L1 0 0 6 0 12V 5W\nwire 6 0 6 8\nwire 6 8 0 8\nground 0 8").unwrap())
+
+    tick(lit, 0.1)
+    lit.select(lit.sch.find("L1").unwrap())
+    assert(status(lit).contains("L1 12V 5W lamp: 5W, 417mA through, 12V across"), status(lit))
+
+@test("a lamp glows as strongly as the power it radiates, ordered with the voltage across it, and anything else not at all")
+lamp_glow_ordered()
+    val m = model("t.amber", parse_schematic("start settled\nbattery B1 0 0 0 4 3V\nlamp L1 0 0 0 4 12V 5W\nbattery B2 4 0 4 4 6V\nlamp L2 4 0 4 4 12V 5W\nbattery B3 8 0 8 4 12V\nlamp L3 8 0 8 4 12V 5W\nbattery B4 12 0 12 4 24V\nlamp L4 12 0 12 4 12V 5W\nground 0 4\nwire 0 4 12 4").unwrap())
+    val g1 = lamp_glow(m, element_named(m, "L1"))
+    val g2 = lamp_glow(m, element_named(m, "L2"))
+    val g3 = lamp_glow(m, element_named(m, "L3"))
+
+    assert(g1 > 0.0 && g1 < g2 && g2 < g3, s"${g1} < ${g2} < ${g3}")
+    assert(g3 > 0.99 && g3 <= 1.0, s"${g3} at its rated voltage")
+    assert(lamp_glow(m, element_named(m, "L4")) == 1.0, "no more than full at twice its voltage")
+    assert(lamp_glow(m, element_named(m, "B1")) == 0.0)
+    assert(labelled_when_crowded(Shape.Lamp))
+
+@test("the window's copy of a lamp is as hot as the thread's once they are handed over")
+remote_lamp()
+    val (ui, e) = paired(str_cast(embed("../examples/torch.amber")))
+    val l1 = element_named(ui, "L1")
+
+    ui.toggle(ui.sch.find("S1").unwrap())
+    exchange(ui, e)
+    work(e, 0.1)
+    exchange(ui, e)
+    assert(e.s.filament(l1.part) > 0.0, "the thread's has heated")
+    assert(ui.s.filament(l1.part) == e.s.filament(l1.part))
+    assert(lamp_glow(ui, l1) == lamp_glow(e, l1) && lamp_glow(ui, l1) > 0.0)

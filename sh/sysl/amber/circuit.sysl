@@ -288,6 +288,10 @@ enum Kind derives Eq
     // second throw, in that order. The common is joined to the first throw, or to the second when
     // `second` is set, as a closed switch joins its ends; the other throw is connected to nothing.
     Spdt(second: bool)
+    // An incandescent lamp rated to draw `watts` at `volts`: a tungsten filament whose resistance rises
+    // with its temperature, and whose temperature follows the power in it a little late, as `lamp_ohms`
+    // and `lamp_loss` say. Cold it is a tenth of its hot resistance.
+    Lamp(volts: real, watts: real)
 
     // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor, a potentiometer
     // or a double-throw switch, 2 for the rest.
@@ -331,6 +335,55 @@ const LDR_DARK_OHMS: real = 1e6
 // to darken, which a viewer's knob turned by hand would never show.
 ldr_ohms(lux: real) -> real =
     if lux <= 0.0 then LDR_DARK_OHMS else (LDR_OHMS_AT_10_LUX * (lux / 10.0).pow(-LDR_GAMMA)).min(LDR_DARK_OHMS)
+
+// A lamp's filament is tungsten, and its state is how far its temperature has risen above the room's,
+// in kelvins.
+//
+// **Its resistance is linear in its temperature**, rising by `TUNGSTEN_ALPHA` of its cold resistance
+// for every kelvin: tungsten's temperature coefficient near room temperature, 0.0045 per kelvin in the
+// CRC Handbook's table. A small lamp's filament runs at about 2,300 K, `LAMP_RISE` above a room at
+// `ROOM_KELVIN`, where the line puts its resistance at ten times its cold resistance, the cold-to-hot
+// ratio measured on small lamps.
+//
+// **It loses heat by radiation**, as the fourth power of its temperature less the room's (the
+// Stefan–Boltzmann law), scaled so that at `LAMP_RISE` it radiates exactly its rated power: run at its
+// rated voltage it settles hot, at its rated resistance, drawing its rated power.
+//
+// **It holds heat**, so its temperature follows the power in it with a lag: switched off from full
+// heat, it first cools as e^(−t/τ) with τ `LAMP_SECONDS`. Switched on cold, it draws ten times its
+// steady current, falling away as it heats over some tens of milliseconds.
+const TUNGSTEN_ALPHA: real = 4.5e-3
+const ROOM_KELVIN: real = 300.0
+const LAMP_RISE: real = 2000.0
+
+// A small lamp's thermal time constant at full heat. It is a round figure for a lamp of a few watts,
+// whose filament visibly dims within some tens of milliseconds of being switched off and is dark in a
+// tenth of a second; not a measurement of any one lamp.
+const LAMP_SECONDS: real = 0.02
+
+// The lowest a filament's temperature rise is taken to be while a solution is being found: below the
+// room, where it never settles, but well above where the line would make its resistance zero.
+const LAMP_COLDEST: real = -100.0
+
+// A lamp's resistance at its rated voltage and power, hot: V²/P.
+lamp_hot_ohms(volts: real, watts: real) -> real = volts * volts / watts
+
+// A lamp's resistance with its filament `rise` kelvins above the room.
+lamp_ohms(volts: real, watts: real, rise: real) -> real =
+    lamp_hot_ohms(volts, watts) * (1.0 + TUNGSTEN_ALPHA * rise) / (1.0 + TUNGSTEN_ALPHA * LAMP_RISE)
+
+// The power a lamp rated `watts` radiates with its filament `rise` kelvins above the room, and how fast
+// that grows with the rise, in watts a kelvin.
+lamp_loss(watts: real, rise: real) -> (real, real)
+    val t = ROOM_KELVIN + rise
+    val hot = ROOM_KELVIN + LAMP_RISE
+    val scale = watts / (hot * hot * hot * hot - ROOM_KELVIN * ROOM_KELVIN * ROOM_KELVIN * ROOM_KELVIN)
+
+    (scale * (t * t * t * t - ROOM_KELVIN * ROOM_KELVIN * ROOM_KELVIN * ROOM_KELVIN), scale * 4.0 * t * t * t)
+
+// A lamp's filament's heat capacity, in joules a kelvin: what makes it cool, at first, with the time
+// constant `LAMP_SECONDS` from full heat.
+lamp_heat_capacity(watts: real) -> real = LAMP_SECONDS * lamp_loss(watts, LAMP_RISE).1
 
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and
 // `b` and has the rest at -1; a transistor's collector, base and emitter are `a`, `b` and `c`, and a

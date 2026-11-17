@@ -43,6 +43,7 @@ import sysl.text.{Search, fields, split}
 // | `ldr` | two | the light on it, `300lux` (300 lux, a lit room, if not given; `0lux` is darkness) |
 // | `spdt` | three: the common, the first throw, the second throw | which throw the common is joined to, `first` or `second` (`first` if not given) |
 // | `ammeter` | two: the current is read flowing in at the first and out at the second | — |
+// | `lamp` | two | an incandescent lamp's rating, volts then watts, `12V 5W` |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -152,6 +153,8 @@ enum Shape: u8
     Ammeter
     // A single-pole double-throw switch: its common is joined to one of its two throws.
     Spdt
+    // An incandescent lamp: a filament that glows as it heats.
+    Lamp
     Ground
     Label
     Meter
@@ -511,7 +514,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     val most = shape match
         Wire | Ground | Label | Meter | Diode | Button | Ammeter -> 0
         Source | CurrentSource | Generator | Supply -> rest.len
-        Potentiometer -> 2
+        Potentiometer | Lamp -> 2
         _ -> 1
 
     if rest.len > usize(most) then return Err(s"'${rest[usize(most)]}' is more than ${one} takes")
@@ -721,6 +724,7 @@ private[amber] shape_named(word: string) -> Result[Shape, string] = word match
     "ldr" -> Ok(Photoresistor)
     "ammeter" -> Ok(Ammeter)
     "spdt" -> Ok(Spdt)
+    "lamp" -> Ok(Lamp)
     _ -> Err(s"'${word}' is not a kind of element")
 
 private colour_named(word: string) -> Result[Colour, string] = word match
@@ -734,7 +738,7 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
     val optional = shape match
         // A generator and a supply say for themselves what they are missing.
-        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin | Button | Photoresistor | Ammeter | Spdt -> true
+        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin | Button | Photoresistor | Ammeter | Spdt | Lamp -> true
         _ -> false
 
     if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
@@ -783,6 +787,10 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
         // A source of no volts, as SPICE measures a current: its own current, from its first terminal
         // to its second, is what flows through it.
         Ammeter -> Ok(VoltageSource(Dc(0.0)))
+        Lamp ->
+            if rest.len < 2 then return Err(s"${a_word(kind_word)} needs its rating, volts then watts: 12V 5W")
+
+            Ok(Lamp(positive(rest[0], "a lamp's voltage")?, positive(rest[1], "a lamp's power")?))
         Diode -> Ok(Diode(SILICON))
         Led -> Ok(Diode(colour.model()))
         Zener -> Ok(Diode(zener_model(positive(rest[0], "a breakdown voltage")?)))

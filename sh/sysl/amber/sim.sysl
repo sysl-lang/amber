@@ -142,6 +142,10 @@ struct Sim
         Some(n) -> self.voltage(n)
         None -> 0.0
 
+    // How far lamp `i`'s filament is above the room's temperature, in kelvins; 0 for any other part.
+    filament(self, i: int) -> real =
+        if self.circuit.parts[usize(i)].kind is Lamp(_, _) then self.x[usize(self.extra[usize(i)])] else 0.0
+
     // The voltage across part `i`: its first terminal's less its second's. A transistor's is from its
     // collector to its emitter, and a MOSFET's from its drain to its source.
     across(self, i: int) -> real
@@ -164,6 +168,13 @@ struct Sim
         p.kind match
             Resistor(r) -> self.across(i) / r
             Photoresistor(lux) -> self.across(i) / ldr_ohms(lux)
+            // Read off the plane its conductance was linearised on, as a diode's is off its line.
+            Lamp(volts, watts) ->
+                val v = self.junction[usize(2 * i)]
+                val rise = self.junction[usize(2 * i + 1)]
+                val (g, slope) = lamp_line(volts, watts, rise)
+
+                g * self.across(i) + v * slope * (self.filament(i) - rise)
             Capacitor(_) -> self.held_i[usize(i)]
             Inductor(_) -> self.x[usize(self.extra[usize(i)])]
             VoltageSource(_) -> self.x[usize(self.extra[usize(i)])]
@@ -430,6 +441,9 @@ struct Sim
                 Inductor(henries) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, -w * henries))
                 // An op-amp's dominant pole: the capacitance on its inner node.
                 OpAmp(m) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, w * m.inner_farads()))
+                // A lamp's filament's heat capacity: above a few hertz its temperature cannot follow,
+                // and the lamp is its resistance at the operating point.
+                Lamp(_, watts) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, w * lamp_heat_capacity(watts)))
                 _ -> ()
 
         for j in 0..<self.circuit.couplings.len()
@@ -488,8 +502,12 @@ struct Sim
             self.newton()?
 
         for i in 0..<self.circuit.parts.len()
-            // An op-amp holds its inner node's voltage on the capacitor there.
-            self.held_v[i] = if self.circuit.parts[i].kind is OpAmp(_) then self.inner(int(i)) else self.across(int(i))
+            // An op-amp holds its inner node's voltage on the capacitor there, and a lamp its filament's
+            // heat.
+            self.held_v[i] = self.circuit.parts[i].kind match
+                OpAmp(_) -> self.inner(int(i))
+                Lamp(_, _) -> self.filament(int(i))
+                _ -> self.across(int(i))
             self.held_i[i] = self.circuit.parts[i].kind match
                 Inductor(_) -> self.x[usize(self.extra[i])]
                 _ -> 0.0
@@ -537,6 +555,12 @@ struct Sim
 
                     self.held_i[i] = g * self.inner(int(i)) - owed
                     self.held_v[i] = 0.0
+                // A lamp's filament starts cold, and heats from there.
+                Lamp(_, watts) ->
+                    val (g, owed) = self.capacitor_companion(lamp_heat_capacity(watts), int(i))
+
+                    self.held_i[i] = g * self.filament(int(i)) - owed
+                    self.held_v[i] = self.filament(int(i))
                 _ -> ()
 
         self.started = true
@@ -707,6 +731,12 @@ struct Sim
 
                     self.held_i[i] = g * v - owed
                     self.held_v[i] = v
+                Lamp(_, watts) ->
+                    val rise = self.filament(int(i))
+                    val (g, owed) = self.capacitor_companion(lamp_heat_capacity(watts), int(i))
+
+                    self.held_i[i] = g * rise - owed
+                    self.held_v[i] = rise
                 _ -> ()
 
         copy(&self.back1, &self.back2)
@@ -836,6 +866,8 @@ struct Sim
                         val (gs, ds) = self.mosfet_now(int(i))
 
                         if !close(self.junction[2 * i], gs) || !close(self.junction[2 * i + 1], ds) then settled = false
+                    Lamp(_, _) ->
+                        if !close(self.junction[2 * i], self.across(int(i))) || !close(self.junction[2 * i + 1], self.filament(int(i))) then settled = false
                     _ -> ()
 
             if settled && still then return Ok(())
@@ -865,6 +897,11 @@ struct Sim
 
                     self.junction[2 * i] = limit(now, was, nvt, vcrit)
                 Supply(_) -> self.junction[2 * i] = self.across(int(i))
+                // A lamp is linearised at the voltage across it and its filament's rise, which is kept
+                // above `LAMP_COLDEST`, short of where its resistance would reach zero.
+                Lamp(_, _) ->
+                    self.junction[2 * i] = self.across(int(i))
+                    self.junction[2 * i + 1] = self.filament(int(i)).max(LAMP_COLDEST)
                 OpAmp(m) ->
                     // The inner node goes where the solution puts it, but no further past a rail than
                     // `INNER_PAST`, where the hold's exponential is already steep; the output's drive
@@ -933,6 +970,29 @@ struct Sim
             p.kind match
                 Resistor(r) -> self.conductance(a, b, 1.0 / r)
                 Photoresistor(lux) -> self.conductance(a, b, 1.0 / ldr_ohms(lux))
+                // Two equations, both linearised at the voltage `v` across it and its filament's rise
+                // `rise`. Its current is `G(rise) · v`; and the heat its filament takes in, `v² · G`,
+                // less what it radiates, is what its heat capacity stores, through the companion a
+                // capacitor's charge has. The rise is the unknown the lamp adds.
+                Lamp(volts, watts) ->
+                    val k = self.extra[i]
+                    val v = self.junction[2 * i]
+                    val rise = self.junction[2 * i + 1]
+                    val (g, slope) = lamp_line(volts, watts, rise)
+                    val (held, owed) = self.capacitor_companion(lamp_heat_capacity(watts), int(i))
+                    val (loss, cooling) = lamp_loss(watts, rise)
+                    val net = cooling - v * v * slope
+
+                    self.conductance(a, b, g)
+                    self.sys.at(a, k, v * slope)
+                    self.sys.at(b, k, -v * slope)
+                    self.sys.rhs(a, v * slope * rise)
+                    self.sys.rhs(b, -v * slope * rise)
+
+                    self.sys.at(k, k, held + net)
+                    self.sys.at(k, a, -2.0 * v * g)
+                    self.sys.at(k, b, 2.0 * v * g)
+                    self.sys.rhs(k, owed - loss + net * rise - v * v * g)
                 Potentiometer(ohms, position) ->
                     val (r1, r2) = pot_halves(ohms, position)
 
@@ -1212,8 +1272,8 @@ sim(given: Circuit) -> Sim
                     size += 1
                 else
                     extra.push(-1)
-            // An op-amp's inner node.
-            OpAmp(_) ->
+            // An op-amp's inner node, and a lamp's filament's temperature rise.
+            OpAmp(_) | Lamp(_, _) ->
                 extra.push(size)
                 size += 1
             _ -> extra.push(-1)
@@ -1223,6 +1283,13 @@ sim(given: Circuit) -> Sim
     // Two junction voltages a part, and after them an op-amp's input difference, one a part.
     Sim(c, extra, zeros(3 * parts), size, zeros(size), system(size), 0.0, 0.0, Steady, 0.0, FIRST_STEP, 1e300,
         zeros(parts), zeros(parts), zeros(size), zeros(size), 0.0, 0.0, 0, false, zeros(size), zeros(3 * parts), 0, 0, zeros(parts))
+
+// A lamp's conductance with its filament `rise` kelvins above the room, and how fast that changes with
+// the rise, in siemens a kelvin.
+private lamp_line(volts: real, watts: real, rise: real) -> (real, real)
+    val g = 1.0 / lamp_ohms(volts, watts, rise)
+
+    (g, -TUNGSTEN_ALPHA * lamp_ohms(volts, watts, 0.0) * g * g)
 
 private zeros(n: int) -> Buf[real]
     var b: Buf[real] = buf()

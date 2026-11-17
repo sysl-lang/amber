@@ -1,6 +1,6 @@
 // What the viewer knows: the circuit and its simulation, the clock, the meters and what they have read.
 
-import sh.sysl.amber.{Schematic, Element, Shape, Kind, Sim, Colour, Switch, Supply, Waveform, Pin, PinMode, PinDrive, sim, engineering, parse_generator, ldr_ohms}
+import sh.sysl.amber.{Schematic, Element, Shape, Kind, Sim, Colour, Switch, Supply, Waveform, Pin, PinMode, PinDrive, sim, engineering, parse_generator, ldr_ohms, lamp_loss}
 import sh.sysl.ui_sdl.stop
 import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_B, SCANCODE_C, SCANCODE_M, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
@@ -731,6 +731,10 @@ status(m: &Model) -> string
 
         return s"${clock} · ${e.name} ammeter reads ${amps(i)}: ${amps(i.abs())} flowing in at its ${if i < 0.0 then "second" else "first"} end"
 
+    // A lamp's rating is in its name, so the power in it comes first, to be read against that.
+    if e.shape == Shape.Lamp
+        return s"${clock} · ${e.name} ${described(m, e)}: ${engineering(m.s.power(e.part))}W, ${amps(m.s.current(e.part).abs())} through, ${volts(m.s.across(e.part))} across"
+
     // Which throw the common is joined to, and the current into the common.
     if e.shape == Shape.Spdt
         val common = m.s.terminal_current(e.part, 0)
@@ -779,6 +783,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
         None -> "power supply"
     Ammeter -> "ammeter"
     Spdt -> "spdt"
+    Lamp -> s"${e.value} lamp"
     Zener -> s"${e.value}V zener"
     Switch -> if m.s.circuit.parts[usize(e.part)].kind == Switch(true) then "closed switch" else "open switch"
     Diode -> "diode"
@@ -799,6 +804,19 @@ private described(m: &Model, e: Element) -> string = e.shape match
         Some(k) -> s"${m.panels[k].summary()} potentiometer"
         None -> "potentiometer"
     _ -> ""
+
+// How brightly lamp element `e` glows, from 0, dark, to 1 at its rated power or more: the power its
+// filament radiates against its rating. 0 for any other element.
+//
+// **It is the power radiated, not the power taken.** Switched on cold, a lamp takes ten times its
+// rating for an instant, but its filament is still cold and gives no light; it brightens as it heats.
+// Steady, the two are the same.
+lamp_glow(m: &Model, e: Element) -> real
+    if e.part < 0 then return 0.0
+
+    m.s.circuit.parts[usize(e.part)].kind match
+        Kind.Lamp(_, watts) -> (lamp_loss(watts, m.s.filament(e.part)).0 / watts).max(0.0).min(1.0)
+        _ -> 0.0
 
 // Which way a current into a terminal goes, by its sign.
 private into(amps: real) -> string = if amps < 0.0 then "out of" else "into"

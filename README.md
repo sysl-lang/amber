@@ -72,7 +72,9 @@ The examples: `led` (a battery, a resistor and an LED), `dimmer` (a potentiomete
 LED; click RV1 and turn it), `nightlight` (a photoresistor and a transistor lighting an LED when it
 gets dark; click LDR1 and turn the light down), `kirchhoff` (three ammeters reading two parallel
 branches and their total, 9 mA and 18 mA making 27 mA), `stairs` (a two-way light: two SPDT switches
-joined by two travellers, so a click on either switch turns the LED on or off), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
+joined by two travellers, so a click on either switch turns the LED on or off), `torch` (a battery,
+a switch, an ammeter and a 12 V 5 W lamp: click S1 and watch the ammeter's inrush, ten times the
+steady current, fall away as the filament heats), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
@@ -121,7 +123,7 @@ meter     OUT 6 0  6 6                     # red lead first
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
 `gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
-`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `ammeter` (below), `spdt` (below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
+`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `ammeter` (below), `spdt` (below), `lamp` (below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
 `TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).
@@ -237,6 +239,19 @@ clicked. The current dots run from the common to the throw it is on:
 
 ```
 spdt      S1 4 2  8 0  8 4  second
+```
+
+An incandescent lamp is placed by its two ends, and its value is its rating, volts then watts; both
+are needed. Its filament is tungsten: hot, at its rated voltage, it is V²/P and draws its rated
+power; cold it is a tenth of that, so switched on it draws ten times its steady current at first,
+falling away over some tens of milliseconds as the filament heats. The filament's temperature is the
+lamp's state, heated by the power in it, losing heat by radiation as the fourth power of its
+temperature, and holding heat for a time constant of 20 ms; its resistance rises in proportion. So
+at half its voltage it draws about two thirds of its current, not half. Settled, it starts hot. Its
+symbol is a circle with a cross, glowing warm white as strongly as the power its filament radiates:
+
+```
+lamp      L1 4 6  4 10  12V 5W
 ```
 
 ## SPICE netlists

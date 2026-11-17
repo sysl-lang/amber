@@ -1,0 +1,20 @@
+# A torch: a 12 V battery, a switch, and a 12 V 5 W lamp, with an ammeter in the lamp's lead.
+#
+# Click S1 to switch it on, and watch A1. Lit, the lamp draws its rated 5 W: 417 mA, through a
+# filament of 28.8 Ω. But a tungsten filament's resistance rises tenfold as it heats, and it is cold
+# when the switch closes: 2.9 Ω, which draws 4.2 A, ten times the steady current. As the filament
+# heats the current falls away, to 1.7 A after 2 ms, under twice the steady current after 10 ms, and to
+# within a percent of 417 mA after about 65 ms. This inrush is why a lamp most often fails at the
+# moment it is switched on.
+#
+# The circuit runs at 20 ms a second, so the inrush takes three seconds to watch. Switch it off and the
+# lamp's glow fades as its filament cools.
+
+speed 20m
+
+battery  B1   0 0  0 8  12V
+switch   S1   0 0  6 0
+ammeter  A1   6 0  12 0
+lamp     L1   12 0  12 8  12V 5W
+wire          0 8  12 8
+ground        0 8

@@ -29,7 +29,8 @@ private every_example_written_back_unchanged_is_the_same_bytes()
         str_cast(embed("../../../examples/sine.amber")), str_cast(embed("../../../examples/two_stage.amber")),
         str_cast(embed("../../../examples/wallwart.amber")), str_cast(embed("../../../examples/zener.amber")),
         str_cast(embed("../../../examples/dimmer.amber")), str_cast(embed("../../../examples/nightlight.amber")),
-        str_cast(embed("../../../examples/kirchhoff.amber")), str_cast(embed("../../../examples/stairs.amber"))
+        str_cast(embed("../../../examples/kirchhoff.amber")), str_cast(embed("../../../examples/stairs.amber")),
+        str_cast(embed("../../../examples/torch.amber"))
     ]
 
     for text in examples

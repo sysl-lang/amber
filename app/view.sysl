@@ -25,6 +25,8 @@ const CURRENT: u32 = 0xFFE680
 const DISPLAY: u32 = 0x1E2128
 const CV_LAMP: u32 = 0x5DDB6B
 const CC_LAMP: u32 = 0xFF5040
+// An incandescent lamp's light: a tungsten filament's warm white.
+const LAMP_LIGHT: u32 = 0xFFD58A
 // How far a bench supply's case reaches either side of its middle, and above and below it.
 const SUPPLY_W: real = 0.8
 const SUPPLY_H: real = 0.6
@@ -690,6 +692,23 @@ private struct Pen
                         f.line(mid - 0.05 + o, 0.42, mid + 0.15 + o, 0.68)
                         f.line(mid + 0.15 + o, 0.68, mid + 0.03 + o, 0.65)
                         f.line(mid + 0.15 + o, 0.68, mid + 0.14 + o, 0.56)
+            // A circle with a cross in it, over its light.
+            Lamp ->
+                val mid = (s0 + s1) / 2.0
+                val radius = (body / 2.0).min(0.5)
+                val d = radius * 0.7071
+
+                self.shine(f, mid, e)
+
+                set(self.vg, if hot then SELECTED else INK)
+                self.width(2.5)
+                f.line(s0, 0.0, mid - radius, 0.0)
+                f.line(mid + radius, 0.0, s1, 0.0)
+                self.vg.begin()
+                self.vg.circle(f.x(mid, 0.0), f.y(mid, 0.0), self.len(radius))
+                self.vg.stroke()
+                f.line(mid - d, -d, mid + d, d)
+                f.line(mid - d, d, mid + d, -d)
             _ -> ()
 
     // A signal generator: a small instrument's case standing upright on its lead whichever way the part
@@ -851,6 +870,19 @@ private struct Pen
                      f32(0.15 + 0.6 * t))
         self.vg.begin()
         self.vg.circle(f.x(mid, 0.0), f.y(mid, 0.0), self.len(0.35 + 0.35 * t))
+        self.vg.fill()
+
+    // A lamp's light: a warm white halo, as strong and as wide as `lamp_glow` says, nothing while it is
+    // dark.
+    shine(self, f: Frame, mid: real, e: Element)
+        val t = lamp_glow(self.m, e)
+
+        if t < 0.02 then return
+
+        self.vg.rgba(f32(int((LAMP_LIGHT >> 16) & 0xFF)) / 255.0, f32(int((LAMP_LIGHT >> 8) & 0xFF)) / 255.0, f32(int(LAMP_LIGHT & 0xFF)) / 255.0,
+                     f32(0.15 + 0.6 * t))
+        self.vg.begin()
+        self.vg.circle(f.x(mid, 0.0), f.y(mid, 0.0), self.len(0.5 + 0.18 * t))
         self.vg.fill()
 
     // A transistor: a lead from each of its three points in its node's colour, and the symbol in a
@@ -1378,7 +1410,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor | Ammeter | Spdt -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor | Ammeter | Spdt | Lamp -> true
     _ -> false
 
 // An ammeter's name and its reading, or a dash while the circuit has no solution.

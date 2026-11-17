@@ -326,7 +326,11 @@ Each is a piece of work of its own, in this order.
    current)~~ — `ammeter`, a zero-volt source read through `Sim.current`, the `kirchhoff` example,
    held to Ohm's and Kirchhoff's laws; ~~an **SPDT switch**~~ — `spdt`, `Spdt(second)` joining its common to one of two throws and leaving the
    other connected to nothing, `Sim.set_throw`, clicked to flip, the `stairs` example (a two-way light), held to
-   Ohm's law on each throw and to the sum of its three currents being zero; a **lamp** (a filament whose resistance rises as it heats, glowing);
+   Ohm's law on each throw and to the sum of its three currents being zero; ~~a **lamp** (a filament whose resistance rises as it heats, glowing)~~
+   — `lamp`, `Lamp(volts, watts)`, a tungsten filament ten times its cold resistance hot, radiating as
+   T⁴ and holding heat for a 20 ms time constant, its temperature rise an unknown of the system; the
+   `torch` example, where an ammeter shows the inrush; ngspice has no lamp, so it is held to its rated
+   power, its tenfold inrush and its cooling time constant;
    the **555 timer**; a **relay** (a coil that closes a switch); a **DC motor** (a back-EMF, spun on
    screen); and after them, as wanted, a 7805 regulator, a thermistor, a fuse and a crystal.
 9. **Benchtop's analog layer**, measured against the H747 real-time bar.
