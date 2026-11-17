@@ -36,6 +36,14 @@ const ABS_TOL: real = 1e-6
 const FIRST_STEP: real = 1e-9
 const SHORTEST_STEP: real = 1e-18
 
+// How far past a 555 timer's comparator crossing a step may end, as a part of the step: a step ending
+// further past is taken again to end at the crossing, so the latch moves within a thousandth of a step
+// of when it should.
+const CROSSING_SLACK: real = 1e-3
+
+// How many times the operating point is solved again while 555 timers' latches move.
+const LATCH_PASSES: int = 8
+
 // How the parts that remember are written into the system: not at all (DC, where a capacitor is open
 // and an inductor a wire), by backward Euler, or by the trapezoidal rule.
 enum Method: u8
@@ -132,6 +140,7 @@ struct Sim
                 Potentiometer(ohms, position) -> self.circuit.parts[i].kind = Potentiometer(ohms, position)
                 Photoresistor(lux) -> self.circuit.parts[i].kind = Photoresistor(lux)
                 Spdt(second) -> self.circuit.parts[i].kind = Spdt(second)
+                Timer(high) -> self.circuit.parts[i].kind = Timer(high)
                 _ -> ()
 
     // The voltage at node `node` against ground.
@@ -151,8 +160,10 @@ struct Sim
     across(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
 
-        // An op-amp's is its output's voltage.
+        // An op-amp's is its output's voltage, and a 555 timer's its output's from its ground pin.
         if p.kind.terminals() == 5 then return self.voltage(p.c)
+
+        if p.kind.terminals() == 8 then return self.voltage(p.c) - self.voltage(p.a)
 
         if p.kind.terminals() == 3 then return self.voltage(p.a) - self.voltage(p.c)
 
@@ -191,8 +202,8 @@ struct Sim
                 diode_current(m, v) + GMIN * v + (diode_conductance(m, v) + GMIN) * (self.junction_now(i) - v)
             Switch(closed) -> if closed then self.across(i) / CLOSED_OHMS else 0.0
             Transistor(_) | Mosfet(_, _, _) | Potentiometer(_, _) | Spdt(_) -> self.terminal_current(i, 0)
-            // An op-amp's is the current out of its output.
-            OpAmp(_) -> -self.terminal_current(i, 2)
+            // An op-amp's is the current out of its output, and so is a 555 timer's.
+            OpAmp(_) | Timer(_) -> -self.terminal_current(i, 2)
             // A pin's is the current into it from the circuit: negative while it drives current out.
             Pin(d) ->
                 val (g, e) = pin_line(d)
@@ -243,6 +254,8 @@ struct Sim
                 1 -> if second then 0.0 else -into
                 _ -> if second then -into else 0.0
 
+        if p.kind is Timer(high) then return self.timer_flows(i, high)[usize(k)]
+
         if p.kind is OpAmp(m)
             val l = self.opamp_now(i, m)
             val vin = self.voltage(p.a) - self.voltage(p.b)
@@ -284,6 +297,27 @@ struct Sim
             return w
 
         self.across(i) * self.current(i)
+
+    // The currents into 555 timer `i`'s eight pins, in their order, with its latch `high`: the divider
+    // and the supply current from the supply pin, the output's from the supply pin while it is high and
+    // into the ground pin while it is low, the discharge's into the ground pin, and `GMIN` into each
+    // input. The ground pin carries the rest back out.
+    private timer_flows(self, i: int, high: bool) -> [8]real
+        val p = self.circuit.parts[usize(i)]
+        val v = (k: int) -> self.voltage(p.terminal(k)) - self.voltage(p.a)
+        val divider = (v(7) - v(4)) / TIMER_DIVIDER_OHMS
+        val out = if high then (v(7) - TIMER_HIGH_DROP - v(2)) / TIMER_OUT_OHMS else (v(2) - TIMER_LOW_VOLTS) / TIMER_OUT_OHMS
+        val discharge = if high then GMIN * v(6) else v(6) / TIMER_DISCHARGE_OHMS
+        var flows: [8]real = [0.0, GMIN * v(1), if high then -out else out, GMIN * v(3), -divider + v(4) / (2.0 * TIMER_DIVIDER_OHMS),
+                              GMIN * v(5), discharge, divider + v(7) / TIMER_SUPPLY_OHMS + (if high then out else 0.0)]
+        var rest = 0.0
+
+        for k in 1..<8
+            rest += flows[k]
+
+        flows[0] = -rest
+        flows
+    end timer_flows
 
     // Op-amp `i`'s currents and their slopes at the present solution.
     private opamp_now(self, i: int, m: OpAmpModel) -> OpAmpLine
@@ -501,6 +535,8 @@ struct Sim
             self.shunt = 0.0
             self.newton()?
 
+        self.settle_latches()?
+
         for i in 0..<self.circuit.parts.len()
             // An op-amp holds its inner node's voltage on the capacitor there, and a lamp its filament's
             // heat.
@@ -542,6 +578,7 @@ struct Sim
         self.step = 1e-15
         self.shunt = 0.0
         self.newton()?
+        self.settle_latches()?
 
         for i in 0..<self.circuit.parts.len()
             self.circuit.parts[i].kind match
@@ -631,13 +668,22 @@ struct Sim
 
             if solved.is_ok()
                 val err = self.step_error(end)
+                // Where a 555 timer's comparator first crossed over during the step, if one did.
+                val crossed = self.crossing(end)
 
-                if err <= 1.0
+                if err <= 1.0 && end - crossed <= CROSSING_SLACK * h + 1e-12
                     self.accept(end, err)
+
+                    if self.relatch() then self.corner()
+
                     return Ok(())
 
                 self.rejected += 1
-                end = self.time + h * (0.9 * (1.0 / err).cbrt()).max(0.2)
+                end = if err <= 1.0
+                    // The step is taken again to end at the crossing, so the latch moves on time.
+                    self.time + (crossed - self.time).max(1e-6 * h)
+                else
+                    self.time + h * (0.9 * (1.0 / err).cbrt()).max(0.2)
             else
                 self.rejected += 1
                 end = self.time + h / 8.0
@@ -763,6 +809,65 @@ struct Sim
             self.corner()
         else
             self.method = Trapezoid
+
+    // Move every 555 timer's latch to where its comparators put it in the present solution. Whether any
+    // moved: the circuit then changed abruptly, a corner.
+    private relatch(*self) -> bool
+        var moved = false
+
+        for i in 0..<self.circuit.parts.len()
+            if self.circuit.parts[i].kind is Timer(high)
+                val (trigger, threshold, control, reset) = self.timer_inputs(self.x, int(i))
+                val next = timer_next(high, trigger, threshold, control, reset)
+
+                if next != high
+                    self.circuit.parts[i].kind = Timer(next)
+                    moved = true
+
+        moved
+
+    // Solve again while a latch moves, so the solution and every 555 timer's latch agree, as far as
+    // they can: a timer wired to run free has no rest, and is left as its last move put it.
+    private settle_latches(*self) -> Result[unit, string]
+        for _ in 0..<LATCH_PASSES
+            if !self.relatch() then return Ok(())
+
+            self.newton()?
+
+        Ok(())
+
+    // A 555 timer's trigger, threshold, control and reset pins' voltages from its ground pin in the
+    // solution `x`.
+    private timer_inputs(self, x: Buf[real], i: int) -> (real, real, real, real)
+        val p = self.circuit.parts[usize(i)]
+        val v = (node: int) -> if node <= 0 then 0.0 else x[usize(node - 1)]
+        val g = v(p.a)
+
+        (v(p.b) - g, v(p.f) - g, v(p.e) - g, v(p.d) - g)
+
+    // The time within the step to `end` at which a 555 timer's latch would first move: where a
+    // comparator whose crossing moves it crossed over, as the straight line between the step's start
+    // (`saved_x`) and its end puts it. `end` if no latch would move.
+    private crossing(self, end: real) -> real
+        var first = end
+
+        for i in 0..<self.circuit.parts.len()
+            if self.circuit.parts[i].kind is Timer(high)
+                val (t1, h1, c1, r1) = self.timer_inputs(self.x, int(i))
+
+                if timer_next(high, t1, h1, c1, r1) == high then continue
+
+                val (t0, h0, c0, r0) = self.timer_inputs(self.saved_x, int(i))
+                // Each comparator's input less its level, before and after.
+                val margins = [(r0 - TIMER_RESET_VOLTS, r1 - TIMER_RESET_VOLTS), (t0 - c0 / 2.0, t1 - c1 / 2.0), (h0 - c0, h1 - c1)]
+                var fraction = 1.0
+
+                for (m0, m1) in margins
+                    if (m0 < 0.0) != (m1 < 0.0) then fraction = fraction.min(m0 / (m0 - m1))
+
+                first = first.min(self.time + fraction * (end - self.time))
+
+        first
 
     // Something changed abruptly: start again with a short step by backward Euler, with no history to
     // judge it by.
@@ -1118,6 +1223,33 @@ struct Sim
                     self.conductance(a, b, g)
                     self.sys.rhs(a, g * e)
                     self.sys.rhs(b, -g * e)
+                // Linear while its latch holds, which is all a solve sees: the latch moves only between
+                // steps, in `relatch`. The output is a source behind a resistance, `TIMER_HIGH_DROP`
+                // below the supply pin or `TIMER_LOW_VOLTS` above the ground pin, the constant part of
+                // its current on the right-hand side.
+                Timer(high) ->
+                    val gnd = a
+                    val out = p.c - 1
+                    val vcc = p.h - 1
+                    val go = 1.0 / TIMER_OUT_OHMS
+
+                    self.conductance(vcc, p.e - 1, 1.0 / TIMER_DIVIDER_OHMS)
+                    self.conductance(p.e - 1, gnd, 1.0 / (2.0 * TIMER_DIVIDER_OHMS))
+                    self.conductance(vcc, gnd, 1.0 / TIMER_SUPPLY_OHMS)
+
+                    for input in [b, p.d - 1, p.f - 1]
+                        self.conductance(input, gnd, GMIN)
+
+                    if high
+                        self.conductance(vcc, out, go)
+                        self.sys.rhs(vcc, go * TIMER_HIGH_DROP)
+                        self.sys.rhs(out, -go * TIMER_HIGH_DROP)
+                        self.conductance(p.g - 1, gnd, GMIN)
+                    else
+                        self.conductance(out, gnd, go)
+                        self.sys.rhs(out, go * TIMER_LOW_VOLTS)
+                        self.sys.rhs(gnd, -go * TIMER_LOW_VOLTS)
+                        self.conductance(p.g - 1, gnd, 1.0 / TIMER_DISCHARGE_OHMS)
                 OpAmp(m) ->
                     // Each current on the line touching it at the present solution: a current `I` out
                     // of a node, `I0 + Σ slope · (v − v0)`, is its slopes in the node's row and

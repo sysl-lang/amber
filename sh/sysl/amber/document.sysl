@@ -32,7 +32,7 @@ struct Document
 
     // Put point `k` of the element on `line` at (`x`, `y`), the others staying where they are. The
     // points are counted along the line, so a transformer's are its primary's two and then its
-    // secondary's, and an op-amp's one point is its middle.
+    // secondary's, and an op-amp's or a 555 timer's one point is its middle.
     move_point(*self, line: int, k: int, x: int, y: int) -> Result[unit, string]
         val (words, spans) = self.words_of(line)?
         val (first, count) = placed(words.view())?
@@ -68,15 +68,15 @@ struct Document
     end rename
 
     // Give the element on `line` the value `value`, as it would be written: `4.7k`, `sine 1 1k`. Empty
-    // takes the value away, for a part whose value may be left out. An op-amp's value is its model,
-    // and its turn stays as it was.
+    // takes the value away, for a part whose value may be left out. An op-amp's or a timer's value is
+    // its model, and its turn stays as it was.
     revalue(*self, line: int, value: string) -> Result[unit, string]
         val (words, spans) = self.words_of(line)?
         val (first, count) = placed(words.view())?
         val after = first + usize(2 * count)
         var end = words.len()
 
-        if words[0] == "opamp"
+        if words[0] == "opamp" || words[0] == "timer"
             end = after
 
             if end < words.len() && words[end] != "turned" && words[end] != "flipped" then end += 1
@@ -144,7 +144,7 @@ struct Document
 
         var text = rewrite(self.lines[usize(line - 1)], spans, at.view(), now.view())
 
-        if words[0] == "opamp" && (quarters != 0 || mirrored) then text = reorient(text, quarters, mirrored)?
+        if (words[0] == "opamp" || words[0] == "timer") && (quarters != 0 || mirrored) then text = reorient(text, quarters, mirrored)?
 
         self.lines[usize(line - 1)] = text
         Ok(())
@@ -175,7 +175,7 @@ private placed(words: []const string) -> Result[(usize, int), string]
 
     words[0] match
         "transformer" -> return Ok((2, 4))
-        "opamp" -> return Ok((2, 1))
+        "opamp" | "timer" -> return Ok((2, 1))
         _ -> ()
 
     val shape = shape_named(words[0]).map_err(_ -> "that line is not an element")?
@@ -265,8 +265,9 @@ private trim_end(text: string) -> string
     text[0..<n]
 end trim_end
 
-// An op-amp's line turned a further `quarters` clockwise, then mirrored left to right if `mirrored`,
-// its middle already moved: the `turned` and `flipped` words after its model are written again.
+// An op-amp's or a 555 timer's line turned a further `quarters` clockwise, then mirrored left to right
+// if `mirrored`, its middle already moved: the `turned` and `flipped` words after its model are written
+// again.
 //
 // **Mirroring left to right is a half turn of the op-amp flipped top to bottom**, so it takes the turn
 // to `2 - t` and toggles `flipped`; a turn after a flip goes the other way round, which is why the
@@ -275,7 +276,7 @@ private reorient(line: string, quarters: int, mirrored: bool) -> Result[string, 
     val spans = spans_of(line)
     val words = words_in(line, spans)
     val after: usize = 4
-    val (_, t0, f0) = opamp_tail(words.view()[after..<words.len()])?
+    val (_, t0, f0) = ic_tail(words.view()[after..<words.len()], "", if words[0] == "timer" then "a timer" else "an opamp")?
     var t = (t0 + quarters) % 4
     var f = f0
 

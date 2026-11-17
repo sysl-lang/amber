@@ -96,6 +96,7 @@ exchange(ui: &Model, e: &Model)
     copy_holds(&ui.part_hold, e.part_hold)
     copy_holds(&ui.base_hold, e.base_hold)
     copy_holds(&ui.emitter_hold, e.emitter_hold)
+    copy_holds(&ui.ground_hold, e.ground_hold)
 end exchange
 
 private copy_holds(to: *Buf[Hold], from: Buf[Hold])

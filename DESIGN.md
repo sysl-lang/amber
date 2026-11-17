@@ -331,6 +331,10 @@ Each is a piece of work of its own, in this order.
    T⁴ and holding heat for a 20 ms time constant, its temperature rise an unknown of the system; the
    `torch` example, where an ammeter shows the inrush; ngspice has no lamp, so it is held to its rated
    power, its tenfold inrush and its cooling time constant;
-   the **555 timer**; a **relay** (a coil that closes a switch); a **DC motor** (a back-EMF, spun on
+   ~~the **555 timer**~~ — `timer`, `Timer(high)`, a bipolar NE555 by its datasheet: the 5k–5k–5k
+   divider, two comparators and a latch moved between steps, each step that would carry a comparator
+   past its level taken again to end at the crossing; the `flasher` example, an astable blinking an
+   LED; ngspice has no 555, so it is held to the datasheet's 1.44 / ((R1 + 2R2)C), 0.693 (R1 + R2)C high
+   and 0.693 R2·C low, 1.1 RC for a monostable, and its supply current; a **relay** (a coil that closes a switch); a **DC motor** (a back-EMF, spun on
    screen); and after them, as wanted, a 7805 regulator, a thermistor, a fuse and a crystal.
 9. **Benchtop's analog layer**, measured against the H747 real-time bar.

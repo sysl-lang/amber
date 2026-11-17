@@ -74,7 +74,9 @@ gets dark; click LDR1 and turn the light down), `kirchhoff` (three ammeters read
 branches and their total, 9 mA and 18 mA making 27 mA), `stairs` (a two-way light: two SPDT switches
 joined by two travellers, so a click on either switch turns the LED on or off), `torch` (a battery,
 a switch, an ammeter and a 12 V 5 W lamp: click S1 and watch the ammeter's inrush, ten times the
-steady current, fall away as the filament heats), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
+steady current, fall away as the filament heats), `flasher` (a 555 timer running free, blinking an
+LED about once a second: high for 0.54 s, low for 0.47 s, put a meter on C1 to watch it swing between
+3 V and 6 V), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
@@ -123,7 +125,7 @@ meter     OUT 6 0  6 6                     # red lead first
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
 `gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
-`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `ammeter` (below), `spdt` (below), `lamp` (below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
+`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `ammeter` (below), `spdt` (below), `lamp` (below), `timer` (a 555, below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
 `TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).
@@ -253,6 +255,29 @@ symbol is a circle with a cross, glowing warm white as strongly as the power its
 ```
 lamp      L1 4 6  4 10  12V 5W
 ```
+
+A 555 timer is placed by its middle, as an op-amp is, and its model, `NE555`, may be left out. Its
+body is a square four squares across, and its eight pins stand a square out from it, three squares
+from the middle, laid out for the usual astable drawing: discharge, threshold and trigger on the left
+(a square above the middle, level with it, a square below), output on the right, reset and supply on
+top (a square left and right of the middle), ground and control below (likewise). `turned` and
+`flipped` move them as they move an op-amp's, and the viewer draws it however it is turned:
+
+```
+timer     U1 12 8  NE555                   # GND 11 11, TRIG 9 9, OUT 15 8, RESET 11 5,
+                                           # CTRL 13 11, THR 9 8, DIS 9 7, VCC 13 5
+```
+
+It is a bipolar NE555 as its datasheet describes it (TI's, SLFS022): three 5 kΩ resistors from its
+supply to its ground hold its control pin at two thirds of the supply, and the trigger's level at
+half the control pin's. Its threshold above the control pin resets its latch, its trigger below its
+level sets it — and wins while held there — and its reset below 0.7 V resets it ahead of both. Set,
+its output is 1.7 V below the supply, and reset, 0.1 V above ground, each behind 7.5 Ω, so it drives
+an LED through a resistor; reset, its discharge pin is 19 Ω to ground (0.15 V at 8 mA), and set, open.
+It draws 10 mA at 15 V. The latch moves between steps, never within one, and a step that would carry
+a comparator past its level is taken again to end where it crosses, so an astable keeps the
+datasheet's time: high for 0.693 (R1 + R2) C, low for 0.693 R2 C. Clicked, its status line says
+whether its output is high and its discharge off, and what its threshold, trigger and control read.
 
 ## SPICE netlists
 

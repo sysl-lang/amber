@@ -1,0 +1,428 @@
+module sh.sysl.amber
+@tests
+
+import sysl.buf.{Buf, buf}
+import sysl.raw.str_cast
+import sysl.text.replace_all
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol * want.abs().max(1.0)
+
+// Whether `got` is within `part` of `want`, however small `want` is.
+private within(got: real, want: real, part: real) -> bool = (got - want).abs() <= part * want.abs()
+
+private part(sch: Schematic, name: string) -> int = sch.elements[sch.find(name).unwrap()].part
+
+private latch(s: Sim, i: int) -> bool = s.circuit.parts[usize(i)].kind == Timer(true)
+
+// The flasher example: an astable with R1 10 kΩ, R2 68 kΩ and C1 10 µF on 9 V.
+val FLASHER = str_cast(embed("../../../examples/flasher.amber"))
+
+const R1: real = 10e3
+const R2: real = 68e3
+const C1: real = 10e-6
+
+// A timer on 9 V with its pins on short wires, for the tests to join as they need: its reset and
+// supply on `vcc`, its trigger on `trig`, its threshold on `thr`, its output into a 1 kΩ load, and
+// its control and discharge left open.
+val BARE = """
+    battery  B1   0 2  0 14  9V
+    wire          0 2  13 2
+    timer    U1   12 8
+    wire          13 5  13 2
+    wire          11 5  11 2
+    label    vcc  13 2
+    wire          9 9  7 9
+    label    trig 7 9
+    wire          9 8  8 8
+    label    thr  8 8
+    resistor RL   15 8  15 14  1k
+    wire          11 11  11 14
+    wire          0 14  15 14
+    ground        0 14
+    """
+
+// ## In a schematic
+
+@test
+private a_timer_line_is_placed_by_its_middle_and_is_an_ne555_without_a_model()
+    val sch = parse_schematic("timer U1 12 8\n").unwrap()
+    val u = sch.elements[0]
+
+    assert_eq(u.shape, Shape.Timer)
+    assert_eq(u.shape.points(), 8)
+    assert_eq(u.value, "NE555")
+    assert_eq(sch.circuit.parts[usize(u.part)].kind, Timer(false))
+    assert_eq(sch.circuit.parts[usize(u.part)].kind.terminals(), 8)
+
+@test
+private its_pins_stand_around_its_body_in_the_astable_layout()
+    val u = parse_schematic("timer U1 12 8 NE555\n").unwrap().elements[0]
+
+    assert_eq(u.point(0), (11, 11), "ground below, left")
+    assert_eq(u.point(1), (9, 9), "trigger left, below the middle")
+    assert_eq(u.point(2), (15, 8), "output right")
+    assert_eq(u.point(3), (11, 5), "reset on top, left")
+    assert_eq(u.point(4), (13, 11), "control below, right")
+    assert_eq(u.point(5), (9, 8), "threshold left, level with the middle")
+    assert_eq(u.point(6), (9, 7), "discharge left, above the middle")
+    assert_eq(u.point(7), (13, 5), "supply on top, right")
+
+@test
+private turned_and_flipped_its_pins_move_as_an_opamps_do()
+    val turned = parse_schematic("timer U1 12 8 turned 90\n").unwrap().elements[0]
+
+    assert_eq(turned.value, "NE555")
+    assert_eq(turned.point(2), (12, 11), "the output points down")
+    assert_eq(turned.point(7), (15, 9), "the supply on the right")
+    assert_eq(turned.point(5), (12, 5), "the threshold on top")
+
+    val flipped = parse_schematic("timer U1 12 8 NE555 flipped\n").unwrap().elements[0]
+
+    assert_eq(flipped.point(7), (13, 11), "the supply below")
+    assert_eq(flipped.point(0), (11, 5), "the ground on top")
+    assert_eq(flipped.point(6), (9, 9), "the discharge below the middle")
+    assert_eq(flipped.point(2), (15, 8), "the output where it was")
+
+    val both = parse_schematic("timer U1 12 8 flipped turned 180\n").unwrap().elements[0]
+
+    for k in 0..<8
+        assert_eq(both.point(k), timer_pin(12, 8, k, 2, true), s"pin ${k}")
+
+    assert_eq(both.point(2), (9, 8), "the output on the left")
+    assert_eq(both.point(7), (11, 5), "flipped then turned half round, the supply on top again, left")
+
+@test
+private a_timer_line_says_what_is_wrong_with_it()
+    assert_eq(parse_schematic("timer\n").err(), Some("line 1: a timer needs a name"))
+    assert_eq(parse_schematic("timer U1 3\n").err(), Some("line 1: a timer is placed by 1 point, its middle"))
+    assert_eq(parse_schematic("timer U1 3 x\n").err(), Some("line 1: 'x' is not a grid coordinate"))
+    assert_eq(parse_schematic("timer U1 3 3 LM556\n").err(), Some("line 1: 'LM556' is not a timer model: NE555"))
+    assert_eq(parse_schematic("timer U1 3 3 turned 45\n").err(), Some("line 1: '45' is not a turn: 90, 180 or 270"))
+    assert_eq(parse_schematic("timer U1 3 3 turned\n").err(), Some("line 1: turned takes 90, 180 or 270"))
+    assert_eq(parse_schematic("timer U1 3 3 NE555 sideways\n").err(), Some("line 1: 'sideways' is more than a timer takes"))
+    assert_eq(parse_schematic("timer U1 3 3 flipped flipped\n").err(), Some("line 1: 'flipped' is more than a timer takes"))
+
+@test
+private an_opamps_line_still_names_an_opamp_in_its_message()
+    assert_eq(parse_schematic("opamp U1 3 3 741 sideways\n").err(), Some("line 1: 'sideways' is more than an opamp takes"))
+
+@test
+private a_document_adds_a_timer_line_and_turns_and_mirrors_it()
+    var doc = document("battery  B1  0 2  0 14  9V\n")
+
+    assert_eq(doc.add("timer", "U1", [(12, 8)], "NE555"), 2)
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  9V\ntimer     U1    12 8  NE555\n")
+    assert_eq(doc.schematic().unwrap().circuit.parts[1].kind, Timer(false))
+
+    doc.turn(2, 12, 8).unwrap()
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  9V\ntimer     U1    12 8  NE555 turned 90\n")
+    doc.mirror(2, 24).unwrap()
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  9V\ntimer     U1    12 8  NE555 turned 90 flipped\n")
+    doc.revalue(2, "NE555").unwrap()
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  9V\ntimer     U1    12 8  NE555 turned 90 flipped\n", "its turn kept")
+    doc.move_point(2, 0, 10, 6).unwrap()
+    assert_eq(doc.schematic().unwrap().elements[1].point(2), (10, 9))
+
+// ## Its latch
+
+@test
+private the_trigger_sets_it_the_threshold_resets_it_and_reset_beats_both()
+    // Control at 6 V: the trigger's level is 3 V.
+    assert(timer_next(false, 2.9, 0.0, 6.0, 9.0), "the trigger below a third sets it")
+    assert(!timer_next(true, 4.0, 6.1, 6.0, 9.0), "the threshold above two thirds resets it")
+    assert(timer_next(true, 4.0, 5.9, 6.0, 9.0), "between the two it holds, set")
+    assert(!timer_next(false, 4.0, 5.9, 6.0, 9.0), "between the two it holds, reset")
+    assert(timer_next(false, 2.0, 7.0, 6.0, 9.0), "the trigger held low wins over the threshold")
+    assert(!timer_next(true, 2.0, 0.0, 6.0, 0.5), "reset below 0.7 V beats the trigger")
+    assert(timer_next(false, 2.0, 0.0, 6.0, 0.8), "reset above 0.7 V lets it run")
+    assert(timer_next(false, 1.9, 0.0, 4.0, 9.0), "a lower control lowers the trigger's level")
+    assert(!timer_next(false, 2.1, 0.0, 4.0, 9.0))
+
+// ## Its pins
+
+@test
+private its_control_pin_sits_at_two_thirds_of_the_supply()
+    val sch = parse_schematic(BARE).unwrap()
+    var s = sim(sch.circuit)
+    val u = sch.elements[sch.find("U1").unwrap()]
+
+    s.operating_point().unwrap()
+    assert(near(s.voltage(u.e), 6.0, 1e-6), s"${s.voltage(u.e)}")
+
+    // Its trigger and threshold are left on GMIN alone, at 0 V, so it is set.
+    assert(latch(s, u.part))
+    assert(near(s.voltage(u.c), 9.0 - TIMER_HIGH_DROP, 1e-2), s"high, ${s.voltage(u.c)}")
+    assert(near(s.voltage(u.c), (9.0 - TIMER_HIGH_DROP) * 1e3 / (1e3 + TIMER_OUT_OHMS), 1e-9), "behind its output resistance")
+
+@test
+private its_supply_current_is_the_datasheets_ten_milliamps_at_fifteen_volts()
+    // Reset held low: the output low, with no load.
+    val text = replace_all(replace_all(replace_all(BARE, "9V", "15V"), "wire          11 5  11 2", "wire          11 5  11 4\nground        11 4"),
+                           "resistor RL   15 8  15 14  1k\n", "")
+    val sch = parse_schematic(text).unwrap()
+    var s = sim(sch.circuit)
+    val u = part(sch, "U1")
+
+    s.operating_point().unwrap()
+    assert(!latch(s, u))
+    assert(near(s.terminal_current(u, 7), 10e-3, 1e-9), s"${s.terminal_current(u, 7)}")
+    assert(near(s.voltage(sch.elements[sch.find("U1").unwrap()].e), 10.0, 1e-6), "control at 10 V, the table's")
+
+@test
+private its_eight_currents_sum_to_zero_high_and_low()
+    for low in [false, true]
+        // Low: the threshold and the trigger on the supply.
+        val text = if low then replace_all(replace_all(BARE, "label    thr  8 8", "wire          8 8  8 2"), "label    trig 7 9", "wire          7 9  7 2") else BARE
+        val sch = parse_schematic(text).unwrap()
+        var s = sim(sch.circuit)
+        val u = part(sch, "U1")
+        var sum = 0.0
+
+        s.operating_point().unwrap()
+        assert_eq(latch(s, u), !low)
+
+        for k in 0..<8
+            sum += s.terminal_current(u, k)
+
+        assert(sum.abs() < 1e-12, s"${sum}")
+
+        // What the solve put through the battery and the load is what the pins say they take.
+        val supplied = -s.current(part(sch, "B1"))
+        val taken = s.terminal_current(u, TIMER_SUPPLY) + s.terminal_current(u, TIMER_RESET) +
+            (if low then s.terminal_current(u, TIMER_TRIGGER) + s.terminal_current(u, TIMER_THRESHOLD) else 0.0)
+
+        assert(near(supplied, taken, 1e-9), s"${supplied} from the battery, ${taken} into the pins on it")
+        assert(near(s.current(part(sch, "RL")), s.current(u), 1e-9), "the load carries the output's current")
+        assert(near(s.current(u), if low then TIMER_LOW_VOLTS / (1e3 + TIMER_OUT_OHMS) else (9.0 - TIMER_HIGH_DROP) / (1e3 + TIMER_OUT_OHMS), 1e-9),
+               s"the current out of its output, ${s.current(u)}")
+
+@test
+private low_its_output_sits_at_a_tenth_of_a_volt_and_its_discharge_sinks_current()
+    // The threshold on the supply resets it, the trigger on the supply too; a 1 kΩ from the supply to
+    // the discharge pin.
+    val text = replace_all(replace_all(BARE, "label    thr  8 8", "wire          8 8  8 2"),
+                           "label    trig 7 9", "wire          7 9  7 2\nresistor RD   9 7  4 7  1k\nwire          4 7  4 2")
+    val sch = parse_schematic(text).unwrap()
+    var s = sim(sch.circuit)
+    val u = sch.elements[sch.find("U1").unwrap()]
+
+    s.operating_point().unwrap()
+    assert(!latch(s, u.part))
+    assert(near(s.voltage(u.c), TIMER_LOW_VOLTS * 1e3 / (1e3 + TIMER_OUT_OHMS), 1e-9), s"${s.voltage(u.c)}")
+    // 9 mA into the discharge drops the datasheet's 0.15 V at 8 mA, near enough.
+    assert(near(s.voltage(u.g), 9.0 * TIMER_DISCHARGE_OHMS / (1e3 + TIMER_DISCHARGE_OHMS), 1e-9), s"${s.voltage(u.g)}")
+    assert(s.voltage(u.g) > 0.1 && s.voltage(u.g) < 0.2)
+
+@test
+private high_its_discharge_is_open()
+    val text = replace_all(BARE, "label    trig 7 9", "label    trig 7 9\nresistor RD   9 7  4 7  1k\nwire          4 7  4 2")
+    val sch = parse_schematic(text).unwrap()
+    var s = sim(sch.circuit)
+    val u = sch.elements[sch.find("U1").unwrap()]
+
+    s.operating_point().unwrap()
+    assert(latch(s, u.part))
+    assert(near(s.voltage(u.g), 9.0, 1e-6), s"nothing through RD: ${s.voltage(u.g)}")
+
+@test
+private the_trigger_held_low_keeps_the_output_high_whatever_the_threshold_does()
+    // The threshold on the supply, far above two thirds, and the trigger on ground.
+    val text = replace_all(replace_all(BARE, "label    thr  8 8", "wire          8 8  8 2"), "label    trig 7 9", "wire          7 9  7 14")
+    val sch = parse_schematic(text).unwrap()
+    var s = sim(sch.circuit)
+    val u = sch.elements[sch.find("U1").unwrap()]
+
+    s.operating_point().unwrap()
+    assert(latch(s, u.part))
+    assert(s.voltage(u.c) > 7.0, s"${s.voltage(u.c)}")
+    s.advance_to(10e-3).unwrap()
+    assert(latch(s, u.part))
+
+@test
+private reset_held_low_holds_the_output_low_whatever_the_trigger_does()
+    // The trigger on ground, which would set it, and reset on ground too.
+    val text = replace_all(replace_all(BARE, "label    trig 7 9", "wire          7 9  7 14"), "wire          11 5  11 2", "wire          11 5  11 4\nground        11 4")
+    val sch = parse_schematic(text).unwrap()
+    var s = sim(sch.circuit)
+    val u = sch.elements[sch.find("U1").unwrap()]
+
+    s.power_on().unwrap()
+    assert(!latch(s, u.part))
+    s.advance_to(10e-3).unwrap()
+    assert(!latch(s, u.part))
+    assert(s.voltage(u.c) < 0.2, s"${s.voltage(u.c)}")
+
+// ## As an astable
+
+// The times U1's latch moved, and which way, polled every half millisecond to `until`.
+private edges(sch: Schematic, until: real, settled: bool) -> Buf[(real, bool)]
+    var s = sim(sch.circuit)
+    val u = part(sch, "U1")
+    var out: Buf[(real, bool)] = buf()
+
+    if settled then s.operating_point().unwrap() else s.power_on().unwrap()
+
+    var was = latch(s, u)
+    var t = 0.0
+
+    while t < until
+        t += 0.5e-3
+        s.advance_to(t).unwrap()
+
+        val now = latch(s, u)
+
+        if now != was then out.push((t, now))
+
+        was = now
+
+    out
+
+@test
+private the_flasher_runs_at_the_datasheets_frequency_high_and_low_for_its_times()
+    val sch = parse_schematic(FLASHER).unwrap()
+    val e = edges(sch, 4.5, false)
+    // Set from the start, so the first edge is a fall, after the first high, which is longer, C1
+    // charging from empty; timed from the second fall on.
+    var falls: Buf[real] = buf()
+    var rises: Buf[real] = buf()
+
+    for (t, high) in e
+        if high then rises.push(t) else falls.push(t)
+
+    assert(falls.len() >= 4 && rises.len() >= 4, s"${falls.len()} falls and ${rises.len()} rises")
+
+    val high_time = 0.693 * (R1 + R2) * C1
+    val low_time = 0.693 * R2 * C1
+    val period = (falls[3] - falls[1]) / 2.0
+
+    assert(within(1.0 / period, 1.44 / ((R1 + 2.0 * R2) * C1), 0.01), s"${1.0 / period} Hz")
+
+    for k in 1..<3
+        // The rise after fall `k`, and the fall after that.
+        var rise = 0.0
+
+        for r in rises
+            if r > falls[k] && rise == 0.0 then rise = r
+
+        assert(within(rise - falls[k], low_time, 0.01), s"low for ${rise - falls[k]} s, not ${low_time}")
+        assert(within(falls[k + 1] - rise, high_time, 0.01), s"high for ${falls[k + 1] - rise} s, not ${high_time}")
+
+// Run well into its fourth cycle in one call, its steps as long as the error allows, C1 is where the
+// exact exponentials put it: each latch moved on time, the steps landing on the crossings.
+@test
+private run_in_one_call_it_keeps_time_with_the_exponentials()
+    val sch = parse_schematic(FLASHER).unwrap()
+    var s = sim(sch.circuit)
+    val c = part(sch, "C1")
+    // While the discharge is on, the discharge pin is a Thévenin source: R1 from 9 V against the
+    // discharge's resistance to ground.
+    val floor = 9.0 * TIMER_DISCHARGE_OHMS / (TIMER_DISCHARGE_OHMS + R1)
+    val on = TIMER_DISCHARGE_OHMS * R1 / (TIMER_DISCHARGE_OHMS + R1)
+    val first = (R1 + R2) * C1 * (3.0).ln()
+    val high = (R1 + R2) * C1 * (2.0).ln()
+    val low = (R2 + on) * C1 * ((6.0 - floor) / (3.0 - floor)).ln()
+
+    s.power_on().unwrap()
+    // 0.2 s into its fourth low.
+    s.advance_to(first + 3.0 * (low + high) + 0.2).unwrap()
+
+    val want = floor + (6.0 - floor) * (-0.2 / ((R2 + on) * C1)).exp()
+
+    // The steps' own error, a few parts in ten thousand of C1's voltage, moves each crossing by a
+    // fraction of a millisecond, and three and a half cycles add those up; a crossing missed by a step
+    // would be tens of milliseconds.
+    assert(within(s.across(c), want, 1e-2), s"${s.across(c)} V, not ${want} V")
+    assert(!latch(s, part(sch, "U1")))
+
+@test
+private the_first_high_is_longer_charging_from_empty()
+    val sch = parse_schematic(FLASHER).unwrap()
+    val e = edges(sch, 1.5, false)
+
+    // Set at once, C1 empty; reset at two thirds, 1.1 time constants of R1 + R2 later.
+    assert(e.len() >= 1)
+    assert(!e[0].1)
+    assert(within(e[0].0, 1.0986 * (R1 + R2) * C1, 0.01), s"${e[0].0}")
+
+@test
+private the_led_is_lit_while_the_output_is_high_and_dark_while_it_is_low()
+    val sch = parse_schematic(FLASHER).unwrap()
+    var s = sim(sch.circuit)
+    val d = part(sch, "D1")
+    val u = part(sch, "U1")
+
+    s.power_on().unwrap()
+    s.advance_to(0.5).unwrap()
+    assert(latch(s, u))
+    assert(s.current(d) > 8e-3 && s.current(d) < 15e-3, s"lit: ${s.current(d)}")
+    s.advance_to(1.1).unwrap()
+    assert(!latch(s, u))
+    assert(s.current(d) < 1e-6, s"dark: ${s.current(d)}")
+
+@test
+private started_settled_it_keeps_running()
+    val sch = parse_schematic(FLASHER).unwrap()
+    val e = edges(sch, 3.0, true)
+
+    assert(e.len() >= 4, s"${e.len()} edges")
+
+// ## As a monostable
+
+// A monostable: R from the supply to the discharge and threshold, joined, and C below them; the
+// trigger is a source at 9 V that dips to 0 V for a millisecond at 0.1 s.
+val ONE_SHOT = """
+    battery  B1   0 2  0 14  9V
+    wire          0 2  13 2
+    timer    U1   12 8
+    wire          13 5  13 2
+    wire          11 5  11 2
+    resistor R    6 2  6 7  10k
+    wire          6 7  9 7
+    wire          9 7  9 8
+    capacitor C   6 7  6 14  10u
+    source   VT   4 9  4 14  pulse 9 0 0.1 1u 1u 1m 10
+    wire          4 9  9 9
+    resistor RL   15 8  15 14  1k
+    wire          11 11  11 14
+    capacitor C2  13 11  13 14  10n
+    wire          0 14  15 14
+    ground        0 14
+    """
+
+@test
+private a_trigger_pulse_gives_a_high_pulse_of_one_point_one_rc()
+    val sch = parse_schematic(ONE_SHOT).unwrap()
+    val e = edges(sch, 0.4, true)
+
+    assert_eq(e.len(), 2, "one pulse")
+    assert(e[0].1 && !e[1].1)
+    assert(near(e[0].0, 0.1, 1e-2), s"set by the trigger at ${e[0].0}")
+    assert(within(e[1].0 - e[0].0, 1.1 * 10e3 * 10e-6, 0.01), s"high for ${e[1].0 - e[0].0}")
+
+@test
+private started_settled_a_monostable_waits_with_its_output_low()
+    val sch = parse_schematic(ONE_SHOT).unwrap()
+    var s = sim(sch.circuit)
+    val u = sch.elements[sch.find("U1").unwrap()]
+
+    s.operating_point().unwrap()
+    assert(!latch(s, u.part))
+    assert(s.voltage(u.c) < 0.2)
+    s.advance_to(0.09).unwrap()
+    assert(!latch(s, u.part))
+
+@test
+private a_copied_simulation_takes_the_latch_the_other_has()
+    val sch = parse_schematic(ONE_SHOT).unwrap()
+    var a = sim(sch.circuit)
+    var b = sim(sch.circuit)
+    val u = part(sch, "U1")
+
+    a.operating_point().unwrap()
+    b.operating_point().unwrap()
+    b.advance_to(0.15).unwrap()
+    assert(latch(b, u))
+    assert(!latch(a, u))
+    a.mirror(b)
+    assert(latch(a, u))
+    assert_eq(a.voltage(sch.elements[sch.find("U1").unwrap()].c), b.voltage(sch.elements[sch.find("U1").unwrap()].c))

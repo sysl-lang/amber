@@ -44,6 +44,7 @@ import sysl.text.{Search, fields, split}
 // | `spdt` | three: the common, the first throw, the second throw | which throw the common is joined to, `first` or `second` (`first` if not given) |
 // | `ammeter` | two: the current is read flowing in at the first and out at the second | — |
 // | `lamp` | two | an incandescent lamp's rating, volts then watts, `12V 5W` |
+// | `timer` | one, its middle; its eight pins are around it | a 555 timer: perhaps its model, `NE555` (the default and only one), then perhaps `turned 90`, `180` or `270`, and `flipped` |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -77,6 +78,25 @@ import sysl.text.{Search, fields, split}
 // it a quarter turn clockwise, so the output points down; flipped first, then turned:
 //
 //     opamp    U1  12 8  TL072 turned 90 flipped
+//
+// A 555 timer's body is a square four squares across about its middle, and its pins stand a square out
+// from it, laid out for the usual astable drawing: its discharge, threshold and trigger on the left, one
+// square above its middle, level with it, and one below; its output on the right, level with its
+// middle; its reset and supply on top, a square left and right of its middle; its ground and control
+// below, a square left and right. Each pin is three squares out from the middle. `flipped` and
+// `turned` move them as they move an op-amp's:
+//
+//                  RESET   VCC
+//                    |      |
+//              +-------------+
+//     DIS   ---|             |
+//     THR   ---|     555     |--- OUT
+//     TRIG  ---|             |
+//              +-------------+
+//                    |      |
+//                   GND    CTRL
+//
+//     timer    U1  12 8  NE555
 //
 // A wave is one of
 //
@@ -155,6 +175,9 @@ enum Shape: u8
     Spdt
     // An incandescent lamp: a filament that glows as it heats.
     Lamp
+    // A 555 timer, placed by its middle, its eight pins around it in their order: ground, trigger,
+    // output, reset, control, threshold, discharge and the supply.
+    Timer
     Ground
     Label
     Meter
@@ -164,6 +187,7 @@ enum Shape: u8
         Ground | Label -> 1
         Npn | Pnp | Nmos | Pmos | Potentiometer | Spdt -> 3
         OpAmp -> 5
+        Timer -> 8
         _ -> 2
 
     // Whether it is a part of the circuit, rather than a wire, a marker or an instrument.
@@ -201,14 +225,25 @@ struct Element
     y4: int
     x5: int
     y5: int
+    // The sixth to eighth points, a 555 timer's threshold, discharge and supply pins; the fifth again
+    // for anything else.
+    x6: int
+    y6: int
+    x7: int
+    y7: int
+    x8: int
+    y8: int
     // The node each end is on; -1 for a meter's lead on a point no part reaches. `c` is a transistor's
     // emitter, and `b` again for anything else; `d` and `e` are an op-amp's supplies, and `c` again for
-    // anything else.
+    // anything else; `f` to `h` are a 555 timer's last three pins, and `e` again for anything else.
     a: int
     b: int
     c: int
     d: int
     e: int
+    f: int
+    g: int
+    h: int
     // Which of the circuit's parts it is; -1 for anything that is not a part.
     part: int
     colour: Colour
@@ -222,7 +257,10 @@ struct Element
         1 -> (self.x2, self.y2)
         2 -> (self.x3, self.y3)
         3 -> (self.x4, self.y4)
-        _ -> (self.x5, self.y5)
+        4 -> (self.x5, self.y5)
+        5 -> (self.x6, self.y6)
+        6 -> (self.x7, self.y7)
+        _ -> (self.x8, self.y8)
 
     // The node its end `k` is on.
     node(self, k: int) -> int = k match
@@ -230,7 +268,10 @@ struct Element
         1 -> self.b
         2 -> self.c
         3 -> self.d
-        _ -> self.e
+        4 -> self.e
+        5 -> self.f
+        6 -> self.g
+        _ -> self.h
 
 // A straight run of wire with no junction along it, between two grid points, and the element it is a
 // piece of. A wire with a junction partway along is two segments, since the two halves can carry
@@ -440,6 +481,8 @@ parse_schematic(text: string) -> Result[Schematic, string]
             parts = transformer(words).map_err(why -> s"line ${line_no}: ${why}")?
         elif words[0] == "opamp"
             parts.push(opamp(words).map_err(why -> s"line ${line_no}: ${why}")?)
+        elif words[0] == "timer"
+            parts.push(timer(words).map_err(why -> s"line ${line_no}: ${why}")?)
         else
             parts.push(element(words).map_err(why -> s"line ${line_no}: ${why}")?)
 
@@ -527,7 +570,8 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
         Pin -> "RP2040"
         _ -> rest.join(" ")
 
-    Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5], -1, -1, -1, -1, -1, -1, colour, 0), kind))
+    Ok((Element(shape, name, value, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5], xy[4], xy[5],
+                -1, -1, -1, -1, -1, -1, -1, -1, -1, colour, 0), kind))
 
 // A speaker's voice coil when its line gives none: the usual 8 Ω.
 const SPEAKER_OHMS: real = 8.0
@@ -587,9 +631,11 @@ private transformer(words: []string) -> Result[Buf[(Element, Option[Kind])], str
     val primary = if rest.len == 2 then positive(rest[1], "an inductance")? else PRIMARY_HENRIES
     var out: Buf[(Element, Option[Kind])] = buf()
 
-    out.push((Element(Winding, name, rest[0], xy[0], xy[1], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], -1, -1, -1, -1, -1, -1, Red, 0),
+    out.push((Element(Winding, name, rest[0], xy[0], xy[1], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3], xy[2], xy[3],
+                      -1, -1, -1, -1, -1, -1, -1, -1, -1, Red, 0),
               Some(Inductor(primary))))
-    out.push((Element(Winding, name, "", xy[4], xy[5], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], -1, -1, -1, -1, -1, -1, Red, 0),
+    out.push((Element(Winding, name, "", xy[4], xy[5], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7], xy[6], xy[7],
+                      -1, -1, -1, -1, -1, -1, -1, -1, -1, Red, 0),
               Some(Inductor(primary / (ratio * ratio)))))
     Ok(out)
 
@@ -615,15 +661,67 @@ private opamp(words: []string) -> Result[(Element, Option[Kind]), string]
     val (x4, y4) = pin(3)
     val (x5, y5) = pin(4)
 
-    Ok((Element(OpAmp, name, model, x1, y1, x2, y2, x3, y3, x4, y4, x5, y5, -1, -1, -1, -1, -1, -1, Red, 0), Some(OpAmp(m))))
+    Ok((Element(OpAmp, name, model, x1, y1, x2, y2, x3, y3, x4, y4, x5, y5, x5, y5, x5, y5, x5, y5, -1, -1, -1, -1, -1, -1, -1, -1, -1, Red, 0),
+        Some(OpAmp(m))))
 end opamp
+
+// A 555 timer's line: its name, the grid point at its middle, perhaps its model, `NE555` (the default
+// and the only one), and perhaps how it is turned and whether it is flipped, as an op-amp's.
+private timer(words: []string) -> Result[(Element, Option[Kind]), string]
+    if words.len < 2 then return Err("a timer needs a name")
+
+    if words.len < 4 then return Err("a timer is placed by 1 point, its middle")
+
+    val x = parse_coordinate(words[2])?
+    val y = parse_coordinate(words[3])?
+    val (model, quarters, flipped) = ic_tail(words[4..<words.len], "NE555", "a timer")?
+
+    if model != "NE555" then return Err(s"'${model}' is not a timer model: NE555")
+
+    var xy: [16]int = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    for k in 0..<8
+        val (px, py) = timer_pin(x, y, k, quarters, flipped)
+
+        xy[2 * k] = px
+        xy[2 * k + 1] = py
+
+    Ok((Element(Timer, words[1], model, xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], xy[6], xy[7], xy[8], xy[9], xy[10], xy[11], xy[12], xy[13],
+                xy[14], xy[15], -1, -1, -1, -1, -1, -1, -1, -1, -1, Red, 0), Some(Timer(false))))
+end timer
+
+// Pin `k` of a 555 timer at (`x`, `y`), counting from 0 in the pins' order — ground, trigger, output,
+// reset, control, threshold, discharge, supply — flipped top to bottom if it is, then turned `quarters`
+// times clockwise, as an op-amp's pins are.
+private[amber] timer_pin(x: int, y: int, k: int, quarters: int, flipped: bool) -> (int, int)
+    var (dx, dy) = k match
+        0 -> (-1, 3)
+        1 -> (-3, 1)
+        2 -> (3, 0)
+        3 -> (-1, -3)
+        4 -> (1, 3)
+        5 -> (-3, 0)
+        6 -> (-3, -1)
+        _ -> (1, -3)
+
+    if flipped then dy = -dy
+
+    for _ in 0..<quarters
+        (dx, dy) = (-dy, dx)
+
+    (x + dx, y + dy)
+end timer_pin
 
 // The words after an op-amp's middle: its model (`741` where none is written), its quarter turns
 // clockwise, and whether it is flipped. The model comes first; `turned` and `flipped` may come in
 // either order, each once.
-private[amber] opamp_tail(rest: []const string) -> Result[(string, int, bool), string]
+private[amber] opamp_tail(rest: []const string) -> Result[(string, int, bool), string] = ic_tail(rest, "741", "an opamp")
+
+// The words after a chip's middle, as `opamp_tail` reads them, `model` where none is written; `one` is
+// the kind with its article, for the message.
+private[amber] ic_tail(rest: []const string, default_model: string, one: string) -> Result[(string, int, bool), string]
     var at: usize = 0
-    var model = "741"
+    var model = default_model
     var quarters = -1
     var flipped = false
 
@@ -645,10 +743,10 @@ private[amber] opamp_tail(rest: []const string) -> Result[(string, int, bool), s
             flipped = true
             at += 1
         else
-            return Err(s"'${rest[at]}' is more than an opamp takes")
+            return Err(s"'${rest[at]}' is more than ${one} takes")
 
     Ok((model, if quarters < 0 then 0 else quarters, flipped))
-end opamp_tail
+end ic_tail
 
 // Pin `k` of an op-amp at (`x`, `y`) — non-inverting input, inverting input, output, positive supply,
 // negative supply — flipped top to bottom if it is, then turned `quarters` times clockwise.
@@ -725,6 +823,7 @@ private[amber] shape_named(word: string) -> Result[Shape, string] = word match
     "ammeter" -> Ok(Ammeter)
     "spdt" -> Ok(Spdt)
     "lamp" -> Ok(Lamp)
+    "timer" -> Ok(Timer)
     _ -> Err(s"'${word}' is not a kind of element")
 
 private colour_named(word: string) -> Result[Colour, string] = word match
@@ -986,10 +1085,10 @@ private min_of(a: int, b: int) -> int = if a < b then a else b
 
 private max_of(a: int, b: int) -> int = if a < b then b else a
 
-// The most ends an element has: an op-amp's five pins.
-const MOST_ENDS: int = 5
+// The most ends an element has: a 555 timer's eight pins.
+const MOST_ENDS: int = 8
 
-// Number every end by the set of joined points it belongs to: `a` to `e` are set to a net number, the
+// Number every end by the set of joined points it belongs to: `a` to `h` are set to a net number, the
 // same for ends that are joined, and an element with fewer ends repeats its last. Nets are found by
 // union–find over the ends, `MOST_ENDS` slots per element. A meter's leads take the net of whatever
 // they touch and join nothing to anything.
@@ -1032,6 +1131,9 @@ private join(elements: *Buf[Element])
         elements[i].c = net(2)
         elements[i].d = net(3)
         elements[i].e = net(4)
+        elements[i].f = net(5)
+        elements[i].g = net(6)
+        elements[i].h = net(7)
 
 private root(parent: *Buf[int], k: int) -> int
     var r = k
@@ -1107,6 +1209,9 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
         elements[i].c = node_of[usize(elements[i].c)]
         elements[i].d = node_of[usize(elements[i].d)]
         elements[i].e = node_of[usize(elements[i].e)]
+        elements[i].f = node_of[usize(elements[i].f)]
+        elements[i].g = node_of[usize(elements[i].g)]
+        elements[i].h = node_of[usize(elements[i].h)]
 
         if kinds[i] is Some(kind)
             val e = elements[i]
@@ -1114,6 +1219,7 @@ private build(given: Buf[Element], kinds: Buf[Option[Kind]]) -> Result[Schematic
             elements[i].part = int(c.parts.len())
 
             kind.terminals() match
+                8 -> c.add8(e.name, kind, [e.a, e.b, e.c, e.d, e.e, e.f, e.g, e.h])
                 5 -> c.add5(e.name, kind, e.a, e.b, e.c, e.d, e.e)
                 3 -> c.add3(e.name, kind, e.a, e.b, e.c)
                 _ -> c.add(e.name, kind, e.a, e.b)

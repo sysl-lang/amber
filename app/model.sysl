@@ -1,6 +1,7 @@
 // What the viewer knows: the circuit and its simulation, the clock, the meters and what they have read.
 
-import sh.sysl.amber.{Schematic, Element, Shape, Kind, Sim, Colour, Switch, Supply, Waveform, Pin, PinMode, PinDrive, sim, engineering, parse_generator, ldr_ohms, lamp_loss}
+import sh.sysl.amber.{Schematic, Element, Shape, Kind, Sim, Colour, Switch, Supply, Waveform, Pin, PinMode, PinDrive, sim, engineering, parse_generator, ldr_ohms, lamp_loss,
+                       TIMER_GROUND, TIMER_TRIGGER, TIMER_OUTPUT, TIMER_CONTROL, TIMER_THRESHOLD, TIMER_DISCHARGE, TIMER_SUPPLY}
 import sh.sysl.ui_sdl.stop
 import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_B, SCANCODE_C, SCANCODE_M, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
@@ -124,17 +125,20 @@ struct Model
     speed: int
     // How far along its length the current dots on each wire segment and each part have moved, in grid
     // squares. A transistor's `part_flow` is its collector's, and its base's and emitter's are beside
-    // it.
+    // it. A 555 timer's `part_flow` is its output's, and its discharge's, supply's and ground's are its
+    // `base_flow`, `emitter_flow` and `ground_flow`.
     segment_flow: Buf[real]
     part_flow: Buf[real]
     base_flow: Buf[real]
     emitter_flow: Buf[real]
+    ground_flow: Buf[real]
     // What each of those has carried lately, each way, so a current that alternates is still drawn as
     // flowing while it passes through zero.
     segment_hold: Buf[Hold]
     part_hold: Buf[Hold]
     base_hold: Buf[Hold]
     emitter_hold: Buf[Hold]
+    ground_hold: Buf[Hold]
     // The circuit's time the holds were last brought up to.
     held_at: real
     // The largest current any part has carried since the circuit was switched on: the dots move at a
@@ -355,6 +359,7 @@ struct Model
             forget(&self.part_hold)
             forget(&self.base_hold)
             forget(&self.emitter_hold)
+            forget(&self.ground_hold)
 
             for k in 0..<self.meters.len()
                 self.meters[k].forget()
@@ -371,6 +376,7 @@ struct Model
         forget(&self.part_hold)
         forget(&self.base_hold)
         forget(&self.emitter_hold)
+        forget(&self.ground_hold)
 
         for k in 0..<self.meters.len()
             self.meters[k].forget()
@@ -456,6 +462,10 @@ struct Model
             if e.part >= 0 && e.shape.points() == 3
                 self.most_amps = self.most_amps.max(self.s.terminal_current(e.part, 2).abs())
 
+            // A 555 timer's ground pin carries everything it takes.
+            if e.part >= 0 && e.shape == Shape.Timer
+                self.most_amps = self.most_amps.max(self.s.terminal_current(e.part, 0).abs())
+
         // What was held fades by a factor of e in HOLD_SECONDS of the window's time.
         val keep = (-(self.s.time - self.held_at) / (HOLD_SECONDS * self.pace())).exp()
         val amps = self.sch.segment_currents(self.s)
@@ -473,6 +483,11 @@ struct Model
             if e.part >= 0 && e.shape.points() == 3
                 self.base_hold[i].see(self.s.terminal_current(e.part, 1), keep)
                 self.emitter_hold[i].see(self.s.terminal_current(e.part, 2), keep)
+
+            if e.part >= 0 && e.shape == Shape.Timer
+                self.base_hold[i].see(self.s.terminal_current(e.part, TIMER_DISCHARGE), keep)
+                self.emitter_hold[i].see(self.s.terminal_current(e.part, TIMER_SUPPLY), keep)
+                self.ground_hold[i].see(self.s.terminal_current(e.part, TIMER_GROUND), keep)
 
     // Move the current dots on by `dt` seconds of the window's time.
     flow(*self, dt: real)
@@ -494,6 +509,12 @@ struct Model
             if e.part >= 0 && e.shape.points() == 3
                 self.base_flow[i] += dt * self.base_hold[i].speed(self.s.terminal_current(e.part, 1), most)
                 self.emitter_flow[i] -= dt * self.emitter_hold[i].speed(self.s.terminal_current(e.part, 2), most)
+
+            // A 555 timer's pins' currents, each moving from its pin's end into the body as it flows in.
+            if e.part >= 0 && e.shape == Shape.Timer
+                self.base_flow[i] += dt * self.base_hold[i].speed(self.s.terminal_current(e.part, TIMER_DISCHARGE), most)
+                self.emitter_flow[i] += dt * self.emitter_hold[i].speed(self.s.terminal_current(e.part, TIMER_SUPPLY), most)
+                self.ground_flow[i] += dt * self.ground_hold[i].speed(self.s.terminal_current(e.part, TIMER_GROUND), most)
 end Model
 
 // What a branch has carried lately: the largest current it has carried each way, each fading as time
@@ -545,10 +566,12 @@ model(file: string, sch: Schematic) -> &Model
     var parts: Buf[real] = buf()
     var bases: Buf[real] = buf()
     var emitters: Buf[real] = buf()
+    var grounds: Buf[real] = buf()
     var held_segments: Buf[Hold] = buf()
     var held_parts: Buf[Hold] = buf()
     var held_bases: Buf[Hold] = buf()
     var held_emitters: Buf[Hold] = buf()
+    var held_grounds: Buf[Hold] = buf()
 
     for _ in 0..<sch.segments.len()
         flows.push(0.0)
@@ -558,12 +581,14 @@ model(file: string, sch: Schematic) -> &Model
         parts.push(0.0)
         bases.push(0.0)
         emitters.push(0.0)
+        grounds.push(0.0)
         held_parts.push(Hold(0.0, 0.0))
         held_bases.push(Hold(0.0, 0.0))
         held_emitters.push(Hold(0.0, 0.0))
+        held_grounds.push(Hold(0.0, 0.0))
 
     val m: &Model = Model(file, sch, sim(sch.circuit), "", buf(), false, 0, 0, -1, true, true, speed_index(sch.speed), flows,
-                  parts, bases, emitters, held_segments, held_parts, held_bases, held_emitters, 0.0, 0.0,
+                  parts, bases, emitters, grounds, held_segments, held_parts, held_bases, held_emitters, held_grounds, 0.0, 0.0,
                   Picture(None, None), Picture(None, None), panels(sch), false, Bode(buf(), buf(), "", 0.0, ""), true,
                   ear(first_speaker(sch)), buf(), false, buf(), false)
 
@@ -724,6 +749,14 @@ status(m: &Model) -> string
 
         return s"${clock} · ${e.name} ${described(m, e)}: output at ${volts(m.s.voltage(e.c))}, ${engineering(io.abs())}A ${if io < 0.0 then "into" else "out of"} it; + at ${volts(m.s.voltage(e.a))}, − at ${volts(m.s.voltage(e.b))}; supplies ${volts(m.s.voltage(e.d))} and ${volts(m.s.voltage(e.e))}"
 
+    // A 555 timer's latch, as its output and discharge show it, then the three inputs its comparators
+    // read against the control pin.
+    if e.shape == Shape.Timer
+        val high = m.s.circuit.parts[usize(e.part)].kind == Kind.Timer(true)
+        val pin = (k: int) -> volts(m.s.voltage(e.node(k)) - m.s.voltage(e.a))
+
+        return s"${clock} · ${e.name} ${described(m, e)}: output ${if high then "high" else "low"}, ${pin(TIMER_OUTPUT)}; discharge ${if high then "off" else "on"}; threshold at ${pin(TIMER_THRESHOLD)}, trigger at ${pin(TIMER_TRIGGER)}, control at ${pin(TIMER_CONTROL)}"
+
     // An ammeter drops nothing and takes nothing, so its current is all there is to say: how much, and
     // which of its ends it flows in at.
     if e.shape == Shape.Ammeter
@@ -784,6 +817,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Ammeter -> "ammeter"
     Spdt -> "spdt"
     Lamp -> s"${e.value} lamp"
+    Timer -> s"${e.value} timer"
     Zener -> s"${e.value}V zener"
     Switch -> if m.s.circuit.parts[usize(e.part)].kind == Switch(true) then "closed switch" else "open switch"
     Diode -> "diode"

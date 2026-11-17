@@ -292,10 +292,16 @@ enum Kind derives Eq
     // with its temperature, and whose temperature follows the power in it a little late, as `lamp_ohms`
     // and `lamp_loss` say. Cold it is a tenth of its hot resistance.
     Lamp(volts: real, watts: real)
+    // A 555 timer, an NE555, with eight terminals in the order of its pins: ground, trigger, output,
+    // reset, control, threshold, discharge and the supply. `high` is its latch: set, its output is high
+    // and its discharge off; reset, its output is low and its discharge on. `timer_next` says how its
+    // comparators move the latch.
+    Timer(high: bool)
 
-    // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor, a potentiometer
-    // or a double-throw switch, 2 for the rest.
+    // How many terminals a part of this kind has: 8 for a 555 timer, 5 for an op-amp, 3 for a
+    // transistor, a potentiometer or a double-throw switch, 2 for the rest.
     terminals(self) -> int = self match
+        Timer(_) -> 8
         OpAmp(_) -> 5
         Transistor(_) | Mosfet(_, _, _) | Potentiometer(_, _) | Spdt(_) -> 3
         _ -> 2
@@ -385,10 +391,63 @@ lamp_loss(watts: real, rise: real) -> (real, real)
 // constant `LAMP_SECONDS` from full heat.
 lamp_heat_capacity(watts: real) -> real = LAMP_SECONDS * lamp_loss(watts, LAMP_RISE).1
 
+// A 555 timer, behaving as the bipolar NE555 does: the TI datasheet (SLFS022, NA555/NE555/SA555/SE555,
+// §5.5 Electrical Characteristics) and its functional block diagram give every figure here.
+//
+// **Three equal resistors from the supply to ground set its levels.** The control pin is the top
+// junction, at two thirds of the supply open circuit (10 V at 15 V, 3.3 V at 5 V in the table); the
+// junction below it, half way between the control pin and ground, is the trigger's level. A voltage
+// forced on the control pin moves both.
+//
+// **Two comparators drive a latch.** The threshold above the control pin's voltage resets it; the
+// trigger below its level sets it, and wins while it is held there, so a trigger held low keeps the
+// output high whatever the threshold does. The reset pin below `TIMER_RESET_VOLTS` (0.7 V typical)
+// resets it ahead of either. The comparators draw next to nothing (the table's 30 nA and 0.5 µA), so
+// each input is `GMIN` to ground. `timer_next` is the latch's rule.
+//
+// **Set, its output is high and its discharge off; reset, its output is low and its discharge on.**
+// The output is a source behind `TIMER_OUT_OHMS`: `TIMER_HIGH_DROP` below the supply when high, the
+// high-level rows' drop (13.3 V at 15 V), and `TIMER_LOW_VOLTS` above ground when low, the low-level
+// rows' 0.1 V. The resistance is the slope of the low-level rows, 0.1 V at 10 mA to 0.4 V at 50 mA,
+// close to the high-level rows' 13.3 V at 100 mA to 12.5 V at 200 mA. So at the tens of milliamps an
+// LED takes the levels are the table's within a tenth of a volt, and loaded to 100 mA and more the
+// output reads some 0.75 V lower than the table. The discharge is an open collector to ground:
+// `TIMER_DISCHARGE_OHMS` on, the table's 0.15 V at 8 mA, and nothing but `GMIN` off.
+//
+// **It draws its supply current through `TIMER_SUPPLY_OHMS`** from its supply pin to its ground pin,
+// which with the divider beside it is the table's 10 mA at 15 V, output low and no load.
+// A 555 timer's pins, as its terminals count them from 0: pin 1 is terminal 0.
+const TIMER_GROUND: int = 0
+const TIMER_TRIGGER: int = 1
+const TIMER_OUTPUT: int = 2
+const TIMER_RESET: int = 3
+const TIMER_CONTROL: int = 4
+const TIMER_THRESHOLD: int = 5
+const TIMER_DISCHARGE: int = 6
+const TIMER_SUPPLY: int = 7
+
+const TIMER_DIVIDER_OHMS: real = 5e3
+const TIMER_RESET_VOLTS: real = 0.7
+const TIMER_HIGH_DROP: real = 1.7
+const TIMER_LOW_VOLTS: real = 0.1
+const TIMER_OUT_OHMS: real = 7.5
+const TIMER_DISCHARGE_OHMS: real = 0.15 / 8e-3
+const TIMER_SUPPLY_OHMS: real = 1.0 / (10e-3 / 15.0 - 1.0 / (3.0 * TIMER_DIVIDER_OHMS))
+
+// A 555 timer's latch after its comparators look at its pins, `high` the latch as it stood: forced
+// reset while `reset` is below `TIMER_RESET_VOLTS`, set while `trigger` is below half `control`,
+// reset while `threshold` is above `control`, and otherwise as it was. Every voltage is from the
+// timer's ground pin.
+timer_next(high: bool, trigger: real, threshold: real, control: real, reset: real) -> bool =
+    if reset < TIMER_RESET_VOLTS then false
+    elif trigger < control / 2.0 then true
+    elif threshold > control then false
+    else high
+
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and
 // `b` and has the rest at -1; a transistor's collector, base and emitter are `a`, `b` and `c`, and a
 // MOSFET's drain, gate and source; an op-amp's non-inverting input, inverting input, output, positive
-// supply and negative supply are `a` to `e`.
+// supply and negative supply are `a` to `e`; a 555 timer's eight pins, in their order, are `a` to `h`.
 struct Part
     name: string
     kind: Kind
@@ -397,6 +456,9 @@ struct Part
     c: int
     d: int
     e: int
+    f: int
+    g: int
+    h: int
 
     // The node terminal `k` is on, counting from 0.
     terminal(self, k: int) -> int = k match
@@ -404,7 +466,10 @@ struct Part
         1 -> self.b
         2 -> self.c
         3 -> self.d
-        _ -> self.e
+        4 -> self.e
+        5 -> self.f
+        6 -> self.g
+        _ -> self.h
 
 // Two inductors wound on one core, SPICE's `K`: parts `first` and `second`, coupled by `k`, more than 0
 // and at most 1, so that their mutual inductance is `k · √(L1 · L2)`. A change of current in either
@@ -455,13 +520,17 @@ struct Circuit
         None
 
     // Add a two-terminal part between nodes `a` and `b`.
-    add(*self, name: string, kind: Kind, a: int, b: int) = self.parts.push(Part(name, kind, a, b, -1, -1, -1))
+    add(*self, name: string, kind: Kind, a: int, b: int) = self.parts.push(Part(name, kind, a, b, -1, -1, -1, -1, -1, -1))
 
     // Add a three-terminal part on nodes `a`, `b` and `c`.
-    add3(*self, name: string, kind: Kind, a: int, b: int, c: int) = self.parts.push(Part(name, kind, a, b, c, -1, -1))
+    add3(*self, name: string, kind: Kind, a: int, b: int, c: int) = self.parts.push(Part(name, kind, a, b, c, -1, -1, -1, -1, -1))
 
     // Add a five-terminal part, an op-amp, on nodes `a` to `e`.
-    add5(*self, name: string, kind: Kind, a: int, b: int, c: int, d: int, e: int) = self.parts.push(Part(name, kind, a, b, c, d, e))
+    add5(*self, name: string, kind: Kind, a: int, b: int, c: int, d: int, e: int) = self.parts.push(Part(name, kind, a, b, c, d, e, -1, -1, -1))
+
+    // Add an eight-terminal part, a 555 timer, on `nodes`, its pins' in their order.
+    add8(*self, name: string, kind: Kind, nodes: [8]int) =
+        self.parts.push(Part(name, kind, nodes[0], nodes[1], nodes[2], nodes[3], nodes[4], nodes[5], nodes[6], nodes[7]))
 
     // Add a part between two nodes named rather than numbered.
     connect(*self, name: string, kind: Kind, a: string, b: string)

@@ -1664,3 +1664,86 @@ remote_lamp()
     assert(e.s.filament(l1.part) > 0.0, "the thread's has heated")
     assert(ui.s.filament(l1.part) == e.s.filament(l1.part))
     assert(lamp_glow(ui, l1) == lamp_glow(e, l1) && lamp_glow(ui, l1) > 0.0)
+
+private flasher() -> &Model = model("flasher.amber", parse_schematic(str_cast(embed("../examples/flasher.amber"))).unwrap())
+
+private timer_high(m: &Model) -> bool = m.s.circuit.parts[usize(element_named(m, "U1").part)].kind == Kind.Timer(true)
+
+@test("the flasher's LED blinks about once a second: lit while the timer's output is high, dark while it is low")
+flasher_blinks()
+    val m = flasher()
+    val d1 = element_named(m, "D1")
+    var lit = m.s.current(d1.part) > 5e-3
+    var changes = 0
+
+    // A twentieth of a second of the window is as much of the circuit's, at its real-time speed.
+    for _ in 0..<80
+        tick(m, 0.05)
+
+        val now = m.s.current(d1.part) > 5e-3
+
+        assert(now == timer_high(m), s"the LED lit just while the output is high, at ${m.s.time} s")
+        assert(now || m.s.current(d1.part) < 1e-6, s"dark, not dim: ${m.s.current(d1.part)} A")
+
+        if now != lit then changes += 1
+
+        lit = now
+
+    // Lit from the start, off at 0.86 s, then on and off each half second or so: by 4 s, seven changes.
+    assert(changes >= 6 && changes <= 8, s"${changes} changes in 4 s")
+
+@test("a timer's status line says whether its output is high and its discharge off, and the voltages its comparators read")
+timer_status()
+    val m = flasher()
+
+    // A frame owes no more than a tenth of a second, so the clock is moved a twentieth at a time.
+    for _ in 0..<6
+        tick(m, 0.05)
+
+    m.select(m.sch.find("U1").unwrap())
+    assert(status(m).contains("U1 NE555 timer: output high, 7."), status(m))
+    assert(status(m).contains("; discharge off; threshold at "), status(m))
+    assert(status(m).contains(", control at 6V"), status(m))
+
+    for _ in 0..<14
+        tick(m, 0.05)
+
+    assert(!timer_high(m), s"low at ${m.s.time} s")
+    assert(status(m).contains("U1 NE555 timer: output low, "), status(m))
+    assert(status(m).contains("; discharge on; "), status(m))
+    assert(labelled_when_crowded(Shape.Timer))
+
+@test("a timer's dots run out of its output while it is high, into its discharge while it is low, in at its supply and out at its ground")
+timer_dots()
+    val m = flasher()
+    val i = usize(m.sch.find("U1").unwrap())
+
+    for _ in 0..<6
+        tick(m, 0.05)
+
+    assert(timer_high(m))
+    assert(m.part_flow[i] > 0.0, "out of the output, to the LED")
+    assert(m.emitter_flow[i] > 0.0, "into the supply pin")
+    assert(m.ground_flow[i] < 0.0, "out of the ground pin")
+
+    val before = m.base_flow[i]
+
+    for _ in 0..<14
+        tick(m, 0.05)
+
+    assert(!timer_high(m))
+    assert(m.base_flow[i] > before, "into the discharge, C1 emptying through R2")
+
+@test("the window's copy of a timer has the thread's latch once they are handed over")
+remote_timer()
+    val (ui, e) = paired(str_cast(embed("../examples/flasher.amber")))
+
+    exchange(ui, e)
+
+    for _ in 0..<20
+        work(e, 0.05)
+
+    exchange(ui, e)
+    assert(!timer_high(e), s"the thread's has gone low by 1 s: ${e.s.time} s")
+    assert(timer_high(ui) == timer_high(e))
+    assert(ui.s.voltage(element_named(ui, "U1").c) == e.s.voltage(element_named(e, "U1").c))
