@@ -280,7 +280,8 @@ struct Model
     // The span of the circuit's time the scope shows.
     window(self) -> real = SCOPE_SECONDS * self.pace()
 
-    // Open or close the switch that element `i` is.
+    // Open or close the switch that element `i` is, or throw the double-throw switch it is to the other
+    // throw.
     // Or set the pin element `i` is going round its modes, as a program running on its chip might:
     // listening, driving high, driving low.
     toggle(*self, i: int)
@@ -288,7 +289,7 @@ struct Model
 
         // The circuit's own thread does it, at the moment the circuit has reached.
         if self.remote
-            if e.shape == Shape.Pin || e.shape == Shape.Button || e.shape == Shape.Switch then self.changes.push(Toggle(i))
+            if e.shape == Shape.Pin || e.shape == Shape.Button || e.shape == Shape.Switch || e.shape == Shape.Spdt then self.changes.push(Toggle(i))
 
             return
 
@@ -308,6 +309,10 @@ struct Model
         if e.shape == Shape.Button
             self.s.set_switch(e.part, true)
             self.pressed.push((e.part, self.s.time + PRESS_SECONDS))
+            return
+
+        if e.shape == Shape.Spdt
+            self.s.set_throw(e.part, self.s.circuit.parts[usize(e.part)].kind == Spdt(false))
             return
 
         if e.shape != Shape.Switch then return
@@ -726,6 +731,13 @@ status(m: &Model) -> string
 
         return s"${clock} · ${e.name} ammeter reads ${amps(i)}: ${amps(i.abs())} flowing in at its ${if i < 0.0 then "second" else "first"} end"
 
+    // Which throw the common is joined to, and the current into the common.
+    if e.shape == Shape.Spdt
+        val common = m.s.terminal_current(e.part, 0)
+        val second = m.s.circuit.parts[usize(e.part)].kind == Spdt(true)
+
+        return s"${clock} · ${e.name} ${described(m, e)}: common to its ${if second then "second" else "first"} throw, ${engineering(common.abs())}A ${into(common)} the common"
+
     // The wiper's voltage, and the current along each half of the track toward it.
     if e.shape == Shape.Potentiometer
         val first = m.s.terminal_current(e.part, 0)
@@ -766,6 +778,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
         Some(k) -> s"${m.panels[k].summary()} power supply in ${if m.s.current_limited(e.part) then "CC" else "CV"}"
         None -> "power supply"
     Ammeter -> "ammeter"
+    Spdt -> "spdt"
     Zener -> s"${e.value}V zener"
     Switch -> if m.s.circuit.parts[usize(e.part)].kind == Switch(true) then "closed switch" else "open switch"
     Diode -> "diode"

@@ -41,6 +41,7 @@ import sysl.text.{Search, fields, split}
 // | `button` | two | — a push button, open but while it is pressed |
 // | `pot` | three: one end, the wiper, the other end | ohms end to end, then perhaps how far the wiper is turned from the first end, `30%` (50% if not given) |
 // | `ldr` | two | the light on it, `300lux` (300 lux, a lit room, if not given; `0lux` is darkness) |
+// | `spdt` | three: the common, the first throw, the second throw | which throw the common is joined to, `first` or `second` (`first` if not given) |
 // | `ammeter` | two: the current is read flowing in at the first and out at the second | — |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
@@ -149,6 +150,8 @@ enum Shape: u8
     // An ammeter, in series with what it measures: to the circuit a source of no volts, so it drops
     // nothing, and its reading is the current through it.
     Ammeter
+    // A single-pole double-throw switch: its common is joined to one of its two throws.
+    Spdt
     Ground
     Label
     Meter
@@ -156,7 +159,7 @@ enum Shape: u8
     // The number of grid points it is placed by.
     points(self) -> int = self match
         Ground | Label -> 1
-        Npn | Pnp | Nmos | Pmos | Potentiometer -> 3
+        Npn | Pnp | Nmos | Pmos | Potentiometer | Spdt -> 3
         OpAmp -> 5
         _ -> 2
 
@@ -485,6 +488,9 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
     if shape.points() == 1
         xy[2] = xy[0]
         xy[3] = xy[1]
+    elif shape == Spdt
+        if (xy[0] == xy[2] && xy[1] == xy[3]) || (xy[0] == xy[4] && xy[1] == xy[5]) || (xy[2] == xy[4] && xy[3] == xy[5])
+            return Err(s"${one} needs its common, first throw and second throw at different points")
     elif shape.points() == 3
         transistor_placed(shape, one, xy)?
     elif xy[0] == xy[2] && xy[1] == xy[3]
@@ -514,6 +520,7 @@ private element(words: []string) -> Result[(Element, Option[Kind]), string]
         Npn | Pnp | Nmos | Pmos -> if rest.len == 0 then default_model(shape) else rest[0]
         Speaker -> if rest.len == 0 then "8" else rest[0]
         Photoresistor -> if rest.len == 0 then "300lux" else rest[0]
+        Spdt -> if rest.len == 0 then "first" else rest[0]
         Pin -> "RP2040"
         _ -> rest.join(" ")
 
@@ -663,7 +670,7 @@ private a_word(word: string) -> string
     val b = word.bytes
     val vowel = b.len > 0 && (b[0] == u8('a') || b[0] == u8('e') || b[0] == u8('i') || b[0] == u8('o') || b[0] == u8('u'))
 
-    if vowel || word == "npn" || word == "nmos" || word == "ldr" then s"an ${word}" else s"a ${word}"
+    if vowel || word == "npn" || word == "nmos" || word == "ldr" || word == "spdt" then s"an ${word}" else s"a ${word}"
 
 // A transistor's three points, collector, base and emitter (a MOSFET's drain, gate and source, a
 // potentiometer's end, wiper and other end), in `xy`: its two ends apart, and its base or gate a square
@@ -713,6 +720,7 @@ private[amber] shape_named(word: string) -> Result[Shape, string] = word match
     "pot" -> Ok(Potentiometer)
     "ldr" -> Ok(Photoresistor)
     "ammeter" -> Ok(Ammeter)
+    "spdt" -> Ok(Spdt)
     _ -> Err(s"'${word}' is not a kind of element")
 
 private colour_named(word: string) -> Result[Colour, string] = word match
@@ -726,7 +734,7 @@ private colour_named(word: string) -> Result[Colour, string] = word match
 private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colour) -> Result[Kind, string]
     val optional = shape match
         // A generator and a supply say for themselves what they are missing.
-        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin | Button | Photoresistor | Ammeter -> true
+        Diode | Led | Switch | Npn | Pnp | Nmos | Pmos | Generator | Supply | Speaker | Pin | Button | Photoresistor | Ammeter | Spdt -> true
         _ -> false
 
     if rest.len == 0 && !optional then return Err(s"${a_word(kind_word)} needs a value")
@@ -756,6 +764,13 @@ private part_kind(shape: Shape, kind_word: string, rest: []string, colour: Colou
 
             Ok(Pin(RP2040_PIN))
         Button -> Ok(Switch(false))
+        Spdt ->
+            if rest.len == 0 then return Ok(Spdt(false))
+
+            rest[0] match
+                "first" -> Ok(Spdt(false))
+                "second" -> Ok(Spdt(true))
+                _ -> Err(s"'${rest[0]}' is not ${a_word(kind_word)}'s position: first or second")
         Potentiometer -> Ok(Potentiometer(positive(rest[0], "a potentiometer's resistance")?, if rest.len == 2 then turned(rest[1])? else 0.5))
         Photoresistor ->
             if rest.len == 0 then return Ok(Photoresistor(ROOM_LUX))

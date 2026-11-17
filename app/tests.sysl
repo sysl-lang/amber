@@ -1526,3 +1526,71 @@ ammeter_labels()
 
     assert(m.trouble != "")
     assert(ammeter_label(m, m.sch.elements[usize(m.sch.find("A1").unwrap())]) == "A1 —")
+
+// ## A double-throw switch
+
+private stairs() -> &Model = model("stairs.amber", parse_schematic(str_cast(embed("../examples/stairs.amber"))).unwrap())
+
+private lamp_amps(m: &Model) -> real = m.s.current(m.sch.elements[usize(m.sch.find("R1").unwrap())].part)
+
+private throw_of(m: &Model, name: string) -> Kind = m.s.circuit.parts[usize(m.sch.elements[usize(m.sch.find(name).unwrap())].part)].kind
+
+@test("the stairs light is lit with both switches on the same throw, and each click on either switch turns it off and on")
+stairs_two_way()
+    val m = stairs()
+
+    tick(m, 0.1)
+    assert(lamp_amps(m) > 10e-3, "both on their first throws")
+
+    m.select(m.sch.find("S1").unwrap())
+    assert(throw_of(m, "S1") == Kind.Spdt(true) && throw_of(m, "S2") == Kind.Spdt(false))
+    tick(m, 0.1)
+    assert(lamp_amps(m).abs() < 1e-9, "one up and one down")
+
+    m.select(m.sch.find("S2").unwrap())
+    assert(throw_of(m, "S2") == Kind.Spdt(true))
+    tick(m, 0.1)
+    assert(lamp_amps(m) > 10e-3, "both on their second throws")
+
+    m.select(m.sch.find("S2").unwrap())
+    assert(throw_of(m, "S2") == Kind.Spdt(false))
+    tick(m, 0.1)
+    assert(lamp_amps(m).abs() < 1e-9)
+
+@test("an spdt's status line says which throw the common is on and what flows into the common, and a click changes it")
+spdt_status()
+    val m = stairs()
+
+    tick(m, 0.1)
+    m.select(m.sch.find("S1").unwrap())
+    m.select(m.sch.find("S1").unwrap())
+    assert(m.s.circuit.parts[usize(m.sch.elements[usize(m.sch.find("S1").unwrap())].part)].kind == Kind.Spdt(false), "two clicks put it back")
+    assert(status(m).contains("S1 spdt: common to its first throw, "))
+    assert(status(m).contains("into the common"))
+
+    m.select(m.sch.find("S1").unwrap())
+    tick(m, 0.1)
+    assert(status(m).contains("S1 spdt: common to its second throw, "))
+    assert(!status(m).contains("mA"), "nothing flows into the common")
+
+@test("an spdt is labelled when the drawing is crowded, and a restart puts it back on the throw the file says")
+spdt_labels_and_restart()
+    assert(labelled_when_crowded(Shape.Spdt))
+
+    val m = model("s.amber", parse_schematic("battery B1 0 0 0 8 9V\nspdt S1 0 0 4 -1 4 1 second\nresistor R1 4 -1 8 -1 1k\nwire 8 -1 8 8\nwire 8 8 0 8\nground 0 8").unwrap())
+
+    assert(throw_of(m, "S1") == Kind.Spdt(true))
+    m.toggle(m.sch.find("S1").unwrap())
+    assert(throw_of(m, "S1") == Kind.Spdt(false))
+    m.restart()
+    assert(throw_of(m, "S1") == Kind.Spdt(true))
+
+@test("the thread's copy of a circuit throws a double-throw switch when the window's click is handed over")
+remote_spdt()
+    val (ui, e) = paired(str_cast(embed("../examples/stairs.amber")))
+    val s1 = ui.sch.find("S1").unwrap()
+
+    ui.toggle(s1)
+    assert(throw_of(ui, "S1") == Kind.Spdt(false) && throw_of(e, "S1") == Kind.Spdt(false), "nothing moves until the handover")
+    exchange(ui, e)
+    assert(throw_of(ui, "S1") == Kind.Spdt(true) && throw_of(e, "S1") == Kind.Spdt(true))

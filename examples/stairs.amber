@@ -1,0 +1,26 @@
+# A two-way light, as a staircase has: click either switch, S1 or S2, and the light changes.
+#
+# Each switch is an SPDT: its common is joined to one of its two throws, and clicking it joins the
+# other. The two throws of S1 are wired to the two throws of S2 by a pair of travellers, so the battery
+# at S1's common reaches the lamp at S2's common by whichever traveller both switches are on. With both
+# on the upper throws, or both on the lower, the circuit is complete and the LED lights. With one up and
+# one down, S1 feeds one traveller and S2 listens to the other, nothing connects, and the LED is dark.
+# Flipping either switch turns the light on or off, from either end of the stairs.
+#
+# R1 limits the LED's current to about 15 mA.
+
+battery  B1   0 2  0 14  9V
+wire          0 2  4 2
+spdt     S1   4 2  8 0  8 4
+
+wire          8 0  20 0
+wire          8 4  20 4
+
+spdt     S2   24 2  20 0  20 4
+wire          24 2  28 2
+
+resistor R1   28 2  28 6  470
+led      D1   28 6  28 10  red
+wire          28 10  28 14
+wire          0 14  28 14
+ground        0 14

@@ -131,6 +131,7 @@ struct Sim
                 Pin(d) -> self.circuit.parts[i].kind = Pin(d)
                 Potentiometer(ohms, position) -> self.circuit.parts[i].kind = Potentiometer(ohms, position)
                 Photoresistor(lux) -> self.circuit.parts[i].kind = Photoresistor(lux)
+                Spdt(second) -> self.circuit.parts[i].kind = Spdt(second)
                 _ -> ()
 
     // The voltage at node `node` against ground.
@@ -178,7 +179,7 @@ struct Sim
 
                 diode_current(m, v) + GMIN * v + (diode_conductance(m, v) + GMIN) * (self.junction_now(i) - v)
             Switch(closed) -> if closed then self.across(i) / CLOSED_OHMS else 0.0
-            Transistor(_) | Mosfet(_, _, _) | Potentiometer(_, _) -> self.terminal_current(i, 0)
+            Transistor(_) | Mosfet(_, _, _) | Potentiometer(_, _) | Spdt(_) -> self.terminal_current(i, 0)
             // An op-amp's is the current out of its output.
             OpAmp(_) -> -self.terminal_current(i, 2)
             // A pin's is the current into it from the circuit: negative while it drives current out.
@@ -220,6 +221,16 @@ struct Sim
                 0 -> i1
                 1 -> -i1 - i2
                 _ -> i2
+
+        // The current into the common goes out of the throw it is joined to; the other carries nothing.
+        if p.kind is Spdt(second)
+            val joined = if second then p.c else p.b
+            val into = (self.voltage(p.a) - self.voltage(joined)) / CLOSED_OHMS
+
+            return k match
+                0 -> into
+                1 -> if second then 0.0 else -into
+                _ -> if second then -into else 0.0
 
         if p.kind is OpAmp(m)
             val l = self.opamp_now(i, m)
@@ -307,6 +318,15 @@ struct Sim
     set_switch(*self, i: int, closed: bool)
         self.circuit.parts[usize(i)].kind = Switch(closed)
         self.corner()
+
+    // Join double-throw switch `i`'s common to its second throw, or to its first; a corner, as
+    // `set_switch` is. Anything but a double-throw switch is left as it is.
+    set_throw(*self, i: int, second: bool)
+        if self.circuit.parts[usize(i)].kind is Spdt(was)
+            if was == second then return
+
+            self.circuit.parts[usize(i)].kind = Spdt(second)
+            self.corner()
 
     // Turn potentiometer `i`'s wiper to `position`, from 0 at its first end to 1 at its other; a corner,
     // as `set_switch` is. Anything but a potentiometer is left as it is.
@@ -918,6 +938,12 @@ struct Sim
 
                     self.conductance(a, b, 1.0 / r1)
                     self.conductance(b, p.c - 1, 1.0 / r2)
+                Spdt(second) ->
+                    val joined = if second then p.c - 1 else b
+                    val loose = if second then b else p.c - 1
+
+                    self.conductance(a, joined, 1.0 / CLOSED_OHMS)
+                    self.sys.at(loose, loose, GMIN)
                 Switch(closed) ->
                     if closed
                         self.conductance(a, b, 1.0 / CLOSED_OHMS)

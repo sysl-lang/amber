@@ -190,6 +190,15 @@ private hit(m: &Model, at: Place, wx: int, wy: int) -> int
 
             continue
 
+        // A double-throw switch is hit along the line from its common to either throw.
+        if e.shape == Spdt
+            val (cx, cy) = (at.x(real(e.x1)), at.y(real(e.y1)))
+
+            if near_segment(px, py, cx, cy, at.x(real(e.x2)), at.y(real(e.y2)), 0.3 * at.unit) then return int(i)
+            if near_segment(px, py, cx, cy, at.x(real(e.x3)), at.y(real(e.y3)), 0.3 * at.unit) then return int(i)
+
+            continue
+
         // A transistor is hit anywhere in its circle.
         if e.shape.points() == 3 && e.shape != Potentiometer
             val g = transistor_frame(e)
@@ -279,6 +288,7 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
             Nmos | Pmos -> pen.mosfet(e, most, hot)
             OpAmp -> pen.opamp(e, most, hot)
             Potentiometer -> pen.pot(e, pot_position(m, e), most, hot)
+            Spdt -> pen.spdt(e, spdt_second(m, e), most, hot)
             _ -> pen.part(e, most, hot)
 
     // A dot wherever three or more ends meet, as a draughtsman marks a junction.
@@ -314,6 +324,8 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
 
             if e.part >= 0 && (e.shape == Nmos || e.shape == Pmos)
                 pen.mosfet_dots(e, i, m.part_flow[i])
+            elif e.part >= 0 && e.shape == Spdt
+                pen.spdt_dots(e, i, spdt_second(m, e), m.part_flow[i])
             elif e.part >= 0 && e.shape == Potentiometer
                 pen.pot_dots(e, i, pot_position(m, e), m.part_flow[i], m.base_flow[i], m.emitter_flow[i])
             elif e.part >= 0 && e.shape.points() == 3
@@ -1008,6 +1020,44 @@ private struct Pen
         if m.emitter_hold[i].carrying(m.s.terminal_current(e.part, 2), m.most_amps)
             self.dots(tx, ty, real(e.x3), real(e.y3), other)
 
+    // A double-throw switch: a lead from each of its three points in its node's colour, a contact on
+    // each throw and the pivot a little in from the common, and the lever from the pivot to the contact
+    // of the throw it is joined to, `second` or the first.
+    spdt(self, e: Element, second: bool, most: real, hot: bool)
+        val m = self.m
+        val (px, py, c1x, c1y, c2x, c2y) = spdt_points(e)
+        val (cx, cy) = if second then (c2x, c2y) else (c1x, c1y)
+
+        self.width(3.0)
+        set(self.vg, wire_colour(m.s.voltage(e.a), most))
+        self.line(real(e.x1), real(e.y1), px, py)
+        set(self.vg, wire_colour(m.s.voltage(e.b), most))
+        self.line(real(e.x2), real(e.y2), c1x, c1y)
+        set(self.vg, wire_colour(m.s.voltage(e.c), most))
+        self.line(real(e.x3), real(e.y3), c2x, c2y)
+
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+        self.line(px, py, cx, cy)
+        self.dot(px, py, 3.5)
+        self.dot(c1x, c1y, 3.5)
+        self.dot(c2x, c2y, 3.5)
+
+    // A double-throw switch's current dots, from its common along the lever and out along the throw it
+    // is joined to, moved `flow` squares along the way. The other throw carries nothing.
+    spdt_dots(self, e: Element, i: usize, second: bool, flow: real)
+        if !self.m.part_hold[i].carrying(self.m.s.current(e.part), self.m.most_amps) then return
+
+        val (px, py, c1x, c1y, c2x, c2y) = spdt_points(e)
+        val (cx, cy) = if second then (c2x, c2y) else (c1x, c1y)
+        val (tx, ty) = if second then (real(e.x3), real(e.y3)) else (real(e.x2), real(e.y2))
+        val first = distance(real(e.x1), real(e.y1), px, py)
+        val lever = distance(px, py, cx, cy)
+
+        self.dots(real(e.x1), real(e.y1), px, py, flow)
+        self.dots(px, py, cx, cy, flow - first)
+        self.dots(cx, cy, tx, ty, flow - first - lever)
+
     // A MOSFET: a lead from each of its three points in its node's colour, the gate's plate, the channel
     // in three pieces with the drain's and source's stubs, and the body's line from the channel's middle
     // down to the source with its arrow, pointing in for an N-channel and out for a P-channel.
@@ -1276,7 +1326,47 @@ private pot_position(m: &Model, e: Element) -> real = m.s.circuit.parts[usize(e.
     Kind.Potentiometer(_, p) -> p
     _ -> 0.5
 
-private distance(x1: real, y1: real, x2: real, y2: real) -> real = ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)).sqrt()
+// Whether (`px`, `py`) is within `reach` of the line from (`ax`, `ay`) to (`bx`, `by`).
+private near_segment(px: real, py: real, ax: real, ay: real, bx: real, by: real, reach: real) -> bool
+    val dx = bx - ax
+    val dy = by - ay
+    val t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+
+    if t < 0.0 || t > 1.0 then return false
+
+    val qx = ax + t * dx - px
+    val qy = ay + t * dy - py
+
+    qx * qx + qy * qy < reach * reach
+
+// Whether double-throw switch `e` is joined to its second throw.
+private spdt_second(m: &Model, e: Element) -> bool = m.s.circuit.parts[usize(e.part)].kind match
+    Kind.Spdt(second) -> second
+    _ -> false
+
+// Where a double-throw switch's pivot is, a quarter of the way in from its common toward its throws
+// (a square at most), and the contacts on its first and second throws, a square (or a third of the
+// way, if less) in from each toward the pivot.
+private spdt_points(e: Element) -> (real, real, real, real, real, real)
+    val (ax, ay) = (real(e.x1), real(e.y1))
+    val (mx, my) = ((real(e.x2) + real(e.x3)) / 2.0, (real(e.y2) + real(e.y3)) / 2.0)
+    val run = distance(ax, ay, mx, my)
+    val back = run.min(4.0) / 4.0
+    val px = if run == 0.0 then ax else ax + (mx - ax) * back / run
+    val py = if run == 0.0 then ay else ay + (my - ay) * back / run
+    val (c1x, c1y) = toward(real(e.x2), real(e.y2), px, py, 1.0)
+    val (c2x, c2y) = toward(real(e.x3), real(e.y3), px, py, 1.0)
+
+    (px, py, c1x, c1y, c2x, c2y)
+
+// The point `by` squares from (`ax`, `ay`) toward (`bx`, `by`), or less if that is nearer.
+private toward(ax: real, ay: real, bx: real, by: real, squares: real) -> (real, real)
+    val d = distance(ax, ay, bx, by)
+    val s = squares.min(d / 3.0)
+
+    if d == 0.0 then (ax, ay) else (ax + (bx - ax) * s / d, ay + (by - ay) * s / d)
+
+private distance(x1: real, y1: real, x2: real, y2: real) -> real =((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)).sqrt()
 
 // --- Labels -----------------------------------------------------------------------------------------
 
@@ -1288,7 +1378,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor | Ammeter -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor | Ammeter | Spdt -> true
     _ -> false
 
 // An ammeter's name and its reading, or a dash while the circuit has no solution.
@@ -1321,6 +1411,13 @@ private labels(m: &Model, c: *Canvas, at: Place)
             if !crowded && m.values && m.trouble == ""
                 put(c, at.x(cx + 0.6), at.y(cy + 0.5), volts(m.s.voltage(e.c)), 0xFFB030, false)
 
+            continue
+
+        // A double-throw switch's name, under the lowest of its three points.
+        if e.shape == Spdt
+            val low = max(e.y1, max(e.y2, e.y3))
+
+            put(c, at.x((real(e.x1) + real(e.x2) + real(e.x3)) / 3.0), at.y(real(low)) + 0.3 * at.unit, e.name, INK, true)
             continue
 
         if e.shape.points() == 3

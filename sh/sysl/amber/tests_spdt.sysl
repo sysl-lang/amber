@@ -1,0 +1,205 @@
+module sh.sysl.amber
+@tests
+
+import sysl.text.replace_all
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol * want.abs().max(1.0)
+
+// A 9 V battery feeding the common of a double-throw switch, whose first throw lights 1 kΩ and whose
+// second lights 2 kΩ, both back to the battery's `−`.
+val CHOICE = """
+    battery  B1  0 0  0 8  9V
+    spdt     S1  0 0  4 -1  4 1
+    resistor R1  4 -1  8 -1  1k
+    resistor R2  4 1  8 1  2k
+    wire         8 -1  8 1
+    wire         8 1  8 8
+    wire         8 8  0 8
+    ground       0 8
+    """
+
+private part_of(sch: Schematic, name: string) -> int = sch.elements[sch.find(name).unwrap()].part
+
+// ## In a schematic
+
+@test
+private an_spdt_line_is_placed_by_three_points_and_is_on_its_first_throw_without_a_value()
+    val sch = parse_schematic(CHOICE).unwrap()
+    val s = sch.elements[sch.find("S1").unwrap()]
+
+    assert_eq(s.shape, Shape.Spdt)
+    assert_eq(s.shape.points(), 3)
+    assert_eq(s.value, "first")
+    assert(s.shape.is_part())
+    assert_eq(sch.circuit.parts[usize(s.part)].kind, Spdt(false))
+    assert(s.a != s.b && s.b != s.c && s.a != s.c, "its three points are three nodes")
+    assert_eq(sch.circuit.parts[usize(s.part)].kind.terminals(), 3)
+
+@test
+private the_value_says_which_throw_the_common_is_joined_to()
+    val first = parse_schematic(replace_all(CHOICE, "4 -1  4 1", "4 -1  4 1  first")).unwrap()
+    val second = parse_schematic(replace_all(CHOICE, "4 -1  4 1", "4 -1  4 1  second")).unwrap()
+
+    assert_eq(first.circuit.parts[usize(part_of(first, "S1"))].kind, Spdt(false))
+    assert_eq(second.circuit.parts[usize(part_of(second, "S1"))].kind, Spdt(true))
+    assert_eq(second.elements[second.find("S1").unwrap()].value, "second")
+
+@test
+private an_spdt_line_says_what_is_wrong_with_it()
+    assert_eq(parse_schematic("spdt S1  0 0  4 -1  4 1  third\n").err(), Some("line 1: 'third' is not an spdt's position: first or second"))
+    assert_eq(parse_schematic("spdt S1  0 0  4 -1  4 1  Second\n").err(), Some("line 1: 'Second' is not an spdt's position: first or second"))
+    assert_eq(parse_schematic("spdt S1  0 0  4 -1  4 1  first  second\n").err(), Some("line 1: 'second' is more than an spdt takes"))
+    assert_eq(parse_schematic("spdt S1  0 0  4 -1\n").err(), Some("line 1: an spdt is placed by 3 points"))
+    assert_eq(parse_schematic("spdt  0 0  4 -1  4 1\n").err(), Some("line 1: an spdt is placed by 3 points"))
+
+@test
+private an_spdt_needs_its_three_points_at_different_places()
+    val wrong = "line 1: an spdt needs its common, first throw and second throw at different points"
+
+    assert_eq(parse_schematic("spdt S1  0 0  0 0  4 1\n").err(), Some(wrong))
+    assert_eq(parse_schematic("spdt S1  0 0  4 1  0 0\n").err(), Some(wrong))
+    assert_eq(parse_schematic("spdt S1  0 0  4 1  4 1\n").err(), Some(wrong))
+
+@test
+private the_throws_may_stand_anywhere_about_the_common()
+    assert(parse_schematic("spdt S1  0 0  4 0  8 0\n").err() == None, "in a line")
+    assert(parse_schematic("spdt S1  4 0  0 -1  0 1\n").err() == None, "the common on the right")
+    assert(parse_schematic("spdt S1  0 0  1 4  2 4\n").err() == None, "side by side")
+
+// ## What it does
+
+@test
+private the_common_is_joined_to_the_first_throw_and_the_second_carries_nothing()
+    val sch = parse_schematic(CHOICE).unwrap()
+    var s = sim(sch.circuit)
+    val sw = part_of(sch, "S1")
+
+    s.operating_point().unwrap()
+    assert(near(s.current(part_of(sch, "R1")), 9e-3, 1e-6), s"9 V across 1 kΩ, not ${s.current(part_of(sch, "R1"))}")
+    assert(s.current(part_of(sch, "R2")).abs() < 1e-9, "the other resistor is cut off")
+    assert(near(s.current(sw), 9e-3, 1e-6), "into the common")
+    assert(near(s.terminal_current(sw, 0), 9e-3, 1e-6))
+    assert(near(s.terminal_current(sw, 1), -9e-3, 1e-6), "out of the first throw")
+    assert_eq(s.terminal_current(sw, 2), 0.0)
+
+@test
+private on_the_second_throw_the_other_resistor_carries_and_the_first_carries_nothing()
+    val sch = parse_schematic(replace_all(CHOICE, "4 -1  4 1", "4 -1  4 1  second")).unwrap()
+    var s = sim(sch.circuit)
+    val sw = part_of(sch, "S1")
+
+    s.operating_point().unwrap()
+    assert(near(s.current(part_of(sch, "R2")), 4.5e-3, 1e-6), s"9 V across 2 kΩ, not ${s.current(part_of(sch, "R2"))}")
+    assert(s.current(part_of(sch, "R1")).abs() < 1e-9, "the first resistor is cut off")
+    assert(near(s.current(sw), 4.5e-3, 1e-6))
+    assert_eq(s.terminal_current(sw, 1), 0.0)
+    assert(near(s.terminal_current(sw, 2), -4.5e-3, 1e-6), "out of the second throw")
+
+@test
+private its_three_currents_sum_to_zero_on_either_throw()
+    for word in ["first", "second"]
+        val sch = parse_schematic(replace_all(CHOICE, "4 -1  4 1", s"4 -1  4 1  ${word}")).unwrap()
+        var s = sim(sch.circuit)
+        val sw = part_of(sch, "S1")
+
+        s.operating_point().unwrap()
+        assert(s.terminal_current(sw, 0) + s.terminal_current(sw, 1) + s.terminal_current(sw, 2) == 0.0, word)
+
+@test
+private it_drops_next_to_nothing_between_the_common_and_the_throw_it_is_on()
+    val sch = parse_schematic(CHOICE).unwrap()
+    var s = sim(sch.circuit)
+    val sw = sch.elements[sch.find("S1").unwrap()]
+
+    s.operating_point().unwrap()
+    assert((s.voltage(sw.a) - s.voltage(sw.b)).abs() < 0.1, "a hundredth of an ohm at 9 mA")
+    assert((s.voltage(sw.a) - 9.0).abs() < 0.1)
+
+@test
+private the_throw_it_is_not_on_is_not_connected_at_all()
+    // The second throw is joined to nothing but its resistor, whose other end is the battery's `−`:
+    // with the common on the first throw, it sits at ground, not at the battery's voltage.
+    val sch = parse_schematic(CHOICE).unwrap()
+    var s = sim(sch.circuit)
+    val sw = sch.elements[sch.find("S1").unwrap()]
+
+    s.operating_point().unwrap()
+    assert(s.voltage(sw.c).abs() < 1e-6, s"${s.voltage(sw.c)}")
+
+@test
+private throwing_it_in_mid_run_moves_the_current_from_one_resistor_to_the_other()
+    val sch = parse_schematic(CHOICE).unwrap()
+    var s = sim(sch.circuit)
+    val sw = part_of(sch, "S1")
+    val r1 = part_of(sch, "R1")
+    val r2 = part_of(sch, "R2")
+
+    s.power_on().unwrap()
+    s.advance_to(1e-3).unwrap()
+    assert(near(s.current(r1), 9e-3, 1e-6) && s.current(r2).abs() < 1e-9)
+
+    s.set_throw(sw, true)
+    s.advance_to(2e-3).unwrap()
+    assert(near(s.current(r2), 4.5e-3, 1e-6), s"${s.current(r2)}")
+    assert(s.current(r1).abs() < 1e-9)
+    assert_eq(s.circuit.parts[usize(sw)].kind, Spdt(true))
+
+    s.set_throw(sw, false)
+    s.advance_to(3e-3).unwrap()
+    assert(near(s.current(r1), 9e-3, 1e-6) && s.current(r2).abs() < 1e-9)
+
+@test
+private set_throw_leaves_anything_but_a_double_throw_switch_alone()
+    val sch = parse_schematic(CHOICE).unwrap()
+    var s = sim(sch.circuit)
+    val r1 = part_of(sch, "R1")
+
+    s.set_throw(r1, true)
+    assert_eq(s.circuit.parts[usize(r1)].kind, Resistor(1000.0))
+
+@test
+private a_copied_simulation_takes_the_throw_the_other_is_on()
+    val sch = parse_schematic(CHOICE).unwrap()
+    var a = sim(sch.circuit)
+    var b = sim(sch.circuit)
+    val sw = part_of(sch, "S1")
+
+    b.set_throw(sw, true)
+    a.mirror(b)
+    assert_eq(a.circuit.parts[usize(sw)].kind, Spdt(true))
+
+@test
+private a_capacitor_charges_through_whichever_throw_is_chosen()
+    val sch = parse_schematic(replace_all(CHOICE, "resistor R2  4 1  8 1  2k", "resistor R2  4 1  6 1  2k\ncapacitor C1  6 1  8 1  1u")).unwrap()
+    var s = sim(sch.circuit)
+    val sw = part_of(sch, "S1")
+    val c = part_of(sch, "C1")
+
+    s.power_on().unwrap()
+    s.set_throw(sw, true)
+    s.advance_to(2e-3).unwrap()
+
+    // One time constant, 2 kΩ · 1 µF, in: charged to 1 − 1/e of the battery's 9 V.
+    assert(near(s.across(c), 9.0 * (1.0 - (-1.0).exp()), 0.02), s"${s.across(c)}")
+
+// ## A document
+
+@test
+private a_document_adds_an_spdt_line_with_its_position()
+    var doc = document("battery  B1  0 0  0 8  9V\n")
+
+    assert_eq(doc.add("spdt", "S1", [(0, 0), (4, -1), (4, 1)], "second"), 2)
+    assert_eq(doc.text(), "battery  B1  0 0  0 8  9V\nspdt      S1    0 0   4 -1  4 1   second\n")
+
+    val e = doc.schematic().unwrap().elements[1]
+
+    assert_eq(e.shape, Shape.Spdt)
+    assert_eq(e.value, "second")
+
+@test
+private a_document_adds_an_spdt_line_without_one()
+    var doc = document("battery  B1  0 0  0 8  9V\n")
+
+    assert_eq(doc.add("spdt", "S1", [(0, 0), (4, -1), (4, 1)], ""), 2)
+    assert_eq(doc.text(), "battery  B1  0 0  0 8  9V\nspdt      S1    0 0   4 -1  4 1\n")
+    assert_eq(doc.schematic().unwrap().elements[1].value, "first")

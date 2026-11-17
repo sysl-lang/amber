@@ -71,7 +71,8 @@ plot in place of the scope.
 The examples: `led` (a battery, a resistor and an LED), `dimmer` (a potentiometer's knob dimming an
 LED; click RV1 and turn it), `nightlight` (a photoresistor and a transistor lighting an LED when it
 gets dark; click LDR1 and turn the light down), `kirchhoff` (three ammeters reading two parallel
-branches and their total, 9 mA and 18 mA making 27 mA), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
+branches and their total, 9 mA and 18 mA making 27 mA), `stairs` (a two-way light: two SPDT switches
+joined by two travellers, so a click on either switch turns the LED on or off), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
@@ -120,7 +121,7 @@ meter     OUT 6 0  6 6                     # red lead first
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
 `gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
-`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `ammeter` (below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
+`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `ammeter` (below), `spdt` (below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
 `TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).
@@ -227,6 +228,15 @@ is not drawn on either:
 
 ```
 ammeter   A1 4 6  4 10
+```
+
+An SPDT switch (single-pole double-throw) is placed by three points: its common, its first throw and
+its second throw. Its value, `first` (the default) or `second`, says which throw the common is joined
+to; the other throw is connected to nothing. Click it to flip it to the other throw, as a switch is
+clicked. The current dots run from the common to the throw it is on:
+
+```
+spdt      S1 4 2  8 0  8 4  second
 ```
 
 ## SPICE netlists

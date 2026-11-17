@@ -324,7 +324,9 @@ Each is a piece of work of its own, in this order.
    level, a slider in the viewer)~~ — `ldr`, `Photoresistor(lux)` with a GL5528's law, and
    `Sim.set_light`, the `nightlight` example, held to the law and the divider; ~~an **ammeter** (a zero-volt source read for its
    current)~~ — `ammeter`, a zero-volt source read through `Sim.current`, the `kirchhoff` example,
-   held to Ohm's and Kirchhoff's laws; an **SPDT switch**; a **lamp** (a filament whose resistance rises as it heats, glowing);
+   held to Ohm's and Kirchhoff's laws; ~~an **SPDT switch**~~ — `spdt`, `Spdt(second)` joining its common to one of two throws and leaving the
+   other connected to nothing, `Sim.set_throw`, clicked to flip, the `stairs` example (a two-way light), held to
+   Ohm's law on each throw and to the sum of its three currents being zero; a **lamp** (a filament whose resistance rises as it heats, glowing);
    the **555 timer**; a **relay** (a coil that closes a switch); a **DC motor** (a back-EMF, spun on
    screen); and after them, as wanted, a 7805 regulator, a thermistor, a fuse and a crystal.
 9. **Benchtop's analog layer**, measured against the H747 real-time bar.

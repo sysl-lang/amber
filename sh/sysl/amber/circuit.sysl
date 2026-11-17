@@ -284,12 +284,16 @@ enum Kind derives Eq
     // A photoresistor — a light-dependent resistor, a cadmium-sulphide cell — in `lux` of light: its
     // resistance falls as the light on it rises, as `ldr_ohms` says.
     Photoresistor(lux: real)
+    // A single-pole double-throw switch, with three terminals: the common, its first throw and its
+    // second throw, in that order. The common is joined to the first throw, or to the second when
+    // `second` is set, as a closed switch joins its ends; the other throw is connected to nothing.
+    Spdt(second: bool)
 
-    // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor or a
-    // potentiometer, 2 for the rest.
+    // How many terminals a part of this kind has: 5 for an op-amp, 3 for a transistor, a potentiometer
+    // or a double-throw switch, 2 for the rest.
     terminals(self) -> int = self match
         OpAmp(_) -> 5
-        Transistor(_) | Mosfet(_, _, _) | Potentiometer(_, _) -> 3
+        Transistor(_) | Mosfet(_, _, _) | Potentiometer(_, _) | Spdt(_) -> 3
         _ -> 2
 
     // A source's wave; `None` for a part that is not a source.
