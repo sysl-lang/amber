@@ -78,7 +78,9 @@ joined by two travellers, so a click on either switch turns the LED on or off), 
 a switch, an ammeter and a 12 V 5 W lamp: click S1 and watch the ammeter's inrush, ten times the
 steady current, fall away as the filament heats), `flasher` (a 555 timer running free, blinking an
 LED about once a second: high for 0.54 s, low for 0.47 s, put a meter on C1 to watch it swing between
-3 V and 6 V), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
+3 V and 6 V), `relay` (a switch driving a transistor driving a 12 V relay, a flyback diode across
+its coil: close S1 and the contact changes over, putting out the standby LED and lighting a lamp;
+open it and the diode carries the coil's current until the armature drops out), `rc` (a capacitor charging when you close the switch), `filter` (a square wave smoothed), `blink` (an LED on a square wave), `ring` (a capacitor
 and an inductor trading energy), `astable` (two transistors blinking two LEDs in turn, about once
 a second), `cmos` (an NMOS and a PMOS inverting a switch's setting, to light an LED) and `amplifier`
 (a 2N3904 common-emitter stage turning a generator's 10 mV at 1 kHz into about 660 mV, upside down;
@@ -127,7 +129,7 @@ meter     OUT 6 0  6 6                     # red lead first
 
 Parts: `resistor`, `capacitor`, `inductor`, `battery`, `source` (a wave), `current` (amps or a wave),
 `gen` (a signal generator, below), `supply` (a bench power supply, below), `switch` (`open` or
-`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `ammeter` (below), `spdt` (below), `lamp` (below), `timer` (a 555, below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
+`closed`), `button` (a push button, open but while pressed), `pot` (a potentiometer, below), `ldr` (a photoresistor, below), `ammeter` (below), `spdt` (below), `lamp` (below), `timer` (a 555, below), `relay` (below), `diode`, `led` (`red`, `yellow`, `green`, `blue`), `zener` (its breakdown voltage), and the
 transistors `npn` (`2N3904`, the default) and `pnp` (`2N3906`, the default), and the MOSFETs `nmos`
 (`2N7000`, the default) and `pmos` (`BS250`, the default), and `opamp` (`741`, the default, or
 `TL072`), and `pin` (a microcontroller's pin, from the pin to the chip's ground: an RP2040's, below).
@@ -280,6 +282,30 @@ It draws 10 mA at 15 V. The latch moves between steps, never within one, and a s
 a comparator past its level is taken again to end where it crosses, so an astable keeps the
 datasheet's time: high for 0.693 (R1 + R2) C, low for 0.693 R2 C. Clicked, its status line says
 whether its output is high and its discharge off, and what its threshold, trigger and control read.
+
+A relay is placed by its middle too, and its value is its coil's rated voltage, then perhaps the
+coil's resistance; left out, the resistance is the one taking 0.36 W at the rated voltage (400 Ω at
+12 V, 70 Ω at 5 V), as the Songle SRD-xxVDC-SL-C's table has it. Its coil stands two squares left of
+the middle, its ends three squares up and down; its contact is on the right, the common two squares
+right and three down, the normally-closed throw a square right and three up, the normally-open one
+three right and three up. `turned` and `flipped` move them as they move an op-amp's:
+
+```
+relay     K1 12 8  12V 400                 # coil 10 5 and 10 11, common 14 11, NC 13 5, NO 15 5
+```
+
+Its coil is its resistance in series with an inductance, with a time constant of 1 ms (0.4 H at
+400 Ω; the datasheet gives none). Released, its armature pulls in once the coil's current reaches
+three quarters of its rated current, the datasheet's must-operate voltage; pulled in, it holds until
+the current falls below a tenth, the must-release voltage, so between the two it stays as it was. The
+armature moves between steps, each step landing on the crossing, as a 555's latch does. Its contact is
+an SPDT switch's, the common joined to the normally-closed throw while released and to the
+normally-open one while operated. It is drawn as a box for the coil and an SPDT's lever, a dashed line
+for the armature between them; its coil decides, so clicking it only selects it, and its status line
+gives the coil's current against the pull-in and drop-out currents. Driven through a transistor, its
+coil switched off with no diode across it drives the collector hundreds of volts high — kilovolts
+here, since amber's transistors do not break down as a real one does at some tens of volts — and with
+one, a diode's drop above the supply.
 
 ## SPICE netlists
 

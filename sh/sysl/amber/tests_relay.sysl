@@ -1,0 +1,402 @@
+module sh.sysl.amber
+@tests
+
+import sysl.math.complex.Complex
+import sysl.text.replace_all
+
+private near(got: real, want: real, tol: real) -> bool = (got - want).abs() <= tol * want.abs().max(1e-300)
+
+private part(sch: Schematic, name: string) -> int = sch.elements[sch.find(name).unwrap()].part
+
+private operated(s: Sim, i: int) -> bool = s.circuit.parts[usize(i)].kind match
+    Relay(_, _, op) -> op
+    _ -> false
+
+// A 12 V, 400 Ω relay, K1, its coil across VC, whose value is `WAVE`; its common on B2's 5 V, its
+// normally-closed throw into RNC, 1 kΩ, and its normally-open throw into RNO, 500 Ω, each to ground.
+val BENCH = """
+    source   VC   0 7  0 16  WAVE
+    wire          0 7  8 7
+    relay    K1   10 10  12V 400
+    wire          8 13  8 16
+    wire          0 16  12 16
+    ground        0 16
+    battery  B2   12 13  12 16  5V
+    resistor RNC  11 7  11 2  1k
+    ground        11 2
+    resistor RNO  13 7  13 2  500
+    ground        13 2
+    """
+
+private bench(wave: string) -> Schematic = parse_schematic(replace_all(BENCH, "WAVE", wave)).unwrap()
+
+// The same relay driven low-side by an NPN: its base fed 5 V through RB for 10 ms, then nothing over
+// 10 µs, and D1 across the coil, its cathode on the supply.
+val DRIVER = """
+    battery  B1   0 0  0 20  12V
+    wire          0 0  8 0
+    wire          8 0  8 3
+    relay    K1   10 6  12V 400
+    wire          5 3  8 3
+    diode    D1   5 9  5 3
+    wire          5 9  8 9
+    wire          8 9  8 12
+    npn      Q1   8 12  6 14  8 16
+    resistor RB   2 14  6 14  4.7k
+    source   VB   2 14  2 20  pwl 0 5 10m 5 10.01m 0
+    wire          8 16  8 20
+    wire          0 20  12 20
+    wire          12 9  12 20
+    ground        0 20
+    """
+
+// ## In a schematic
+
+@test
+private a_relay_line_is_placed_by_its_middle_and_takes_its_coils_rating()
+    val sch = parse_schematic("relay K1 12 8 12V 400\n").unwrap()
+    val k = sch.elements[0]
+
+    assert_eq(k.shape, Shape.Relay)
+    assert_eq(k.shape.points(), 5)
+    assert_eq(k.value, "12V 400")
+    assert_eq(sch.circuit.parts[usize(k.part)].kind, Relay(12.0, 400.0, false), "released")
+    assert_eq(sch.circuit.parts[usize(k.part)].kind.terminals(), 5)
+
+@test
+private a_coil_with_no_resistance_given_takes_the_datasheets_point_three_six_watts()
+    for (volts, ohms) in [(3.0, 25.0), (5.0, 69.4), (6.0, 100.0), (9.0, 225.0), (12.0, 400.0), (24.0, 1600.0)]
+        val sch = parse_schematic(s"relay K1 12 8 ${volts}V\n").unwrap()
+
+        if sch.circuit.parts[0].kind is Relay(v, r, _)
+            assert_eq(v, volts)
+            assert(near(r, ohms, 2e-3), s"${volts} V: ${r}")
+        else
+            assert(false)
+
+    assert_eq(parse_schematic("relay K1 12 8 5V\n").unwrap().elements[0].value, "5V")
+
+@test
+private its_pins_stand_coil_left_and_contact_right()
+    val k = parse_schematic("relay K1 12 8 12V\n").unwrap().elements[0]
+
+    assert_eq(k.point(0), (10, 5), "coil's first end, top left")
+    assert_eq(k.point(1), (10, 11), "coil's second end, bottom left")
+    assert_eq(k.point(2), (14, 11), "common, bottom right")
+    assert_eq(k.point(3), (13, 5), "normally closed, top, nearer the coil")
+    assert_eq(k.point(4), (15, 5), "normally open, top, outside")
+
+@test
+private turned_and_flipped_its_pins_move_as_an_opamps_do()
+    val turned = parse_schematic("relay K1 12 8 12V 400 turned 90\n").unwrap().elements[0]
+
+    assert_eq(turned.value, "12V 400")
+    assert_eq(turned.point(0), (15, 6), "the coil on top, its first end on the right")
+    assert_eq(turned.point(2), (9, 10), "the common bottom left")
+    assert_eq(turned.point(4), (15, 11), "normally open bottom right")
+
+    val flipped = parse_schematic("relay K1 12 8 12V flipped\n").unwrap().elements[0]
+
+    assert_eq(flipped.point(0), (10, 11), "the coil's first end below")
+    assert_eq(flipped.point(2), (14, 5), "the common on top")
+    assert_eq(flipped.point(3), (13, 11), "the throws below")
+    assert_eq(flipped.point(4), (15, 11))
+
+    val both = parse_schematic("relay K1 12 8 12V 400 flipped turned 270\n").unwrap().elements[0]
+
+    for k in 0..<5
+        assert_eq(both.point(k), relay_pin(12, 8, k, 3, true), s"pin ${k}")
+
+@test
+private a_relay_line_says_what_is_wrong_with_it()
+    assert_eq(parse_schematic("relay\n").err(), Some("line 1: a relay needs a name"))
+    assert_eq(parse_schematic("relay K1 3\n").err(), Some("line 1: a relay is placed by 1 point, its middle"))
+    assert_eq(parse_schematic("relay K1 3 x 12V\n").err(), Some("line 1: 'x' is not a grid coordinate"))
+    assert_eq(parse_schematic("relay K1 3 3\n").err(), Some("line 1: a relay needs its coil's rated voltage: 12V"))
+    assert_eq(parse_schematic("relay K1 3 3 turned 90\n").err(), Some("line 1: a relay needs its coil's rated voltage: 12V"))
+    assert_eq(parse_schematic("relay K1 3 3 0V\n").err(), Some("line 1: a relay coil's voltage is more than zero"))
+    assert_eq(parse_schematic("relay K1 3 3 12V -5\n").err(), Some("line 1: a relay coil's resistance is more than zero"))
+    assert_eq(parse_schematic("relay K1 3 3 12V 400 5W\n").err(), Some("line 1: '5W' is more than a relay takes"))
+    assert_eq(parse_schematic("relay K1 3 3 12V turned 45\n").err(), Some("line 1: '45' is not a turn: 90, 180 or 270"))
+    assert_eq(parse_schematic("relay K1 3 3 12V flipped flipped\n").err(), Some("line 1: 'flipped' is more than a relay takes"))
+    assert_eq(parse_schematic("relay K1 3 3 12V flipped 400\n").err(), Some("line 1: '400' is more than a relay takes"))
+
+@test
+private a_document_adds_a_relay_line_and_turns_mirrors_and_revalues_it()
+    var doc = document("battery  B1  0 2  0 14  12V\n")
+
+    assert_eq(doc.add("relay", "K1", [(12, 8)], "12V 400"), 2)
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  12V\nrelay     K1    12 8  12V 400\n")
+    assert_eq(doc.schematic().unwrap().circuit.parts[1].kind, Relay(12.0, 400.0, false))
+
+    doc.turn(2, 12, 8).unwrap()
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  12V\nrelay     K1    12 8  12V 400 turned 90\n", "both words of its value kept")
+    doc.mirror(2, 24).unwrap()
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  12V\nrelay     K1    12 8  12V 400 turned 90 flipped\n")
+    doc.revalue(2, "5V").unwrap()
+    // The turn stays in its column, as any word after a shorter one does.
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  12V\nrelay     K1    12 8  5V      turned 90 flipped\n", "its turn kept")
+    doc.revalue(2, "24V 1.6k").unwrap()
+    assert_eq(doc.text(), "battery  B1  0 2  0 14  12V\nrelay     K1    12 8  24V 1.6k      turned 90 flipped\n")
+    assert_eq(doc.schematic().unwrap().circuit.parts[1].kind, Relay(24.0, 1.6e3, false))
+    doc.move_point(2, 0, 10, 6).unwrap()
+
+    val k = doc.schematic().unwrap().elements[1]
+
+    for i in 0..<5
+        assert_eq(k.point(i), relay_pin(10, 6, i, 1, true), s"pin ${i}")
+
+// ## Its armature
+
+@test
+private it_pulls_in_at_three_quarters_and_drops_out_below_a_tenth_of_its_rated_current()
+    // 12 V, 400 Ω: rated 30 mA, pull-in 22.5 mA, drop-out 3 mA.
+    assert(near(relay_pull_in(12.0, 400.0), 22.5e-3, 1e-12))
+    assert(near(relay_drop_out(12.0, 400.0), 3e-3, 1e-12))
+    assert(relay_next(false, 22.5e-3, 12.0, 400.0), "at the pull-in current it pulls in")
+    assert(!relay_next(false, 22.49e-3, 12.0, 400.0), "just below it, it does not")
+    assert(relay_next(false, -22.5e-3, 12.0, 400.0), "either way through the coil")
+    assert(!relay_next(true, 2.99e-3, 12.0, 400.0), "below the drop-out current it releases")
+    assert(relay_next(true, 3.01e-3, 12.0, 400.0), "just above it, it holds")
+    assert(relay_next(true, -10e-3, 12.0, 400.0))
+    assert(relay_next(true, 12e-3, 12.0, 400.0), "between the two it holds, operated")
+    assert(!relay_next(false, 12e-3, 12.0, 400.0), "between the two it holds, released")
+
+@test
+private settled_it_operates_just_above_the_pull_in_voltage_and_not_just_below()
+    for (volts, pulled) in [(9.01, true), (8.99, false), (12.0, true), (5.0, false), (0.0, false)]
+        val sch = bench(s"dc ${volts}")
+        var s = sim(sch.circuit)
+        val k = part(sch, "K1")
+
+        s.operating_point().unwrap()
+        assert_eq(operated(s, k), pulled, s"${volts} V")
+        assert((s.current(k) - volts / 400.0).abs() < 1e-12, "the coil is its resistance alone, settled")
+        assert((s.across(k) - volts).abs() < 1e-9)
+
+@test
+private its_coil_rises_with_its_l_over_r_time_constant_and_it_pulls_in_on_the_crossing()
+    val sch = bench("pwl 0 12 1 12")
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+    val tau = relay_henries(400.0) / 400.0
+
+    assert(near(tau, 1e-3, 1e-12))
+    s.power_on().unwrap()
+    assert(s.current(k).abs() < 1e-9, "no current at the instant it is switched on")
+    s.advance_to(tau).unwrap()
+    assert(near(s.current(k), 30e-3 * (1.0 - (-1.0).exp()), 1e-3), s"63% at one time constant: ${s.current(k)}")
+    assert(!operated(s, k))
+
+    // 75% at τ · ln 4, 1.386 ms.
+    val crossing = tau * 4.0.ln()
+
+    s.advance_to(crossing - 2e-6).unwrap()
+    assert(!operated(s, k), "not yet")
+    s.advance_to(crossing + 2e-6).unwrap()
+    assert(operated(s, k), "pulled in")
+    s.advance_to(10e-3).unwrap()
+    assert(near(s.current(k), 30e-3, 1e-4), "its rated current")
+
+@test
+private ramped_up_it_pulls_in_on_its_level_and_held_between_the_levels_it_stays_released()
+    // 1200 V a second: the current lags the voltage by τ, so it reaches 22.5 mA at 8.5 ms.
+    val sch = bench("pwl 0 0 10m 12 20m 12")
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+
+    s.power_on().unwrap()
+    s.advance_to(8.49e-3).unwrap()
+    assert(!operated(s, k))
+    s.advance_to(8.51e-3).unwrap()
+    assert(operated(s, k))
+
+    val held = bench("pwl 0 0 10m 5 30m 5")
+    var h = sim(held.circuit)
+
+    h.power_on().unwrap()
+    h.advance_to(30e-3).unwrap()
+    assert(near(h.current(k), 12.5e-3, 1e-4))
+    assert(!operated(h, k), "5 V, between drop-out and pull-in, holds it released")
+
+@test
+private ramped_down_it_holds_between_the_levels_and_drops_out_on_its_level()
+    // 12 V, then 5 V, between the levels, then down at 500 V a second from 40 ms; the current lags by
+    // τ, 0.5 V's worth, so it falls to 3 mA when the voltage is 0.7 V, at 48.6 ms.
+    val sch = bench("pwl 0 12 20m 12 21m 5 40m 5 50m 0")
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+
+    s.operating_point().unwrap()
+    assert(operated(s, k))
+    s.advance_to(40e-3).unwrap()
+    assert(near(s.current(k), 12.5e-3, 1e-4))
+    assert(operated(s, k), "5 V, between the levels, holds it operated")
+    s.advance_to(48.55e-3).unwrap()
+    assert(operated(s, k), s"${s.current(k)}")
+    s.advance_to(48.65e-3).unwrap()
+    assert(!operated(s, k), s"${s.current(k)}")
+
+@test
+private the_armature_moves_with_the_coil_current_on_its_level_the_step_landing_there()
+    val sch = bench("pwl 0 0 10m 12 20m 12")
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+    var was = false
+    var t = 0.0
+
+    s.power_on().unwrap()
+
+    // Wherever the armature is first seen pulled in, the step before it ended on the crossing: the
+    // current at the first sight is no more than a hair past the pull-in current.
+    while t < 20e-3
+        t += 1e-4
+        s.advance_to(t).unwrap()
+
+        if operated(s, k) && !was then assert(s.current(k) < 22.5e-3 + 2e-5, s"pulled in at ${s.current(k)} A")
+
+        was = operated(s, k)
+
+    assert(was)
+
+// ## Its contact
+
+@test
+private released_the_common_feeds_the_normally_closed_throw_and_the_other_carries_nothing()
+    val sch = bench("dc 0")
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+
+    s.operating_point().unwrap()
+    assert(!operated(s, k))
+    assert(near(s.terminal_current(k, RELAY_COMMON), 5.0 / (1e3 + CLOSED_OHMS), 1e-6))
+    assert(near(s.terminal_current(k, RELAY_CLOSED), -5.0 / (1e3 + CLOSED_OHMS), 1e-6))
+    assert_eq(s.terminal_current(k, RELAY_OPEN), 0.0)
+    assert(s.voltage(sch.elements[sch.find("RNO").unwrap()].a).abs() < 1e-9, "nothing in RNO")
+
+@test
+private operated_the_common_feeds_the_normally_open_throw_and_the_other_carries_nothing()
+    val sch = bench("dc 12")
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+
+    s.operating_point().unwrap()
+    assert(operated(s, k))
+    assert(near(s.terminal_current(k, RELAY_COMMON), 5.0 / (500.0 + CLOSED_OHMS), 1e-6))
+    assert(near(s.terminal_current(k, RELAY_OPEN), -5.0 / (500.0 + CLOSED_OHMS), 1e-6))
+    assert_eq(s.terminal_current(k, RELAY_CLOSED), 0.0)
+    assert(near(s.terminal_current(k, RELAY_COIL_A), 30e-3, 1e-9))
+    assert(near(s.terminal_current(k, RELAY_COIL_B), -30e-3, 1e-9))
+    assert(s.voltage(sch.elements[sch.find("RNC").unwrap()].a).abs() < 1e-9, "nothing in RNC")
+
+    var sum = 0.0
+
+    for t in 0..<5
+        sum += s.terminal_current(k, t)
+
+    assert(sum.abs() < 1e-12, s"its five currents sum to nothing: ${sum}")
+    assert(near(s.power(k), 0.36, 1e-3), s"its coil's 0.36 W and its contact's next to nothing: ${s.power(k)}")
+
+@test
+private a_coil_drawn_with_nothing_on_its_contact_still_solves()
+    val sch = parse_schematic("battery B1 0 0 0 10 12V\nwire 0 0 8 0\nwire 8 0 8 3\nrelay K1 10 6 12V\nwire 8 9 8 10\nwire 0 10 8 10\nground 0 10\n").unwrap()
+    var s = sim(sch.circuit)
+
+    s.operating_point().unwrap()
+    assert(operated(s, 1))
+
+    var t = sim(sch.circuit)
+
+    t.power_on().unwrap()
+    t.advance_to(5e-3).unwrap()
+    assert(operated(t, 1))
+
+// ## Its coil switched off
+
+private collector_peak(text: string) -> real
+    val sch = parse_schematic(text).unwrap()
+    var s = sim(sch.circuit)
+    val q = sch.elements[sch.find("Q1").unwrap()]
+    val k = part(sch, "K1")
+    var most = 0.0
+    var t = 9e-3
+
+    s.power_on().unwrap()
+    s.advance_to(t).unwrap()
+    assert(operated(s, k), "pulled in while Q1 conducts")
+
+    while t < 10.1e-3
+        t += 0.5e-6
+        s.advance_to(t).unwrap()
+        most = most.max(s.voltage(q.a))
+
+    s.advance_to(30e-3).unwrap()
+    assert(!operated(s, k), "dropped out once Q1 let go")
+    most
+
+@test
+private switched_off_with_no_diode_its_coil_kicks_the_collector_far_above_the_supply()
+    val peak = collector_peak(replace_all(DRIVER, "diode    D1   5 9  5 3\n", ""))
+
+    assert(peak > 100.0, s"${peak} V")
+
+@test
+private switched_off_with_a_flyback_diode_the_collector_stops_a_diodes_drop_above_the_supply()
+    val peak = collector_peak(DRIVER)
+
+    assert(peak > 12.5 && peak < 13.0, s"${peak} V")
+
+@test
+private with_a_flyback_diode_its_current_dies_away_slowly_and_it_drops_out_late()
+    val sch = parse_schematic(DRIVER).unwrap()
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+
+    s.power_on().unwrap()
+    s.advance_to(10.2e-3).unwrap()
+    assert(operated(s, k), "the diode carries the coil's current round, still above 3 mA")
+    assert(s.current(k) > 20e-3, s"${s.current(k)}")
+    s.advance_to(14e-3).unwrap()
+    assert(!operated(s, k))
+
+// ## Starting settled, and being read
+
+@test
+private started_settled_it_starts_where_its_coil_puts_it()
+    val sch = parse_schematic(s"start settled\n${replace_all(BENCH, "WAVE", "dc 12")}").unwrap()
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+
+    assert(sch.settled)
+    s.operating_point().unwrap()
+    assert(operated(s, k), "pulled in before any step")
+    assert(near(s.terminal_current(k, RELAY_OPEN), -5.0 / (500.0 + CLOSED_OHMS), 1e-6), "the load on its normally-open throw already lit")
+    s.advance_to(5e-3).unwrap()
+    assert(operated(s, k))
+    assert(near(s.current(k), 30e-3, 1e-6), "and its coil already at its current, not rising from nothing")
+
+@test
+private a_mirror_reads_its_armature_as_the_simulation_it_copies_has_it()
+    val sch = bench("dc 12")
+    var s = sim(sch.circuit)
+    var copy = sim(sch.circuit)
+    val k = part(sch, "K1")
+
+    s.operating_point().unwrap()
+    assert(!operated(copy, k))
+    copy.mirror(s)
+    assert(operated(copy, k))
+    assert_eq(copy.terminal_current(k, RELAY_OPEN), s.terminal_current(k, RELAY_OPEN))
+    assert_eq(copy.current(k), s.current(k))
+
+@test
+private to_a_small_sine_its_coil_is_its_resistance_and_inductance_in_series()
+    val sch = bench("dc 0")
+    var s = sim(sch.circuit)
+    val k = part(sch, "K1")
+    val corner = 400.0 / (2.0 * real.pi() * relay_henries(400.0))
+    val r = s.response(corner, [drive(part(sch, "VC"), 1.0, 0.0)][..]).unwrap()
+
+    // At ω = R / L the impedance is R (1 + j): 1 / (400 √2) A, 45° behind.
+    assert(near(r.current(k).abs(), 1.0 / (400.0 * 2.0.sqrt()), 1e-9), s"${r.current(k).abs()}")
+    assert(near(r.current(k).arg(), -real.pi() / 4.0, 1e-9))

@@ -45,6 +45,7 @@ import sysl.text.{Search, fields, split}
 // | `ammeter` | two: the current is read flowing in at the first and out at the second | — |
 // | `lamp` | two | an incandescent lamp's rating, volts then watts, `12V 5W` |
 // | `timer` | one, its middle; its eight pins are around it | a 555 timer: perhaps its model, `NE555` (the default and only one), then perhaps `turned 90`, `180` or `270`, and `flipped` |
+// | `relay` | one, its middle; its coil's two ends and its contact's three are around it | its coil's rated voltage, `12V`, perhaps its resistance (the one taking 0.36 W at that voltage if not given), then perhaps `turned 90`, `180` or `270`, and `flipped` |
 // | `ground` | one | — |
 // | `label` | one: names the node it is on | — |
 // | `meter` | two: a voltmeter, red lead first | — |
@@ -97,6 +98,24 @@ import sysl.text.{Search, fields, split}
 //                   GND    CTRL
 //
 //     timer    U1  12 8  NE555
+//
+// A relay's coil stands on the left of its middle and its contact on the right, the dashed link of its
+// armature between them. The coil's ends are two squares left of the middle, three up and three down;
+// the contact's common is two right and three down, its lever pivoting up toward its throws, the
+// normally-closed one a square right and three up and the normally-open one three right and three up.
+// Released, the lever rests on the normally-closed throw; operated, on the normally-open one. `flipped`
+// and `turned` move the pins as they move an op-amp's:
+//
+//             A     NC  NO
+//             |      |   |
+//            +-+     .   .
+//            | |- - - \
+//            +-+       \
+//             |         o
+//             |         |
+//             B       COM
+//
+//     relay    K1  12 8  12V 400
 //
 // A wave is one of
 //
@@ -178,6 +197,9 @@ enum Shape: u8
     // A 555 timer, placed by its middle, its eight pins around it in their order: ground, trigger,
     // output, reset, control, threshold, discharge and the supply.
     Timer
+    // A relay, placed by its middle, its five terminals around it in their order: its coil's two ends,
+    // then its contact's common, normally-closed throw and normally-open throw.
+    Relay
     Ground
     Label
     Meter
@@ -186,7 +208,7 @@ enum Shape: u8
     points(self) -> int = self match
         Ground | Label -> 1
         Npn | Pnp | Nmos | Pmos | Potentiometer | Spdt -> 3
-        OpAmp -> 5
+        OpAmp | Relay -> 5
         Timer -> 8
         _ -> 2
 
@@ -220,7 +242,8 @@ struct Element
     // The third point, a transistor's emitter; the second again for anything else.
     x3: int
     y3: int
-    // The fourth and fifth points, an op-amp's supply pins; the third again for anything else.
+    // The fourth and fifth points, an op-amp's supply pins or a relay's two throws; the third again for
+    // anything else.
     x4: int
     y4: int
     x5: int
@@ -234,8 +257,8 @@ struct Element
     x8: int
     y8: int
     // The node each end is on; -1 for a meter's lead on a point no part reaches. `c` is a transistor's
-    // emitter, and `b` again for anything else; `d` and `e` are an op-amp's supplies, and `c` again for
-    // anything else; `f` to `h` are a 555 timer's last three pins, and `e` again for anything else.
+    // emitter, and `b` again for anything else; `d` and `e` are an op-amp's supplies or a relay's
+    // throws, and `c` again for anything else; `f` to `h` are a 555 timer's last three pins, and `e` again for anything else.
     a: int
     b: int
     c: int
@@ -483,6 +506,8 @@ parse_schematic(text: string) -> Result[Schematic, string]
             parts.push(opamp(words).map_err(why -> s"line ${line_no}: ${why}")?)
         elif words[0] == "timer"
             parts.push(timer(words).map_err(why -> s"line ${line_no}: ${why}")?)
+        elif words[0] == "relay"
+            parts.push(relay(words).map_err(why -> s"line ${line_no}: ${why}")?)
         else
             parts.push(element(words).map_err(why -> s"line ${line_no}: ${why}")?)
 
@@ -712,6 +737,60 @@ private[amber] timer_pin(x: int, y: int, k: int, quarters: int, flipped: bool) -
     (x + dx, y + dy)
 end timer_pin
 
+// A relay's line: its name, the grid point at its middle, its coil's rated voltage and perhaps its
+// resistance, and perhaps how it is turned and whether it is flipped, as an op-amp's.
+private relay(words: []string) -> Result[(Element, Option[Kind]), string]
+    if words.len < 2 then return Err("a relay needs a name")
+
+    if words.len < 4 then return Err("a relay is placed by 1 point, its middle")
+
+    val x = parse_coordinate(words[2])?
+    val y = parse_coordinate(words[3])?
+    var at: usize = 4
+
+    while at < words.len && words[at] != "turned" && words[at] != "flipped"
+        at += 1
+
+    val rest = words[4..<at]
+
+    if rest.len == 0 then return Err("a relay needs its coil's rated voltage: 12V")
+
+    if rest.len > 2 then return Err(s"'${rest[2]}' is more than a relay takes")
+
+    val volts = positive(rest[0], "a relay coil's voltage")?
+    val ohms = if rest.len == 2 then positive(rest[1], "a relay coil's resistance")? else relay_ohms(volts)
+    val (_, quarters, flipped) = ic_tail(words[at..<words.len], "", "a relay")?
+    var xy: [10]int = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    for k in 0..<5
+        val (px, py) = relay_pin(x, y, k, quarters, flipped)
+
+        xy[2 * k] = px
+        xy[2 * k + 1] = py
+
+    Ok((Element(Relay, words[1], rest.join(" "), xy[0], xy[1], xy[2], xy[3], xy[4], xy[5], xy[6], xy[7], xy[8], xy[9], xy[8], xy[9], xy[8], xy[9],
+                xy[8], xy[9], -1, -1, -1, -1, -1, -1, -1, -1, -1, Red, 0), Some(Relay(volts, ohms, false))))
+end relay
+
+// Terminal `k` of a relay at (`x`, `y`), counting from 0 in their order — the coil's first end and its
+// second, the common, the normally-closed throw and the normally-open throw — flipped top to bottom if
+// it is, then turned `quarters` times clockwise, as an op-amp's pins are.
+private[amber] relay_pin(x: int, y: int, k: int, quarters: int, flipped: bool) -> (int, int)
+    var (dx, dy) = k match
+        0 -> (-2, -3)
+        1 -> (-2, 3)
+        2 -> (2, 3)
+        3 -> (1, -3)
+        _ -> (3, -3)
+
+    if flipped then dy = -dy
+
+    for _ in 0..<quarters
+        (dx, dy) = (-dy, dx)
+
+    (x + dx, y + dy)
+end relay_pin
+
 // The words after an op-amp's middle: its model (`741` where none is written), its quarter turns
 // clockwise, and whether it is flipped. The model comes first; `turned` and `flipped` may come in
 // either order, each once.
@@ -824,6 +903,7 @@ private[amber] shape_named(word: string) -> Result[Shape, string] = word match
     "spdt" -> Ok(Spdt)
     "lamp" -> Ok(Lamp)
     "timer" -> Ok(Timer)
+    "relay" -> Ok(Relay)
     _ -> Err(s"'${word}' is not a kind of element")
 
 private colour_named(word: string) -> Result[Colour, string] = word match

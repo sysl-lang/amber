@@ -1766,3 +1766,111 @@ remote_timer()
     assert(!timer_high(e), s"the thread's has gone low by 1 s: ${e.s.time} s")
     assert(timer_high(ui) == timer_high(e))
     assert(ui.s.voltage(element_named(ui, "U1").c) == e.s.voltage(element_named(e, "U1").c))
+
+private relay_example() -> &Model = model("relay.amber", parse_schematic(str_cast(embed("../examples/relay.amber"))).unwrap())
+
+private pulled_in(m: &Model) -> bool = m.s.circuit.parts[usize(element_named(m, "K1").part)].kind match
+    Kind.Relay(_, _, operated) -> operated
+    _ -> false
+
+@test("the relay example: S1 closed, the coil pulls the armature in and the lamp takes over from the LED; opened, the diode holds the collector and the LED comes back")
+relay_changes_over()
+    val m = relay_example()
+    val d2 = element_named(m, "D2").part
+    val l1 = element_named(m, "L1").part
+    val q1 = element_named(m, "Q1")
+
+    // Settled with S1 open: released, the standby LED lit and the lamp dark.
+    assert(!pulled_in(m))
+    assert(m.s.current(d2) > 5e-3, s"${m.s.current(d2)}")
+    assert(m.s.current(l1).abs() < 1e-9)
+
+    // A twentieth of a second of the window is a millisecond of the circuit's, at 20 ms a second.
+    m.toggle(m.sch.find("S1").unwrap())
+    tick(m, 0.05)
+    assert(!pulled_in(m), "the coil's current still climbing at 1 ms")
+
+    for _ in 0..<4
+        tick(m, 0.05)
+
+    assert(pulled_in(m), s"pulled in by 5 ms: ${m.s.time} s")
+    assert(m.s.current(l1) > 0.1, s"the lamp lit: ${m.s.current(l1)} A")
+    assert(m.s.current(d2).abs() < 1e-6, s"the LED out: ${m.s.current(d2)} A")
+
+    m.toggle(m.sch.find("S1").unwrap())
+    tick(m, 0.05)
+    assert(pulled_in(m), "the diode carries the coil's current round, still held a millisecond on")
+    assert(m.s.voltage(q1.a) > 12.3 && m.s.voltage(q1.a) < 13.0, s"the collector a diode's drop above the supply: ${m.s.voltage(q1.a)} V")
+
+    for _ in 0..<4
+        tick(m, 0.05)
+
+    assert(!pulled_in(m), "dropped out")
+    assert(m.s.current(d2) > 5e-3, "the LED lit again")
+
+@test("a relay's status line gives its armature, its coil's current against the levels that move it, and its contact; a click does not move it")
+relay_status()
+    val m = relay_example()
+    val k1 = m.sch.find("K1").unwrap()
+
+    m.select(k1)
+    assert(status(m).contains("K1 12V 400Ω relay: released, coil "), status(m))
+    assert(status(m).contains(" (pull-in 22.5mA, drop-out 3mA), "), status(m))
+    assert(status(m).contains("; common to NC, 10."), status(m))
+    assert(status(m).ends_with("mA into the common"), status(m))
+
+    m.toggle(k1)
+    assert(!pulled_in(m), "its coil decides, not a click")
+
+    m.toggle(m.sch.find("S1").unwrap())
+
+    for _ in 0..<5
+        tick(m, 0.05)
+
+    m.select(k1)
+    assert(status(m).contains("K1 12V 400Ω relay: operated, coil 29."), status(m))
+    // The lamp's filament still cold at 5 ms: its inrush, well above its 417 mA.
+    assert(status(m).contains("; common to NO, 1."), status(m))
+    assert(labelled_when_crowded(Shape.Relay))
+
+@test("a relay's dots run through its coil while it carries current, and from its common out of the throw its armature is on")
+relay_dots()
+    val m = relay_example()
+    val i = usize(m.sch.find("K1").unwrap())
+
+    tick(m, 0.05)
+    assert(m.part_flow[i].abs() < 1e-6, "no current in the coil while S1 is open")
+
+    val before = m.base_flow[i]
+
+    tick(m, 0.05)
+    assert(m.base_flow[i] > before, "the LED's current from the common")
+
+    m.toggle(m.sch.find("S1").unwrap())
+
+    for _ in 0..<5
+        tick(m, 0.05)
+
+    // Flipped, its coil's first end is on the collector: the current flows in at its second, from the
+    // supply.
+    assert(m.part_flow[i] < -1e-3, s"the coil's current, from the supply down to the collector: ${m.part_flow[i]}")
+
+    val lit = m.base_flow[i]
+
+    tick(m, 0.05)
+    assert(m.base_flow[i] > lit, "the lamp's current from the common")
+
+@test("the window's copy of a relay has the thread's armature once they are handed over")
+remote_relay()
+    val (ui, e) = paired(str_cast(embed("../examples/relay.amber")))
+
+    ui.toggle(ui.sch.find("S1").unwrap())
+    exchange(ui, e)
+
+    for _ in 0..<5
+        work(e, 0.05)
+
+    exchange(ui, e)
+    assert(pulled_in(e), s"the thread's has pulled in: ${e.s.time} s")
+    assert(pulled_in(ui))
+    assert(ui.s.current(element_named(ui, "L1").part) == e.s.current(element_named(e, "L1").part))

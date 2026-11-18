@@ -1,7 +1,8 @@
 // What the viewer knows: the circuit and its simulation, the clock, the meters and what they have read.
 
 import sh.sysl.amber.{Schematic, Element, Shape, Kind, Sim, Colour, Switch, Supply, Waveform, Pin, PinMode, PinDrive, sim, engineering, parse_generator, ldr_ohms, lamp_loss,
-                       TIMER_GROUND, TIMER_TRIGGER, TIMER_OUTPUT, TIMER_CONTROL, TIMER_THRESHOLD, TIMER_DISCHARGE, TIMER_SUPPLY}
+                       TIMER_GROUND, TIMER_TRIGGER, TIMER_OUTPUT, TIMER_CONTROL, TIMER_THRESHOLD, TIMER_DISCHARGE, TIMER_SUPPLY,
+                       RELAY_COMMON, relay_pull_in, relay_drop_out}
 import sh.sysl.ui_sdl.stop
 import sh.sysl.sdl3.{Event, EventKind, SCANCODE_ESCAPE, SCANCODE_B, SCANCODE_C, SCANCODE_M, SCANCODE_V, SCANCODE_SPACE, SCANCODE_R, SCANCODE_S,
                      SCANCODE_EQUALS, SCANCODE_MINUS, SCANCODE_KP_PLUS, SCANCODE_KP_MINUS}
@@ -466,6 +467,10 @@ struct Model
             if e.part >= 0 && e.shape == Shape.Timer
                 self.most_amps = self.most_amps.max(self.s.terminal_current(e.part, 0).abs())
 
+            // A relay's contact carries what it switches, its coil's current aside.
+            if e.part >= 0 && e.shape == Shape.Relay
+                self.most_amps = self.most_amps.max(self.s.terminal_current(e.part, RELAY_COMMON).abs())
+
         // What was held fades by a factor of e in HOLD_SECONDS of the window's time.
         val keep = (-(self.s.time - self.held_at) / (HOLD_SECONDS * self.pace())).exp()
         val amps = self.sch.segment_currents(self.s)
@@ -488,6 +493,8 @@ struct Model
                 self.base_hold[i].see(self.s.terminal_current(e.part, TIMER_DISCHARGE), keep)
                 self.emitter_hold[i].see(self.s.terminal_current(e.part, TIMER_SUPPLY), keep)
                 self.ground_hold[i].see(self.s.terminal_current(e.part, TIMER_GROUND), keep)
+
+            if e.part >= 0 && e.shape == Shape.Relay then self.base_hold[i].see(self.s.terminal_current(e.part, RELAY_COMMON), keep)
 
     // Move the current dots on by `dt` seconds of the window's time.
     flow(*self, dt: real)
@@ -515,6 +522,10 @@ struct Model
                 self.base_flow[i] += dt * self.base_hold[i].speed(self.s.terminal_current(e.part, TIMER_DISCHARGE), most)
                 self.emitter_flow[i] += dt * self.emitter_hold[i].speed(self.s.terminal_current(e.part, TIMER_SUPPLY), most)
                 self.ground_flow[i] += dt * self.ground_hold[i].speed(self.s.terminal_current(e.part, TIMER_GROUND), most)
+
+            // A relay's contact's current, from its common along the lever and out of the throw.
+            if e.part >= 0 && e.shape == Shape.Relay
+                self.base_flow[i] += dt * self.base_hold[i].speed(self.s.terminal_current(e.part, RELAY_COMMON), most)
 end Model
 
 // What a branch has carried lately: the largest current it has carried each way, each fading as time
@@ -757,6 +768,15 @@ status(m: &Model) -> string
 
         return s"${clock} · ${e.name} ${described(m, e)}: output ${if high then "high" else "low"}, ${pin(TIMER_OUTPUT)}; discharge ${if high then "off" else "on"}; threshold at ${pin(TIMER_THRESHOLD)}, trigger at ${pin(TIMER_TRIGGER)}, control at ${pin(TIMER_CONTROL)}"
 
+    // A relay's armature, then its coil's current against the two levels that move it, then the throw
+    // its common is joined to and what the contact carries.
+    if e.shape == Shape.Relay
+        if m.s.circuit.parts[usize(e.part)].kind is Kind.Relay(rated, ohms, operated)
+            val coil = m.s.current(e.part)
+            val common = m.s.terminal_current(e.part, RELAY_COMMON)
+
+            return s"${clock} · ${e.name} ${described(m, e)}: ${if operated then "operated" else "released"}, coil ${amps(coil.abs())} (pull-in ${amps(relay_pull_in(rated, ohms))}, drop-out ${amps(relay_drop_out(rated, ohms))}), ${volts(m.s.across(e.part))} across it; common to ${if operated then "NO" else "NC"}, ${amps(common.abs())} ${into(common)} the common"
+
     // An ammeter drops nothing and takes nothing, so its current is all there is to say: how much, and
     // which of its ends it flows in at.
     if e.shape == Shape.Ammeter
@@ -818,6 +838,7 @@ private described(m: &Model, e: Element) -> string = e.shape match
     Spdt -> "spdt"
     Lamp -> s"${e.value} lamp"
     Timer -> s"${e.value} timer"
+    Relay -> s"${relay_coil(m, e)} relay"
     Zener -> s"${e.value}V zener"
     Switch -> if m.s.circuit.parts[usize(e.part)].kind == Switch(true) then "closed switch" else "open switch"
     Diode -> "diode"
@@ -854,6 +875,12 @@ lamp_glow(m: &Model, e: Element) -> real
 
 // Which way a current into a terminal goes, by its sign.
 private into(amps: real) -> string = if amps < 0.0 then "out of" else "into"
+
+// A relay's coil, its rated voltage and its resistance, `12V 400Ω`: the resistance as the line gave it
+// or as the rating sets it.
+relay_coil(m: &Model, e: Element) -> string = m.s.circuit.parts[usize(e.part)].kind match
+    Kind.Relay(volts, ohms, _) -> s"${engineering(volts)}V ${engineering(ohms)}Ω"
+    _ -> e.value
 
 colour_name(c: Colour) -> string = c match
     Red -> "red"

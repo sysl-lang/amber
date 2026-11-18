@@ -32,7 +32,7 @@ struct Document
 
     // Put point `k` of the element on `line` at (`x`, `y`), the others staying where they are. The
     // points are counted along the line, so a transformer's are its primary's two and then its
-    // secondary's, and an op-amp's or a 555 timer's one point is its middle.
+    // secondary's, and an op-amp's, a 555 timer's or a relay's one point is its middle.
     move_point(*self, line: int, k: int, x: int, y: int) -> Result[unit, string]
         val (words, spans) = self.words_of(line)?
         val (first, count) = placed(words.view())?
@@ -69,17 +69,15 @@ struct Document
 
     // Give the element on `line` the value `value`, as it would be written: `4.7k`, `sine 1 1k`. Empty
     // takes the value away, for a part whose value may be left out. An op-amp's or a timer's value is
-    // its model, and its turn stays as it was.
+    // its model, and a relay's its coil's voltage and resistance; the turn of any of them stays as it
+    // was.
     revalue(*self, line: int, value: string) -> Result[unit, string]
         val (words, spans) = self.words_of(line)?
         val (first, count) = placed(words.view())?
         val after = first + usize(2 * count)
         var end = words.len()
 
-        if words[0] == "opamp" || words[0] == "timer"
-            end = after
-
-            if end < words.len() && words[end] != "turned" && words[end] != "flipped" then end += 1
+        if turnable(words[0]) then end = value_end(words.view(), after)
 
         val old = self.lines[usize(line - 1)]
 
@@ -144,7 +142,7 @@ struct Document
 
         var text = rewrite(self.lines[usize(line - 1)], spans, at.view(), now.view())
 
-        if (words[0] == "opamp" || words[0] == "timer") && (quarters != 0 || mirrored) then text = reorient(text, quarters, mirrored)?
+        if turnable(words[0]) && (quarters != 0 || mirrored) then text = reorient(text, quarters, mirrored)?
 
         self.lines[usize(line - 1)] = text
         Ok(())
@@ -175,7 +173,7 @@ private placed(words: []const string) -> Result[(usize, int), string]
 
     words[0] match
         "transformer" -> return Ok((2, 4))
-        "opamp" | "timer" -> return Ok((2, 1))
+        "opamp" | "timer" | "relay" -> return Ok((2, 1))
         _ -> ()
 
     val shape = shape_named(words[0]).map_err(_ -> "that line is not an element")?
@@ -185,6 +183,20 @@ private placed(words: []const string) -> Result[(usize, int), string]
 
     Ok((first, shape.points()))
 end placed
+
+// Whether an element of kind `word` is placed by its middle and may be `turned` and `flipped`: an
+// op-amp, a 555 timer or a relay.
+private turnable(word: string) -> bool = word == "opamp" || word == "timer" || word == "relay"
+
+// Where the value of a turnable element's line ends, its first word at `after`: an op-amp's or a
+// timer's model is one word, and a relay's coil every word up to its turn.
+private value_end(words: []const string, after: usize) -> usize
+    var end = after
+
+    while end < words.len && words[end] != "turned" && words[end] != "flipped" && (end == after || words[0] == "relay")
+        end += 1
+
+    end
 
 // Where each word of `line` begins and ends, up to a `#` comment.
 private spans_of(line: string) -> Buf[(usize, usize)]
@@ -265,9 +277,9 @@ private trim_end(text: string) -> string
     text[0..<n]
 end trim_end
 
-// An op-amp's or a 555 timer's line turned a further `quarters` clockwise, then mirrored left to right
-// if `mirrored`, its middle already moved: the `turned` and `flipped` words after its model are written
-// again.
+// An op-amp's, a 555 timer's or a relay's line turned a further `quarters` clockwise, then mirrored left
+// to right if `mirrored`, its middle already moved: the `turned` and `flipped` words after its value are
+// written again.
 //
 // **Mirroring left to right is a half turn of the op-amp flipped top to bottom**, so it takes the turn
 // to `2 - t` and toggles `flipped`; a turn after a flip goes the other way round, which is why the
@@ -276,7 +288,14 @@ private reorient(line: string, quarters: int, mirrored: bool) -> Result[string, 
     val spans = spans_of(line)
     val words = words_in(line, spans)
     val after: usize = 4
-    val (_, t0, f0) = ic_tail(words.view()[after..<words.len()], "", if words[0] == "timer" then "a timer" else "an opamp")?
+    val stop = value_end(words.view(), after)
+    val one = words[0] match
+        "timer" -> "a timer"
+        "relay" -> "a relay"
+        _ -> "an opamp"
+    // An op-amp's or a timer's words after its model are all its turn's, so a word too many is refused
+    // there; a relay's turn starts where its value stops.
+    val (_, t0, f0) = ic_tail(words.view()[(if words[0] == "relay" then stop else after)..<words.len()], "", one)?
     var t = (t0 + quarters) % 4
     var f = f0
 
@@ -286,7 +305,8 @@ private reorient(line: string, quarters: int, mirrored: bool) -> Result[string, 
 
     var tail: Buf[string] = buf()
 
-    if after < words.len() && words[after] != "turned" && words[after] != "flipped" then tail.push(words[after])
+    for k in after..<stop
+        tail.push(words[k])
 
     if t != 0 then tail.push(s"turned ${t * 90}")
 

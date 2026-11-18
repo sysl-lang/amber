@@ -335,6 +335,12 @@ Each is a piece of work of its own, in this order.
    divider, two comparators and a latch moved between steps, each step that would carry a comparator
    past its level taken again to end at the crossing; the `flasher` example, an astable blinking an
    LED; ngspice has no 555, so it is held to the datasheet's 1.44 / ((R1 + 2R2)C), 0.693 (R1 + R2)C high
-   and 0.693 R2·C low, 1.1 RC for a monostable, and its supply current; a **relay** (a coil that closes a switch); a **DC motor** (a back-EMF, spun on
+   and 0.693 R2·C low, 1.1 RC for a monostable, and its supply current; ~~a **relay** (a coil that
+   closes a switch)~~ — `relay`, `Relay(volts, ohms, operated)`, a Songle SRD-xxVDC-SL-C by its
+   datasheet: a coil of resistance and inductance (1 ms, which the datasheet does not give), an
+   armature pulling in at 75% of the rated current and dropping out below 10%, moved between steps
+   landing on the crossing, and an SPDT contact; the `relay` example, a transistor driving it with a
+   flyback diode; ngspice has no relay, so it is held to the coil's L/R rise, its pull-in and drop-out
+   with the hysteresis between, and the inductive kick a diode removes; a **DC motor** (a back-EMF, spun on
    screen); and after them, as wanted, a 7805 regulator, a thermistor, a fuse and a crystal.
 9. **Benchtop's analog layer**, measured against the H747 real-time bar.

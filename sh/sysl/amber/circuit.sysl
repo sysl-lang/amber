@@ -297,12 +297,17 @@ enum Kind derives Eq
     // and its discharge off; reset, its output is low and its discharge on. `timer_next` says how its
     // comparators move the latch.
     Timer(high: bool)
+    // A relay whose coil is rated at `volts` and is `ohms` of wire, with five terminals: the coil's two
+    // ends, then its contact's common, normally-closed throw and normally-open throw. `operated` is
+    // where its armature is: pulled in, the common is joined to the normally-open throw; released, to
+    // the normally-closed one. `relay_next` says how the coil's current moves it.
+    Relay(volts: real, ohms: real, operated: bool)
 
-    // How many terminals a part of this kind has: 8 for a 555 timer, 5 for an op-amp, 3 for a
-    // transistor, a potentiometer or a double-throw switch, 2 for the rest.
+    // How many terminals a part of this kind has: 8 for a 555 timer, 5 for an op-amp or a relay, 3 for
+    // a transistor, a potentiometer or a double-throw switch, 2 for the rest.
     terminals(self) -> int = self match
         Timer(_) -> 8
-        OpAmp(_) -> 5
+        OpAmp(_) | Relay(_, _, _) -> 5
         Transistor(_) | Mosfet(_, _, _) | Potentiometer(_, _) | Spdt(_) -> 3
         _ -> 2
 
@@ -444,10 +449,62 @@ timer_next(high: bool, trigger: real, threshold: real, control: real, reset: rea
     elif threshold > control then false
     else high
 
+// A relay, behaving as a small sugar-cube signal relay does, the Songle SRD-xxVDC-SL-C: its datasheet's
+// coil table and its characteristics give every figure here but the inductance.
+//
+// **Its coil is a resistance in series with an inductance.** A coil whose line gives no resistance
+// takes `RELAY_COIL_WATTS` at its rated voltage, the datasheet's standard 0.36 W, so 25 Ω at 3 V,
+// 70 Ω at 5 V (69.4 here), 400 Ω at 12 V and 1.6 kΩ at 24 V, as its table has them. The datasheet gives
+// no inductance, so its time constant, inductance over resistance, is taken as `RELAY_COIL_SECONDS`,
+// 1 ms — 0.4 H for the 12 V coil — the order a small relay's coil has: the current rises to its rated
+// value in a few milliseconds, and switched off with nothing across it, the coil drives its collector
+// as high as it must to keep that current flowing.
+//
+// **The armature moves with the coil's current, with hysteresis.** Released, it pulls in once the
+// current reaches `RELAY_PULL_IN` of the rated current (the rated voltage over the resistance), the
+// datasheet's must-operate voltage, 75% of the rating; pulled in, it holds until the current falls
+// below `RELAY_DROP_OUT` of it, the must-release voltage, 10%. Between the two it stays as it was. The
+// current is the coil's either way through it. `relay_next` is the rule; the armature moves between
+// steps, as a 555 timer's latch does, each step landing on the crossing. It moves at once: the
+// datasheet's operate and release times, 10 ms and 5 ms at most, are not modelled.
+//
+// **Its contact is a double-throw switch's**: the common joined to the throw the armature is on
+// through `CLOSED_OHMS`, the other open.
+// A relay's terminals, counting from 0.
+const RELAY_COIL_A: int = 0
+const RELAY_COIL_B: int = 1
+const RELAY_COMMON: int = 2
+const RELAY_CLOSED: int = 3
+const RELAY_OPEN: int = 4
+
+const RELAY_COIL_WATTS: real = 0.36
+const RELAY_COIL_SECONDS: real = 1e-3
+const RELAY_PULL_IN: real = 0.75
+const RELAY_DROP_OUT: real = 0.1
+
+// The resistance of a relay coil rated at `volts` whose line gives none: the one taking
+// `RELAY_COIL_WATTS` at that voltage.
+relay_ohms(volts: real) -> real = volts * volts / RELAY_COIL_WATTS
+
+// The inductance of a relay coil of `ohms`.
+relay_henries(ohms: real) -> real = ohms * RELAY_COIL_SECONDS
+
+// The current a relay's armature pulls in at, and the current it drops out below, for a coil rated at
+// `volts` of `ohms`.
+relay_pull_in(volts: real, ohms: real) -> real = RELAY_PULL_IN * volts / ohms
+
+relay_drop_out(volts: real, ohms: real) -> real = RELAY_DROP_OUT * volts / ohms
+
+// Where a relay's armature is with `amps` in its coil, `operated` where it was: pulled in from the
+// pull-in current up, released below the drop-out current, and between the two where it was.
+relay_next(operated: bool, amps: real, volts: real, ohms: real) -> bool =
+    if operated then amps.abs() >= relay_drop_out(volts, ohms) else amps.abs() >= relay_pull_in(volts, ohms)
+
 // One part: its name, what it is, and the nodes its terminals are on. A two-terminal part uses `a` and
 // `b` and has the rest at -1; a transistor's collector, base and emitter are `a`, `b` and `c`, and a
 // MOSFET's drain, gate and source; an op-amp's non-inverting input, inverting input, output, positive
-// supply and negative supply are `a` to `e`; a 555 timer's eight pins, in their order, are `a` to `h`.
+// supply and negative supply are `a` to `e`, and so are a relay's coil ends, common, normally-closed
+// and normally-open throws; a 555 timer's eight pins, in their order, are `a` to `h`.
 struct Part
     name: string
     kind: Kind
@@ -525,7 +582,7 @@ struct Circuit
     // Add a three-terminal part on nodes `a`, `b` and `c`.
     add3(*self, name: string, kind: Kind, a: int, b: int, c: int) = self.parts.push(Part(name, kind, a, b, c, -1, -1, -1, -1, -1))
 
-    // Add a five-terminal part, an op-amp, on nodes `a` to `e`.
+    // Add a five-terminal part, an op-amp or a relay, on nodes `a` to `e`.
     add5(*self, name: string, kind: Kind, a: int, b: int, c: int, d: int, e: int) = self.parts.push(Part(name, kind, a, b, c, d, e, -1, -1, -1))
 
     // Add an eight-terminal part, a 555 timer, on `nodes`, its pins' in their order.

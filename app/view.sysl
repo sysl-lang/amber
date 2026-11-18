@@ -7,7 +7,7 @@
 // through the canvas, in the window's own font.
 
 import sh.sysl.amber.{Element, Shape, Kind, Colour, Wave, Waveform, Pulse, Sine, Switch, Pin, PinMode, engineering,
-                      TIMER_GROUND, TIMER_OUTPUT, TIMER_THRESHOLD, TIMER_DISCHARGE, TIMER_SUPPLY}
+                      TIMER_GROUND, TIMER_OUTPUT, TIMER_THRESHOLD, TIMER_DISCHARGE, TIMER_SUPPLY, RELAY_COMMON}
 import sh.sysl.ui.{View, Canvas, Size, Rect, Image, column, row, text, spacer}
 import sh.sysl.plutovg
 import sysl.buf.{Buf, buf}
@@ -204,6 +204,19 @@ private hit(m: &Model, at: Place, wx: int, wy: int) -> int
 
             continue
 
+        // A relay is hit anywhere from its coil to its contact, between its leads.
+        if e.shape == Relay
+            val (mx, my) = relay_at(e, 0.0, 0.0)
+            val (ax, ay) = relay_at(e, 1.0, 0.0)
+            val (bx, by) = relay_at(e, 0.0, 1.0)
+            val (dx, dy) = ((px - at.x(mx)) / at.unit, (py - at.y(my)) / at.unit)
+            val across = dx * (ax - mx) + dy * (ay - my)
+            val down = dx * (bx - mx) + dy * (by - my)
+
+            if across > -2.6 && across < 3.4 && down.abs() < 1.4 then return int(i)
+
+            continue
+
         // A double-throw switch is hit along the line from its common to either throw.
         if e.shape == Spdt
             val (cx, cy) = (at.x(real(e.x1)), at.y(real(e.y1)))
@@ -302,6 +315,7 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
             Nmos | Pmos -> pen.mosfet(e, most, hot)
             OpAmp -> pen.opamp(e, most, hot)
             Timer -> pen.timer(e, most, hot)
+            Relay -> pen.relay(e, relay_operated(m, e), most, hot)
             Potentiometer -> pen.pot(e, pot_position(m, e), most, hot)
             Spdt -> pen.spdt(e, spdt_second(m, e), most, hot)
             _ -> pen.part(e, most, hot)
@@ -339,6 +353,8 @@ private draw(m: &Model, vg: &plutovg.Canvas, at: Place, r: Rect, scale: real)
 
             if e.part >= 0 && e.shape == Timer
                 pen.timer_dots(e, i)
+            elif e.part >= 0 && e.shape == Relay
+                pen.relay_dots(e, i, relay_operated(m, e))
             elif e.part >= 0 && (e.shape == Nmos || e.shape == Pmos)
                 pen.mosfet_dots(e, i, m.part_flow[i])
             elif e.part >= 0 && e.shape == Spdt
@@ -977,6 +993,81 @@ private struct Pen
 
                 self.dots(x, y, ex, ey, flow)
 
+    // A relay: a lead from each of its five points in its node's colour; its coil a box between its
+    // two leads; its contact a double-throw switch's, a dot at the pivot and on each throw and the lever
+    // from the pivot to the throw the armature is on, `operated` or released; and the armature's
+    // dashed link from the coil to the middle of the lever.
+    relay(self, e: Element, operated: bool, most: real, hot: bool)
+        val m = self.m
+        val at = (lx: real, ly: real) -> relay_at(e, lx, ly)
+
+        self.width(3.0)
+
+        for k in 0..<5
+            val (x, y) = e.point(k)
+            val (lx, ly) = RELAY_INNER[usize(k)]
+            val (ix, iy) = at(lx, ly)
+
+            set(self.vg, wire_colour(m.s.voltage(e.node(k)), most))
+            self.line(real(x), real(y), ix, iy)
+
+        set(self.vg, if hot then SELECTED else INK)
+        self.width(2.5)
+        self.vg.begin()
+
+        for (lx, ly) in [(-RELAY_COIL_HALF_W, -RELAY_COIL_HALF_H), (RELAY_COIL_HALF_W, -RELAY_COIL_HALF_H), (RELAY_COIL_HALF_W, RELAY_COIL_HALF_H),
+                         (-RELAY_COIL_HALF_W, RELAY_COIL_HALF_H)]
+            val (x, y) = at(RELAY_COIL_X + lx, ly)
+
+            if lx < 0.0 && ly < 0.0 then self.vg.move_to(self.px(x), self.py(y)) else self.vg.line_to(self.px(x), self.py(y))
+
+        self.vg.close_path()
+        self.vg.stroke()
+
+        val (px, py) = at(RELAY_INNER[2].0, RELAY_INNER[2].1)
+        val (tx, ty) = at(RELAY_INNER[if operated then 4 else 3].0, RELAY_INNER[if operated then 4 else 3].1)
+
+        self.line(px, py, tx, ty)
+        self.dot(px, py, 3.5)
+
+        for k in [3, 4]
+            val (cx, cy) = at(RELAY_INNER[k].0, RELAY_INNER[k].1)
+
+            self.dot(cx, cy, 3.5)
+
+        val (lx0, ly0) = at(RELAY_COIL_X + RELAY_COIL_HALF_W, 0.0)
+        val (lx1, ly1) = ((px + tx) / 2.0, (py + ty) / 2.0)
+        val dash: [2]f32 = [f32(5.0 * self.scale), f32(4.0 * self.scale)]
+
+        self.vg.save()
+        self.width(1.5)
+        self.vg.dash(dash[..])
+        self.line(lx0, ly0, lx1, ly1)
+        self.vg.restore()
+
+    // A relay's current dots: through its coil from its first end to its second, moved `coil` squares
+    // along; and from its common along the lever and out of the throw the armature is on, moved
+    // `contact` squares along. The other throw carries nothing.
+    relay_dots(self, e: Element, i: usize, operated: bool)
+        val m = self.m
+
+        if m.part_hold[i].carrying(m.s.current(e.part), m.most_amps)
+            self.dots(real(e.x1), real(e.y1), real(e.x2), real(e.y2), m.part_flow[i])
+
+        if !m.base_hold[i].carrying(m.s.terminal_current(e.part, RELAY_COMMON), m.most_amps) then return
+
+        val throw = if operated then 4 else 3
+        val (px, py) = relay_at(e, RELAY_INNER[2].0, RELAY_INNER[2].1)
+        val (cx, cy) = relay_at(e, RELAY_INNER[usize(throw)].0, RELAY_INNER[usize(throw)].1)
+        val (tx, ty) = e.point(throw)
+        val flow = m.base_flow[i]
+        val first = distance(real(e.x3), real(e.y3), px, py)
+        val lever = distance(px, py, cx, cy)
+
+        self.dots(real(e.x3), real(e.y3), px, py, flow)
+        self.dots(px, py, cx, cy, flow - first)
+        self.dots(cx, cy, real(tx), real(ty), flow - first - lever)
+
     transistor(self, e: Element, most: real, hot: bool)
         val g = transistor_frame(e)
         val m = self.m
@@ -1445,6 +1536,34 @@ private timer_side(e: Element, k: int) -> (real, real)
 
     (x - ex, y - ey)
 
+// Where each of a relay's five leads meets its symbol, in its own layout (`relay_at`): its coil's ends
+// at the box's top and bottom, its common at the lever's pivot, and each throw at its contact.
+val RELAY_INNER: [5](real, real) = [(-2.0, -RELAY_COIL_HALF_H), (-2.0, RELAY_COIL_HALF_H), (2.0, 1.0), (1.0, -1.0), (3.0, -1.0)]
+
+// A relay's coil's box, in its own layout: half its width and half its height, about the line its
+// leads come in on.
+const RELAY_COIL_X: real = -2.0
+const RELAY_COIL_HALF_W: real = 0.45
+const RELAY_COIL_HALF_H: real = 1.0
+
+// The grid point `lx` squares toward a relay's contact and `ly` squares from its coil's first end
+// toward its second, from its middle: the layout its schematic line describes, turned and flipped as
+// its pins are. Its middle is half way from its coil's first end to its common, and its pins' offsets
+// give the two directions.
+private relay_at(e: Element, lx: real, ly: real) -> (real, real)
+    val (ax, ay) = (real(e.x1), real(e.y1))
+    val (bx, by) = (real(e.x2), real(e.y2))
+    val (cx, cy) = (real(e.x3), real(e.y3))
+    val (ux, uy) = ((cx - bx) / 4.0, (cy - by) / 4.0)
+    val (vx, vy) = ((bx - ax) / 6.0, (by - ay) / 6.0)
+
+    ((ax + cx) / 2.0 + lx * ux + ly * vx, (ay + cy) / 2.0 + lx * uy + ly * vy)
+
+// Whether relay `e`'s armature is pulled in.
+private relay_operated(m: &Model, e: Element) -> bool = m.s.circuit.parts[usize(e.part)].kind match
+    Kind.Relay(_, _, operated) -> operated
+    _ -> false
+
 private spdt_second(m: &Model, e: Element) -> bool = m.s.circuit.parts[usize(e.part)].kind match
     Kind.Spdt(second) -> second
     _ -> false
@@ -1483,7 +1602,7 @@ const CROWDED_UNIT: real = 22.0
 // label: the ones a person clicks or looks for — a switch, an LED, a source or an instrument — and not
 // the many resistors and transistors between them.
 labelled_when_crowded(shape: Shape) -> bool = shape match
-    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor | Ammeter | Spdt | Lamp | Timer -> true
+    Switch | Led | Battery | Source | CurrentSource | Generator | Supply | Winding | Speaker | OpAmp | Pin | Button | Potentiometer | Photoresistor | Ammeter | Spdt | Lamp | Timer | Relay -> true
     _ -> false
 
 // An ammeter's name and its reading, or a dash while the circuit has no solution.
@@ -1520,6 +1639,10 @@ private labels(m: &Model, c: *Canvas, at: Place)
 
         if e.shape == Timer
             timer_label(m, c, at, e, crowded)
+            continue
+
+        if e.shape == Relay
+            relay_label(c, at, e, relay_coil(m, e), crowded)
             continue
 
         // A double-throw switch's name, under the lowest of its three points.
@@ -1611,6 +1734,29 @@ private transistor_label(m: &Model, c: *Canvas, at: Place, e: Element)
 
     if m.values && m.trouble == ""
         put(c, left, top + 18.0, reading, 0xFFB030, !upright)
+
+// A relay's name and its coil, `coil`, beside its symbol to the right of the rightmost of its points,
+// level with its middle; and unless the drawing is crowded, `NC` and `NO` small beside its throws'
+// leads, each on the side away from the other.
+private relay_label(c: *Canvas, at: Place, e: Element, coil: string, crowded: bool)
+    var right = real(e.x1)
+
+    for k in 1..<5
+        right = right.max(real(e.point(k).0))
+
+    put(c, at.x(right) + 8.0, at.y(relay_at(e, 0.0, 0.0).1) - 10.0, s"${e.name} ${coil}", INK, false)
+
+    if crowded then return
+
+    c.push_font_size((0.42 * at.unit).min(11.0))
+
+    for (k, name, side) in [(3, "NC", -0.5), (4, "NO", 0.5)]
+        val (x, y) = relay_at(e, RELAY_INNER[usize(k)].0 + side, -2.0)
+        val size = c.text_size(name)
+
+        put(c, at.x(x) - real(size.w) / 2.0, at.y(y) - real(size.h) / 2.0, name, DIM, false)
+
+    c.pop_font_size()
 
 // A 555 timer's pins' names, by terminal, as they are written inside its body.
 val TIMER_PINS: [8]string = ["GND", "TRIG", "OUT", "RESET", "CTRL", "THR", "DIS", "VCC"]

@@ -36,12 +36,13 @@ const ABS_TOL: real = 1e-6
 const FIRST_STEP: real = 1e-9
 const SHORTEST_STEP: real = 1e-18
 
-// How far past a 555 timer's comparator crossing a step may end, as a part of the step: a step ending
-// further past is taken again to end at the crossing, so the latch moves within a thousandth of a step
-// of when it should.
+// How far past a 555 timer's comparator crossing, or a relay's coil current crossing its pull-in or
+// drop-out, a step may end, as a part of the step: a step ending further past is taken again to end at
+// the crossing, so the latch or the armature moves within a thousandth of a step of when it should.
 const CROSSING_SLACK: real = 1e-3
 
-// How many times the operating point is solved again while 555 timers' latches move.
+// How many times the operating point is solved again while 555 timers' latches or relays' armatures
+// move.
 const LATCH_PASSES: int = 8
 
 // How the parts that remember are written into the system: not at all (DC, where a capacitor is open
@@ -141,6 +142,7 @@ struct Sim
                 Photoresistor(lux) -> self.circuit.parts[i].kind = Photoresistor(lux)
                 Spdt(second) -> self.circuit.parts[i].kind = Spdt(second)
                 Timer(high) -> self.circuit.parts[i].kind = Timer(high)
+                Relay(volts, ohms, operated) -> self.circuit.parts[i].kind = Relay(volts, ohms, operated)
                 _ -> ()
 
     // The voltage at node `node` against ground.
@@ -159,6 +161,9 @@ struct Sim
     // collector to its emitter, and a MOSFET's from its drain to its source.
     across(self, i: int) -> real
         val p = self.circuit.parts[usize(i)]
+
+        // A relay's is its coil's, from its first end to its second.
+        if p.kind is Relay(_, _, _) then return self.voltage(p.a) - self.voltage(p.b)
 
         // An op-amp's is its output's voltage, and a 555 timer's its output's from its ground pin.
         if p.kind.terminals() == 5 then return self.voltage(p.c)
@@ -187,7 +192,8 @@ struct Sim
 
                 g * self.across(i) + v * slope * (self.filament(i) - rise)
             Capacitor(_) -> self.held_i[usize(i)]
-            Inductor(_) -> self.x[usize(self.extra[usize(i)])]
+            // A relay's is its coil's, from its first end to its second.
+            Inductor(_) | Relay(_, _, _) -> self.x[usize(self.extra[usize(i)])]
             VoltageSource(_) -> self.x[usize(self.extra[usize(i)])]
             CurrentSource(w) -> w.at(self.time)
             Generator(w, ohms) -> (self.across(i) - w.at(self.time)) / ohms
@@ -255,6 +261,19 @@ struct Sim
                 _ -> if second then -into else 0.0
 
         if p.kind is Timer(high) then return self.timer_flows(i, high)[usize(k)]
+
+        // The coil's current in at its first end and out at its second; the contact's into the common
+        // and out of the throw the armature is on, the other carrying nothing.
+        if p.kind is Relay(_, _, operated)
+            val coil = self.current(i)
+            val into = (self.voltage(p.c) - self.voltage(if operated then p.e else p.d)) / CLOSED_OHMS
+
+            return k match
+                0 -> coil
+                1 -> -coil
+                2 -> into
+                3 -> if operated then 0.0 else -into
+                _ -> if operated then -into else 0.0
 
         if p.kind is OpAmp(m)
             val l = self.opamp_now(i, m)
@@ -473,6 +492,8 @@ struct Sim
                     sys.at(a, b, -y)
                     sys.at(b, a, -y)
                 Inductor(henries) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, -w * henries))
+                // A relay's coil's inductance, in series with its resistance, which the real system holds.
+                Relay(_, ohms, _) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, -w * relay_henries(ohms)))
                 // An op-amp's dominant pole: the capacitance on its inner node.
                 OpAmp(m) -> sys.at(self.extra[i], self.extra[i], Complex(0.0, w * m.inner_farads()))
                 // A lamp's filament's heat capacity: above a few hertz its temperature cannot follow,
@@ -543,9 +564,11 @@ struct Sim
             self.held_v[i] = self.circuit.parts[i].kind match
                 OpAmp(_) -> self.inner(int(i))
                 Lamp(_, _) -> self.filament(int(i))
+                // A relay's coil's inductance holds no voltage while its current stands still.
+                Relay(_, _, _) -> 0.0
                 _ -> self.across(int(i))
             self.held_i[i] = self.circuit.parts[i].kind match
-                Inductor(_) -> self.x[usize(self.extra[i])]
+                Inductor(_) | Relay(_, _, _) -> self.x[usize(self.extra[i])]
                 _ -> 0.0
 
         self.started = true
@@ -668,7 +691,8 @@ struct Sim
 
             if solved.is_ok()
                 val err = self.step_error(end)
-                // Where a 555 timer's comparator first crossed over during the step, if one did.
+                // Where a 555 timer's comparator or a relay's coil current first crossed over during
+                // the step, if one did.
                 val crossed = self.crossing(end)
 
                 if err <= 1.0 && end - crossed <= CROSSING_SLACK * h + 1e-12
@@ -771,6 +795,13 @@ struct Sim
                 Inductor(_) ->
                     self.held_i[i] = self.x[usize(self.extra[i])]
                     self.held_v[i] = self.across(int(i))
+                // A relay's coil holds its current, and its inductance the voltage across it: the
+                // coil's less what its resistance drops.
+                Relay(_, ohms, _) ->
+                    val amps = self.x[usize(self.extra[i])]
+
+                    self.held_i[i] = amps
+                    self.held_v[i] = self.across(int(i)) - ohms * amps
                 OpAmp(m) ->
                     val v = self.inner(int(i))
                     val (g, owed) = self.capacitor_companion(m.inner_farads(), int(i))
@@ -810,8 +841,9 @@ struct Sim
         else
             self.method = Trapezoid
 
-    // Move every 555 timer's latch to where its comparators put it in the present solution. Whether any
-    // moved: the circuit then changed abruptly, a corner.
+    // Move every 555 timer's latch to where its comparators put it in the present solution, and every
+    // relay's armature to where its coil's current puts it. Whether any moved: the circuit then changed
+    // abruptly, a corner.
     private relatch(*self) -> bool
         var moved = false
 
@@ -824,10 +856,18 @@ struct Sim
                     self.circuit.parts[i].kind = Timer(next)
                     moved = true
 
+            if self.circuit.parts[i].kind is Relay(volts, ohms, operated)
+                val next = relay_next(operated, self.x[usize(self.extra[i])], volts, ohms)
+
+                if next != operated
+                    self.circuit.parts[i].kind = Relay(volts, ohms, next)
+                    moved = true
+
         moved
 
-    // Solve again while a latch moves, so the solution and every 555 timer's latch agree, as far as
-    // they can: a timer wired to run free has no rest, and is left as its last move put it.
+    // Solve again while a latch moves, so the solution and every 555 timer's latch and relay's armature
+    // agree, as far as they can: a timer wired to run free has no rest, and is left as its last move
+    // put it.
     private settle_latches(*self) -> Result[unit, string]
         for _ in 0..<LATCH_PASSES
             if !self.relatch() then return Ok(())
@@ -845,13 +885,25 @@ struct Sim
 
         (v(p.b) - g, v(p.f) - g, v(p.e) - g, v(p.d) - g)
 
-    // The time within the step to `end` at which a 555 timer's latch would first move: where a
-    // comparator whose crossing moves it crossed over, as the straight line between the step's start
-    // (`saved_x`) and its end puts it. `end` if no latch would move.
+    // The time within the step to `end` at which a 555 timer's latch or a relay's armature would first
+    // move: where a comparator whose crossing moves it crossed over, or the coil's current crossed the
+    // level that moves it, as the straight line between the step's start (`saved_x`) and its end puts
+    // it. `end` if nothing would move.
     private crossing(self, end: real) -> real
         var first = end
 
         for i in 0..<self.circuit.parts.len()
+            if self.circuit.parts[i].kind is Relay(volts, ohms, operated)
+                val k = usize(self.extra[i])
+
+                if relay_next(operated, self.x[k], volts, ohms) == operated then continue
+
+                val level = if operated then relay_drop_out(volts, ohms) else relay_pull_in(volts, ohms)
+                val (m0, m1) = (self.saved_x[k].abs() - level, self.x[k].abs() - level)
+                val fraction = if (m0 < 0.0) != (m1 < 0.0) then m0 / (m0 - m1) else 1.0
+
+                first = first.min(self.time + fraction * (end - self.time))
+
             if self.circuit.parts[i].kind is Timer(high)
                 val (t1, h1, c1, r1) = self.timer_inputs(self.x, int(i))
 
@@ -1250,6 +1302,36 @@ struct Sim
                         self.sys.rhs(out, go * TIMER_LOW_VOLTS)
                         self.sys.rhs(gnd, -go * TIMER_LOW_VOLTS)
                         self.conductance(p.g - 1, gnd, 1.0 / TIMER_DISCHARGE_OHMS)
+                // The coil is an inductor's branch equation with its resistance in it,
+                // v_a − v_b − (R + r) · i = e, the companion's `r` and `e` the inductance's alone. The
+                // contact is a double-throw switch's, the armature choosing the throw; it moves only
+                // between steps, in `relatch`. Its common is held to ground by GMIN, as the open throw
+                // is, so a contact wired to nothing — a coil drawn on its own — still has a voltage.
+                Relay(_, ohms, operated) ->
+                    val k = self.extra[i]
+                    val henries = relay_henries(ohms)
+                    val (r, e) = self.method match
+                        Steady -> (0.0, 0.0)
+                        Euler ->
+                            val r = henries / self.step
+
+                            (r, -r * self.held_i[i])
+                        Trapezoid ->
+                            val r = 2.0 * henries / self.step
+
+                            (r, -r * self.held_i[i] - self.held_v[i])
+                    val joined = if operated then p.e - 1 else p.d - 1
+                    val loose = if operated then p.d - 1 else p.e - 1
+
+                    self.sys.at(a, k, 1.0)
+                    self.sys.at(b, k, -1.0)
+                    self.sys.at(k, a, 1.0)
+                    self.sys.at(k, b, -1.0)
+                    self.sys.at(k, k, -(ohms + r))
+                    self.sys.rhs(k, e)
+                    self.conductance(p.c - 1, joined, 1.0 / CLOSED_OHMS)
+                    self.sys.at(loose, loose, GMIN)
+                    self.sys.at(p.c - 1, p.c - 1, GMIN)
                 OpAmp(m) ->
                     // Each current on the line touching it at the present solution: a current `I` out
                     // of a node, `I0 + Σ slope · (v − v0)`, is its slopes in the node's row and
@@ -1372,13 +1454,13 @@ struct Response
     // The voltage at node `node` against ground.
     voltage(self, node: int) -> Complex[real] = if node <= 0 then Complex.from_real(0.0) else self.x[usize(node - 1)]
 
-    // The current through voltage source or inductor `i`, from its first terminal to its second; zero
-    // for any other part.
+    // The current through voltage source, inductor or relay coil `i`, from its first terminal to its
+    // second; zero for any other part.
     current(self, i: int) -> Complex[real]
         val k = self.extra[usize(i)]
 
         self.circuit.parts[usize(i)].kind match
-            VoltageSource(_) | Inductor(_) -> self.x[usize(k)]
+            VoltageSource(_) | Inductor(_) | Relay(_, _, _) -> self.x[usize(k)]
             _ -> Complex.from_real(0.0)
 
 // A simulator for `c`, not yet solved. It works on its own copy of the parts, so flipping a switch or
@@ -1395,7 +1477,8 @@ sim(given: Circuit) -> Sim
 
     for i in 0..<c.parts.len()
         c.parts[i].kind match
-            VoltageSource(_) | Inductor(_) ->
+            // A relay's coil's current.
+            VoltageSource(_) | Inductor(_) | Relay(_, _, _) ->
                 extra.push(size)
                 size += 1
             Diode(m) ->
