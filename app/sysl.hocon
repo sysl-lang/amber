@@ -5,8 +5,8 @@
 //     sysl run app -- examples/led.amber --shot led.png
 package {
   name    = "amber-app"
-  version = "0.1.13"
-  sysl    = "0.11.8"
+  version = "0.1.14"
+  sysl    = "0.11.14"
 }
 
 optimization = "2"
